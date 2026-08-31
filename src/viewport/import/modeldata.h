@@ -167,6 +167,13 @@ struct PoseCorrective {
     std::string                                 id;
     std::vector<CorrectiveFormula>              sumFormulas; ///< Summed; joint-rotation driven.
     float                                       gateScale = 1.0f;
+    // The morph's own value-channel range (`channel.min/max` with `clamped: true`): the driven
+    // weight clamps to it. Load-bearing for LINEAR ramp drivers — a knee-EXTENSION flexion is
+    // authored as `rotation/x × -1/11` and relies on the clamp to stay 0 through the 155° of
+    // FLEXION (unclamped it reached -14 and cratered the thigh).
+    bool                                        clamped = false;
+    float                                       clampMin = 0.0f;
+    float                                       clampMax = 1.0f;
     std::vector<std::pair<uint32_t, glm::vec3>> deltas;      ///< (base-vertex index, displacement).
 };
 

@@ -61,7 +61,11 @@ const nlohmann::json* findGeometry(const nlohmann::json& doc, const std::string&
     return &(*it)[0];
 }
 
-// The channel id (fragment after '#', before '?') of a driver url, ignoring a leading "Node:" alias.
+// The channel id (fragment after '#', before '?') of a driver url, ignoring a leading "Node:"
+// alias. URL-DECODED: vendor morph ids commonly contain spaces ("CCrow%20Base%20Female%20Body%201")
+// and a corrective's gate url must match the dialed morph's id, which arrives decoded — an encoded
+// mismatch silently resolved the gate to the channel's default (0 for a character shape) and
+// dropped every one of that character's own correctives.
 std::string channelId(const std::string& url) {
     const std::size_t slash = url.find('/');
     const std::size_t colon = url.find(':');
@@ -71,7 +75,7 @@ std::string channelId(const std::string& url) {
     const std::size_t hash = rest.find('#');
     std::string frag = (hash == std::string::npos) ? rest : rest.substr(hash + 1);
     const std::size_t q = frag.find('?');
-    return (q == std::string::npos) ? frag : frag.substr(0, q);
+    return UriResolver::urlDecode((q == std::string::npos) ? frag : frag.substr(0, q));
 }
 
 // Strips a leading "Node:" alias so the remaining path is root-relative for the resolver.
@@ -95,7 +99,9 @@ std::string stripAlias(const std::string& url) {
 // character-morph directories to scan and the dialed weights that resolve those gates.
 std::vector<PoseCorrective> discoverCorrectives(UriResolver& resolver, const std::string& baseDir,
                                                 const std::unordered_set<std::string>& boneNames,
-                                                const std::vector<DialedMorph>& dialed) {
+                                                const std::vector<DialedMorph>& dialed,
+                                                const std::string& baseGeometryFile,
+                                                std::size_t cageVertexCount) {
     namespace fs = std::filesystem;
 
     // Gate resolver: a value-channel driver resolves to its dialed weight if the preset dials it,
@@ -160,6 +166,89 @@ std::vector<PoseCorrective> discoverCorrectives(UriResolver& resolver, const std
             }
         }
     }
+
+    // SIBLING-BASE fallback: some figure generations ship NO corrective packs of their own — a
+    // "point-release" variant figure (its Morphs tree holds only head/FACS content) inherits the
+    // previous generation's correctives through the source app's content database. That link is
+    // re-created STRUCTURALLY here: a sibling figure directory (same parent as @p baseDir) whose
+    // base file's digit-stripped name matches ours (a "…8_1Female" and its "…8Female" sibling both
+    // strip to the same stem — the male sibling does not) AND whose base cage has the SAME
+    // vertex count is morph-compatible by construction — identical topology means its corrective
+    // delta indices land on our vertices verbatim, and the shared bone names drive them. Only
+    // attempted when our own tree yielded nothing (the check parses the sibling's base file —
+    // ~a second — so same-generation figures with their own packs never pay it).
+    if (dirs.empty()) {
+        const auto strippedStem = [](const fs::path& p) {
+            std::string out;
+            for (const char c : p.stem().string()) {
+                if (!std::isdigit(static_cast<unsigned char>(c)) && c != '_' && c != ' ' &&
+                    c != '.') {
+                    out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+                }
+            }
+            return out;
+        };
+        const auto cageCountOf = [](const nlohmann::json& root) -> std::size_t {
+            const auto gl = root.find("geometry_library");
+            if (gl == root.end() || !gl->is_array() || gl->empty()) {
+                return 0;
+            }
+            const auto verts = gl->front().find("vertices");
+            if (verts == gl->front().end()) {
+                return 0;
+            }
+            if (const auto count = verts->find("count");
+                count != verts->end() && count->is_number()) {
+                return count->get<std::size_t>();
+            }
+            const auto values = verts->find("values");
+            return (values != verts->end() && values->is_array()) ? values->size() : 0;
+        };
+        const std::string ownStem = strippedStem(fs::path(baseGeometryFile));
+        const fs::path parent = fs::path(baseDir).parent_path();
+        bool matched = false;
+        for (fs::directory_iterator sib(parent, ec), sibEnd; !matched && sib != sibEnd;
+             sib.increment(ec)) {
+            if (ec || !sib->is_directory(ec) || sib->path() == fs::path(baseDir)) {
+                continue;
+            }
+            for (fs::directory_iterator f(sib->path(), ec), fEnd; !matched && f != fEnd;
+                 f.increment(ec)) {
+                if (ec || !f->is_regular_file(ec) || f->path().extension() != ".dsf" ||
+                    strippedStem(f->path()) != ownStem) {
+                    continue;
+                }
+                try {
+                    const FigureDocument sibDoc = FigureDocument::loadFromFile(f->path().string());
+                    if (cageVertexCount == 0 || cageCountOf(sibDoc.root()) != cageVertexCount) {
+                        continue; // different topology: its deltas would land on wrong vertices
+                    }
+                } catch (const std::exception&) {
+                    continue;
+                }
+                matched = true;
+                const fs::path sibMorphs = sib->path() / "Morphs";
+                for (fs::recursive_directory_iterator it(sibMorphs, ec), end; it != end;
+                     it.increment(ec)) {
+                    if (ec) {
+                        break;
+                    }
+                    if (!it->is_directory(ec)) {
+                        continue;
+                    }
+                    std::string name = it->path().filename().string();
+                    std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) {
+                        return static_cast<char>(std::tolower(c));
+                    });
+                    if (name.find("corrective") != std::string::npos ||
+                        name.find("flexion") != std::string::npos) {
+                        dirs.push_back(it->path().string());
+                    }
+                }
+            }
+        }
+    }
+
     for (const DialedMorph& d : dialed) {
         const ResolvedUri ru = resolver.resolve(d.url, baseDir);
         if (ru.resolved()) {
@@ -859,6 +948,7 @@ FigureData loadFigureFile(const std::string& path, const std::vector<std::string
     const nlohmann::json* geomEntry = nullptr;
     std::shared_ptr<const FigureDocument> baseDoc; // keeps the referenced base file alive
     std::string baseDir = presetDir;
+    std::string baseFile = path; // the base figure .dsf itself (sibling-base corrective matching)
 
     if (root.contains("geometry_library")) {
         geomEntry = findGeometry(root, std::string());
@@ -873,6 +963,7 @@ FigureData loadFigureFile(const std::string& path, const std::vector<std::string
         }
         baseDoc = resolver.loadDocument(geomUri, presetDir);
         baseDir = directoryOf(ru.path);
+        baseFile = ru.path;
         geomEntry = findGeometry(baseDoc->root(), ru.fragment);
     }
     if (!geomEntry) {
@@ -1011,7 +1102,8 @@ FigureData loadFigureFile(const std::string& path, const std::vector<std::string
         for (const FigureBone& b : out.bones) {
             boneNames.insert(b.name);
         }
-        out.correctives = discoverCorrectives(resolver, baseDir, boneNames, dialedMorphs);
+        out.correctives = discoverCorrectives(resolver, baseDir, boneNames, dialedMorphs,
+                                              baseFile, geo.positions.size());
     }
 
     // Catmull-Clark subdivision: smooth the low-resolution base cage into the render mesh. Positions

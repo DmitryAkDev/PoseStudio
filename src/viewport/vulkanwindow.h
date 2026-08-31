@@ -20,6 +20,8 @@
 
 #include <QWindow>
 
+class QTimer;
+
 #include <vulkan/vulkan.h> // for VkExtent2D in the pixelExtent() signature
 
 #include <glm/glm.hpp>
@@ -173,6 +175,41 @@ private:
     bool             m_posingBone = false;
     // Which rotate-gizmo ring the current left-drag grabbed (0=X,1=Y,2=Z), or -1 if not a gizmo drag.
     int              m_gizmoAxis = -1;
+    // True while a Ctrl+left-drag is full-body-IK-dragging the grabbed joint: the joint follows
+    // the cursor in a camera-parallel plane through its grab point (m_ikPlanePoint, world space),
+    // the body following via the FBIK solve (feet pinned, auto-balanced). Plain drags stay FK.
+    // The solve is rate-limited per call (it can only move the pose so far per event), so while
+    // the button is held m_ikTimer keeps re-issuing the LAST target — catch-up continues and
+    // settles even when the mouse stops moving (mouse-move events stop with it).
+    bool             m_ikDragging = false;
+    // True between IK-drag mouse RELEASE and the end of the ANIMATED release settle: the timer
+    // keeps ticking, each tick relaxing the body one capped round onto its ground pins (the old
+    // one-shot settle applied the whole landing in a single frame — a visible pose pop at
+    // mouse-up). finalizePose + the undo commit are deferred until the settle lands.
+    bool             m_ikSettling = false;
+    glm::vec3        m_ikPlanePoint{0.0f};
+    glm::vec3        m_ikLastTarget{0.0f};
+    // Low-pass-filtered target actually issued to the solver: raw cursor positions carry pixel
+    // noise even when "held still", and the solve amplifies target jitter into visible trembling.
+    glm::vec3        m_ikSmoothedTarget{0.0f};
+    bool             m_ikHasTarget = false;
+    // True once a drag's solve has actually CHANGED the pose. A Ctrl+CLICK (select, no motion)
+    // must be a no-op: without this gate the release still ran the settle onto the drag's
+    // ground-healed pins, visibly shifting a hovering figure and committing an undo entry for
+    // a gesture the user perceived as a click.
+    bool             m_ikPoseChanged = false;
+    QTimer*          m_ikTimer = nullptr;
+
+    /// Issues the current (smoothed) IK target to the renderer — shared by the mouse-move path
+    /// and the drag timer, so both apply the same target filtering. Returns true if the solve
+    /// actually changed the pose (the caller only requests a frame then).
+    bool issueIkTarget();
+    /// Completes the post-release IK settle NOW (ends the drag, settles correctives, commits the
+    /// undo entry). Called by the timer when the animated settle lands, and by any interaction
+    /// that must not overlap it (a new press, undo/redo) to cut it short cleanly.
+    void finishIkSettle();
+    /// Commits an undo entry for the pose edit bracketed by m_preEditPose (no-op if unchanged).
+    void commitPoseUndo();
 
     // Undo/redo: each committed edit (a pose drag, or a registered lighting gesture) pushes its
     // pre-edit state. m_preEditPose snapshots the pose at drag start (committed on release).

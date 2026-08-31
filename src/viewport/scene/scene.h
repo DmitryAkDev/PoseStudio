@@ -81,7 +81,7 @@ public:
     /// Call BEFORE the main render pass each frame: it also (re)fits the light's ortho frustum
     /// around the scene + its floor projections, which record() then feeds to the shaders via the
     /// UBO. Skipped (leaving the map fully lit) while the scene has no casters.
-    void recordShadowPass(VkCommandBuffer cmd);
+    void recordShadowPass(VkCommandBuffer cmd, uint32_t frameIndex);
 
     /// Updates this frame's camera UBO, binds the pipeline + camera set, and records every model.
     /// The caller has begun the render pass and set the dynamic viewport/scissor.
@@ -116,6 +116,25 @@ public:
     /// Settles the figure after an interactive pose edit: applies pose correctives, which are
     /// deferred during a drag (they re-upload geometry) and applied here on release.
     void finalizePose();
+
+    // --- Full-body IK (Ctrl+drag a joint; see scene/ik/) ---
+    /// Begins an FBIK drag of the figure's selected joint: ground contacts are detected and become
+    /// the anchor/pins, and the balance support polygon is captured. Returns false without a
+    /// figure or selection.
+    bool beginBoneIkDrag();
+    /// One FBIK drag update: solves the whole body so the selected joint reaches toward
+    /// @p targetWorld (feet stay planted, CoM auto-balanced), then re-poses the figure. Returns
+    /// true if the pose actually changed (false: deadband / settle-freeze — no redraw needed).
+    bool dragBoneIkTo(const glm::vec3& targetWorld);
+    /// One animated release-settle step (see Model::settleIkTick): call at the drag tick rate
+    /// after release until it returns false, then endBoneIkDrag().
+    bool settleBoneIkTick();
+    /// Ends the FBIK drag (the pose stays; call finalizePose() to settle correctives, as with any
+    /// pose drag).
+    void endBoneIkDrag();
+    /// World-space position of the figure's selected joint (the IK drag plane's anchor point).
+    /// Returns false when no joint is selected.
+    bool selectedBoneWorldPosition(glm::vec3& out) const;
     /// Drops the posable figure onto the ground plane: translates it so the CURRENT pose's lowest
     /// point rests at y = 0 (the viewport's "move to ground" button). Returns true if it moved.
     bool groundFigure();

@@ -470,7 +470,7 @@ glm::vec3 Scene::keyLightDir() const {
     return dir;
 }
 
-void Scene::recordShadowPass(VkCommandBuffer cmd) {
+void Scene::recordShadowPass(VkCommandBuffer cmd, uint32_t frameIndex) {
     // Shadows off: skip the whole pass (its cost included) and park the light matrix on the same
     // degenerate projection the no-casters case uses — every receiver (figure + floor) reads
     // fully lit through it.
@@ -550,7 +550,7 @@ void Scene::recordShadowPass(VkCommandBuffer cmd) {
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipeline->handle());
     for (const std::unique_ptr<Model>& model : m_models) {
-        model->recordShadow(cmd, m_shadowPipeline->layout(), m_lightViewProj);
+        model->recordShadow(cmd, m_shadowPipeline->layout(), m_lightViewProj, frameIndex);
     }
     vkCmdEndRenderPass(cmd);
 }
@@ -622,7 +622,8 @@ void Scene::record(VkCommandBuffer cmd, const Camera& camera, uint32_t frameInde
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline->layout(), 3, 1, &m_iblSet,
                             0, nullptr);
     for (const std::unique_ptr<Model>& model : m_models) {
-        model->record(cmd, m_pipeline->layout(), /*transparentPass=*/false, camera.position());
+        model->record(cmd, m_pipeline->layout(), /*transparentPass=*/false, camera.position(),
+                      frameIndex);
     }
 
     // Transparent pass: alpha-blended, depth-write off, drawn after all opaque geometry so it blends
@@ -631,7 +632,7 @@ void Scene::record(VkCommandBuffer cmd, const Camera& camera, uint32_t frameInde
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_transparentPipeline->handle());
     for (const std::unique_ptr<Model>& model : m_models) {
         model->record(cmd, m_transparentPipeline->layout(), /*transparentPass=*/true,
-                      camera.position());
+                      camera.position(), frameIndex);
     }
 
     // Posing overlay: the rotate gizmo for the selected joint, and (only when enabled) the skeleton
@@ -754,6 +755,37 @@ void Scene::finalizePose() {
     if (Model* fig = figureModel()) {
         fig->refreshCorrectives();
     }
+}
+
+bool Scene::beginBoneIkDrag() {
+    Model* fig = figureModel();
+    return fig != nullptr && fig->beginIkDrag();
+}
+
+bool Scene::dragBoneIkTo(const glm::vec3& targetWorld) {
+    Model* fig = figureModel();
+    return fig && fig->dragIkTo(targetWorld);
+}
+
+bool Scene::settleBoneIkTick() {
+    Model* fig = figureModel();
+    return fig && fig->settleIkTick();
+}
+
+void Scene::endBoneIkDrag() {
+    if (Model* fig = figureModel()) {
+        fig->endIkDrag();
+    }
+}
+
+bool Scene::selectedBoneWorldPosition(glm::vec3& out) const {
+    const Model* fig = figureModel();
+    if (!fig || fig->selectedBone() < 0 ||
+        fig->selectedBone() >= static_cast<int>(fig->boneCount())) {
+        return false;
+    }
+    out = fig->boneWorldPosition(static_cast<std::size_t>(fig->selectedBone()));
+    return true;
 }
 
 bool Scene::groundFigure() {

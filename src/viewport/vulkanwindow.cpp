@@ -23,6 +23,7 @@
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QResizeEvent>
+#include <QTimer>
 #include <QVulkanInstance>
 #include <QWheelEvent>
 #include <QtConcurrent>
@@ -51,6 +52,76 @@ VulkanWindow::VulkanWindow(QVulkanInstance* instance, uint32_t apiVersion, QStri
       m_shaderDir(std::move(shaderDir)) {
     setSurfaceType(QSurface::VulkanSurface);
     setVulkanInstance(m_instance);
+
+    // FBIK drag ticker: the IK solve is rate-limited per call, so while the drag button is held
+    // the last target is re-issued at ~60 Hz — the pose keeps catching up (and settles) even when
+    // the mouse stops moving and mouse-move events stop with it.
+    m_ikTimer = new QTimer(this);
+    m_ikTimer->setInterval(16);
+    connect(m_ikTimer, &QTimer::timeout, this, [this]() {
+        if (!m_renderer) {
+            m_ikTimer->stop();
+            m_ikSettling = false;
+            return;
+        }
+        if (m_ikSettling) {
+            // Animated release settle: one capped round per tick until the feet land.
+            if (!m_renderer->settleBoneIkTick()) {
+                finishIkSettle();
+            }
+            requestUpdate();
+        } else if (m_ikDragging && m_ikHasTarget) {
+            // Redraw only when the solve actually moved the pose: during a held-still drag the
+            // settle-freeze stops solving entirely, and re-rendering an unchanged frame at 60 Hz
+            // would burn GPU/battery for nothing (rendering is event-driven everywhere else too).
+            if (issueIkTarget()) {
+                m_ikPoseChanged = true; // a real edit: the release may settle + commit undo
+                requestUpdate();
+            }
+        }
+    });
+}
+
+bool VulkanWindow::issueIkTarget() {
+    // ADAPTIVE low-pass on the raw cursor target (see m_ikSmoothedTarget): the smoothing
+    // strength follows how far the smoothed target LAGS the raw one — near-still cursor (the
+    // lag is pixel noise), heavy smoothing kills jitter before it reaches the solver, which
+    // AMPLIFIES it; fast deliberate gesture (the lag is centimeters), the filter opens up and
+    // follows tightly, so smoothing costs almost no lag exactly when the user moves fast. The
+    // old fixed 0.35 charged ~40ms of lag on flicks while passing ~2x the noise on precise
+    // holds. Mirrored in the IK loop harness — keep the constants in sync.
+    constexpr float kIkAlphaMin = 0.18f;
+    constexpr float kIkAlphaMax = 0.85f;
+    constexpr float kIkAlphaGain = 12.0f; // per meter of lag
+    const float lag = glm::length(m_ikLastTarget - m_ikSmoothedTarget);
+    const float alpha = glm::clamp(kIkAlphaMin + lag * kIkAlphaGain, kIkAlphaMin, kIkAlphaMax);
+    m_ikSmoothedTarget = glm::mix(m_ikSmoothedTarget, m_ikLastTarget, alpha);
+    return m_renderer->dragBoneIkTo(m_ikSmoothedTarget);
+}
+
+void VulkanWindow::finishIkSettle() {
+    if (!m_ikSettling) {
+        return;
+    }
+    m_ikSettling = false;
+    m_ikTimer->stop();
+    if (m_renderer) {
+        m_renderer->endBoneIkDrag();
+        m_renderer->finalizePose(); // correctives were deferred through drag AND settle
+        commitPoseUndo();
+        requestUpdate(); // finalizePose re-morphs corrective geometry - always show it (several
+                         // callers reach here on paths with no request of their own)
+    }
+}
+
+void VulkanWindow::commitPoseUndo() {
+    if (m_renderer && m_renderer->capturePose() != m_preEditPose) {
+        UndoEntry entry;
+        entry.kind = UndoEntry::Kind::Pose;
+        entry.pose = m_preEditPose;
+        m_undoStack.push_back(std::move(entry));
+        m_redoStack.clear();
+    }
 }
 
 VulkanWindow::~VulkanWindow() {
@@ -217,6 +288,16 @@ void VulkanWindow::setLightingSettings(const LightingSettings& settings) {
 }
 
 void VulkanWindow::releaseVulkan() {
+    // A pending IK drag or release settle dies with the renderer (nothing left to settle or
+    // commit) - the DRAG flags must clear too, or a rebuilt renderer inherits a phantom drag
+    // whose eventual release would settle-and-commit against a stale pre-teardown pose.
+    m_ikSettling = false;
+    m_ikDragging = false;
+    m_ikHasTarget = false;
+    m_ikPoseChanged = false;
+    if (m_ikTimer) {
+        m_ikTimer->stop();
+    }
     // Order matters: the renderer waits for the device to idle in its destructor, so it
     // must go before the context (which owns the device).
     m_renderer.reset();
@@ -281,10 +362,12 @@ void VulkanWindow::groundFigure() {
 }
 
 bool VulkanWindow::savePose(const QString& path) {
+    finishIkSettle(); // serialize the LANDED pose, not a transient mid-settle frame
     return m_renderer && m_renderer->savePose(path.toStdString());
 }
 
 bool VulkanWindow::loadPose(const QString& path) {
+    finishIkSettle(); // don't let a still-animating release settle fight the loaded pose
     if (!m_renderer) {
         m_pendingPose = path; // applied after the queued figure is drained (open-with a .pose)
         return true;
@@ -358,23 +441,49 @@ void VulkanWindow::renderFrame() {
 }
 
 void VulkanWindow::mousePressEvent(QMouseEvent* event) {
+    finishIkSettle(); // a new interaction must not overlap a still-animating release settle
     m_lastMousePos = event->position();
     m_activeDragButtons |= event->button(); // a drag with this button started in the viewport
 
-    // Left-press priority: (1) a gizmo ring of the selected joint -> axis-constrained rotate;
-    // (2) a joint -> select it + free-rotate this drag; (3) empty space -> orbit the camera.
+    // Left-press priority: (0) Ctrl held + a joint -> full-body-IK drag of that joint; (1) a gizmo
+    // ring of the selected joint -> axis-constrained rotate; (2) a joint -> select it + free-rotate
+    // this drag (FK); (3) empty space -> orbit the camera.
     if (event->button() == Qt::LeftButton && m_renderer) {
         const float x = static_cast<float>(event->position().x());
         const float y = static_cast<float>(event->position().y());
         const float w = static_cast<float>(width());
         const float h = static_cast<float>(height());
-        m_gizmoAxis = m_renderer->hasSelectedBone() ? m_renderer->gizmoAxisAt(x, y, w, h) : -1;
-        if (m_gizmoAxis >= 0) {
-            m_posingBone = false;
-        } else {
-            m_posingBone = (m_renderer->selectBoneAt(x, y, w, h) >= 0);
+        if (m_ikDragging) {
+            // A stale drag whose release never reached this window (a modal/shortcut swallowed
+            // the mouse-up - the m_activeDragButtons event-leak class): close it out, or the
+            // 60 Hz timer runs forever and this press hijacks into IK-dragging the old joint.
+            m_renderer->endBoneIkDrag();
+            m_ikDragging = false;
+            m_ikHasTarget = false;
+            m_ikTimer->stop();
         }
-        if (m_gizmoAxis >= 0 || m_posingBone) {
+        if (event->modifiers().testFlag(Qt::ControlModifier)) {
+            // FBIK: grab the joint under the cursor and drag it through a camera-parallel plane
+            // anchored at its current position; the body follows (feet pinned, auto-balanced).
+            m_gizmoAxis = -1;
+            m_posingBone = false;
+            m_ikDragging = m_renderer->selectBoneAt(x, y, w, h) >= 0 &&
+                           m_renderer->beginBoneIkDrag() &&
+                           m_renderer->selectedBoneWorldPosition(m_ikPlanePoint);
+            if (m_ikDragging) {
+                m_ikHasTarget = false;
+                m_ikPoseChanged = false;
+                m_ikTimer->start();
+            }
+        } else {
+            m_gizmoAxis = m_renderer->hasSelectedBone() ? m_renderer->gizmoAxisAt(x, y, w, h) : -1;
+            if (m_gizmoAxis >= 0) {
+                m_posingBone = false;
+            } else {
+                m_posingBone = (m_renderer->selectBoneAt(x, y, w, h) >= 0);
+            }
+        }
+        if (m_gizmoAxis >= 0 || m_posingBone || m_ikDragging) {
             m_preEditPose = m_renderer->capturePose(); // snapshot for undo (committed on release)
         }
         requestUpdate(); // reflect the new selection highlight / gizmo
@@ -384,21 +493,31 @@ void VulkanWindow::mousePressEvent(QMouseEvent* event) {
 void VulkanWindow::mouseReleaseEvent(QMouseEvent* event) {
     m_activeDragButtons &= ~event->button();
     if (event->button() == Qt::LeftButton) {
-        if ((m_posingBone || m_gizmoAxis >= 0) && m_renderer) {
-            // Pose edit settled: apply the pose correctives (deferred during the drag because they
-            // re-upload geometry) and commit an undo entry if the pose actually changed.
-            m_renderer->finalizePose();
-            if (m_renderer->capturePose() != m_preEditPose) {
-                UndoEntry entry;
-                entry.kind = UndoEntry::Kind::Pose;
-                entry.pose = m_preEditPose;
-                m_undoStack.push_back(std::move(entry));
-                m_redoStack.clear();
+        if ((m_posingBone || m_gizmoAxis >= 0 || m_ikDragging) && m_renderer) {
+            if (m_ikDragging && !m_ikPoseChanged) {
+                // Ctrl+CLICK: the joint was selected but no solve ever moved the pose — end the
+                // drag with no settle and no undo (the settle would still walk a hovering
+                // figure onto its ground-healed pins, turning a mere selection into an edit).
+                m_renderer->endBoneIkDrag();
+                m_ikTimer->stop();
+            } else if (m_ikDragging) {
+                // IK release: hand off to the ANIMATED settle — the timer keeps ticking, each
+                // tick relaxing the body onto its pins so hovering feet visibly land instead of
+                // popping in one frame. finalizePose + the undo commit run when it finishes
+                // (finishIkSettle), keeping the drag-deferred correctives deferred through it.
+                m_ikHasTarget = false;
+                m_ikSettling = true;
+            } else {
+                // FK/gizmo edit settled: apply the pose correctives (deferred during the drag
+                // because they re-upload geometry) and commit an undo entry if the pose changed.
+                m_renderer->finalizePose();
+                commitPoseUndo();
             }
             requestUpdate();
         }
         m_posingBone = false;
         m_gizmoAxis = -1;
+        m_ikDragging = false;
     }
     // Right-click (on release, the desktop convention) opens the object context menu. The right
     // button drives no camera motion, so there's nothing to disambiguate from a drag here.
@@ -422,6 +541,15 @@ void VulkanWindow::showObjectContextMenu(const QPointF& localPos, const QPoint& 
     QMenu menu;
     QAction* deleteAction = menu.addAction(QStringLiteral("Delete"));
     if (menu.exec(globalPos) == deleteAction) {
+        if (m_ikDragging) {
+            // Deleting the dragged figure mid-gesture (left button still held while the menu
+            // opened): end the drag cleanly first - its settle/undo would otherwise retarget
+            // to whatever figure remains.
+            m_renderer->endBoneIkDrag();
+            m_ikDragging = false;
+            m_ikHasTarget = false;
+            m_ikTimer->stop();
+        }
         m_renderer->deleteModel(static_cast<std::size_t>(picked));
         requestUpdate();
     }
@@ -441,7 +569,30 @@ void VulkanWindow::mouseMoveEvent(QMouseEvent* event) {
     const Qt::MouseButtons active = m_activeDragButtons & event->buttons();
 
     Camera& camera = m_renderer->camera();
-    if ((active & Qt::LeftButton) && m_gizmoAxis >= 0) {
+    if ((active & Qt::LeftButton) && m_ikDragging) {
+        // Full-body IK: the grabbed joint tracks the cursor within the camera-parallel plane
+        // through its grab point (fixed for the whole drag so the depth can't feed back).
+        const glm::mat4 view = camera.view();
+        const glm::vec3 planeNormal(view[0][2], view[1][2], view[2][2]); // toward the camera
+        const Ray ray = camera.screenPointToRay(
+            static_cast<float>(event->position().x()), static_cast<float>(event->position().y()),
+            static_cast<float>(width()), static_cast<float>(height()));
+        const float denom = glm::dot(ray.direction, planeNormal);
+        if (std::abs(denom) > 1e-4f) {
+            const float t = glm::dot(m_ikPlanePoint - ray.origin, planeNormal) / denom;
+            if (t > 0.0f) {
+                m_ikLastTarget = ray.origin + ray.direction * t;
+                if (!m_ikHasTarget) {
+                    m_ikSmoothedTarget = m_ikLastTarget; // seed the filter at the grab point
+                    m_ikHasTarget = true;
+                }
+                // Deliberately NO solve here: the 60 Hz timer is the SOLE caller of
+                // issueIkTarget(). Solving per mouse event stacked extra solves on top of the
+                // timer's - with a high-polling-rate mouse the damped-motion dynamics (all
+                // tuned in per-tick units) ran several times faster than designed.
+            }
+        }
+    } else if ((active & Qt::LeftButton) && m_gizmoAxis >= 0) {
         // Gizmo: rotate the selected joint about the grabbed ring's axis by the swept screen angle.
         m_renderer->rotateGizmo(m_gizmoAxis, static_cast<float>(prev.x()), static_cast<float>(prev.y()),
                                 static_cast<float>(event->position().x()),
@@ -505,6 +656,12 @@ void VulkanWindow::registerLightingUndo(const LightingSettings& preEdit) {
 }
 
 void VulkanWindow::undo() {
+    if (m_ikDragging || m_posingBone || m_gizmoAxis >= 0) {
+        return; // mid-gesture (Ctrl+Z with the button held): the drag owns the pose right now —
+                // an IK drag in particular solves against pins captured at drag start, and
+                // re-posing underneath it would leave the solve fighting a stale stance.
+    }
+    finishIkSettle(); // a pending release settle must commit its own undo entry first
     if (!m_renderer || m_undoStack.empty()) {
         return;
     }
@@ -526,6 +683,10 @@ void VulkanWindow::undo() {
 }
 
 void VulkanWindow::redo() {
+    if (m_ikDragging || m_posingBone || m_gizmoAxis >= 0) {
+        return; // mid-gesture: see undo()
+    }
+    finishIkSettle();
     if (!m_renderer || m_redoStack.empty()) {
         return;
     }

@@ -146,6 +146,26 @@ void VulkanRenderer::finalizePose() {
     }
 }
 
+bool VulkanRenderer::beginBoneIkDrag() { return m_scene && m_scene->beginBoneIkDrag(); }
+
+bool VulkanRenderer::dragBoneIkTo(const glm::vec3& targetWorld) {
+    return m_scene && m_scene->dragBoneIkTo(targetWorld);
+}
+
+bool VulkanRenderer::settleBoneIkTick() {
+    return m_scene && m_scene->settleBoneIkTick();
+}
+
+void VulkanRenderer::endBoneIkDrag() {
+    if (m_scene) {
+        m_scene->endBoneIkDrag();
+    }
+}
+
+bool VulkanRenderer::selectedBoneWorldPosition(glm::vec3& out) const {
+    return m_scene && m_scene->selectedBoneWorldPosition(out);
+}
+
 bool VulkanRenderer::groundFigure() {
     return m_scene ? m_scene->groundFigure() : false;
 }
@@ -349,7 +369,7 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageInde
     // Key-light shadow pass first (its own depth-only render pass on the shadow map), so the
     // scene pass below can sample the fresh map. Also fits this frame's light matrix, which
     // Scene::record() writes into the camera UBO.
-    m_scene->recordShadowPass(cmd);
+    m_scene->recordShadowPass(cmd, m_currentFrame);
 
     const VkExtent2D extent = m_swapchain->extent();
 

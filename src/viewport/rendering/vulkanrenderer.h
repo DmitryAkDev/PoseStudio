@@ -103,6 +103,19 @@ public:
     void nudgeSelectedBone(const glm::vec3& deltaEulerDegrees);
     /// Settles the figure after an interactive pose edit (applies pose correctives). Call on drag end.
     void finalizePose();
+    // --- Full-body IK (forwarded to the Scene; see scene/ik/) ---
+    /// Begins an FBIK drag of the selected joint (contacts anchored/pinned, balance captured).
+    bool beginBoneIkDrag();
+    /// One FBIK drag update: solve the body so the selected joint reaches toward @p targetWorld.
+    /// Returns true if the pose actually changed (false: deadband / settle-freeze).
+    bool dragBoneIkTo(const glm::vec3& targetWorld);
+    /// One animated release-settle step (see Model::settleIkTick): call at the drag tick rate
+    /// after release until it returns false, then endBoneIkDrag().
+    bool settleBoneIkTick();
+    /// Ends the FBIK drag (pose stays; finalizePose() settles correctives, as with any drag).
+    void endBoneIkDrag();
+    /// World position of the selected joint (the IK drag plane anchor); false if none selected.
+    bool selectedBoneWorldPosition(glm::vec3& out) const;
     /// Drops the posable figure onto the ground plane (posed lowest point → y = 0). Returns true
     /// if it actually moved (the caller then requests a frame).
     bool groundFigure();

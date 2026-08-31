@@ -7,7 +7,9 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cctype>
 #include <cmath>
+#include <string>
 #include <utility>
 
 namespace pose {
@@ -29,6 +31,23 @@ void splitChannel(const std::string& url, std::string& node, std::string& prop) 
     }
     node = frag.substr(0, q);
     prop = frag.substr(q + 1);
+}
+
+// Minimal percent-decoding for output-channel id comparison ("CCrow%20Base%20Female%20Body%201"
+// must compare equal to the modifier id "CCrow Base Female Body 1").
+std::string urlDecodeLocal(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (std::size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '%' && i + 2 < s.size() && std::isxdigit(static_cast<unsigned char>(s[i + 1])) &&
+            std::isxdigit(static_cast<unsigned char>(s[i + 2]))) {
+            out.push_back(static_cast<char>(std::stoi(s.substr(i + 1, 2), nullptr, 16)));
+            i += 2;
+        } else {
+            out.push_back(s[i]);
+        }
+    }
+    return out;
 }
 
 // "rotation/x|y|z" -> 0/1/2, else -1.
@@ -183,9 +202,27 @@ bool parseCorrective(const nlohmann::json& modifier, const CorrectiveContext& ct
     out = PoseCorrective{};
     out.id = modifier.value("id", modifier.value("name", std::string()));
     out.gateScale = 1.0f;
+    if (const auto ch = modifier.find("channel"); ch != modifier.end() && ch->is_object()) {
+        out.clamped = ch->value("clamped", false);
+        out.clampMin = ch->value("min", 0.0f);
+        out.clampMax = ch->value("max", 1.0f);
+    }
 
     bool anyRotation = false;
     for (const auto& formula : *formulas) {
+        // Only formulas whose OUTPUT is this modifier's own `?value` channel belong to its
+        // weight. Base corrective packs carry exactly that one driver formula, but vendor
+        // character JCM files bundle DOZENS of others in the same modifier — joint-center /
+        // orientation / end-point adjustments driven BY the morph, and cross-drivers of sibling
+        // morphs. Summing those into the weight produced garbage (and their gate stages zeroed
+        // it); they are simply skipped here (per-morph bone adjustments are transient, tiny, and
+        // not modeled — the identity-morph path handles the character's static ones).
+        std::string outNode;
+        std::string outProp;
+        splitChannel(formula.value("output", std::string()), outNode, outProp);
+        if (outProp != "value" || urlDecodeLocal(outNode) != out.id) {
+            continue;
+        }
         const std::string stage = formula.value("stage", std::string("sum"));
         CorrectiveFormula cf;
         bool hasRotation = false;

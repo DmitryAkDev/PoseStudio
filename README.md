@@ -49,8 +49,9 @@ We are calling on anyone who can help with the project. Your support ensures tha
 PoseStudio is early in development, but the foundations are real and usable now:
 
 * A **Vulkan-powered 3D viewport** with photoreal PBR shading, image-based lighting from HDR environments (`.hdr`/`.exr`), MSAA, HDR post-processing (bloom, ACES tonemapping, screen-space subsurface scattering), soft PCSS ground shadows, and twelve selectable shade modes (PBR, matcaps, toon, clay, and more).
-* **Rigged, morphable character figures** imported from their native scene format — per-zone physically-based materials, baked character-shape morphs, GPU skinning, joint-driven pose correctives, Catmull-Clark subdivision, and follower addons (lashes, brows, replacement anatomy).
+* **Rigged, morphable character figures** imported from their native scene format — per-zone physically-based materials, baked character-shape morphs, GPU dual-quaternion skinning, joint-driven pose correctives, Catmull-Clark subdivision, and follower addons (lashes, brows, replacement anatomy).
 * **Interactive posing** — click a joint, rotate with the gizmo, anatomical joint limits, pose save/load, and unified undo/redo.
+* **Full-body IK** — Ctrl+drag any joint and the whole body follows: feet stay planted and weight-bearing, the figure auto-balances (stepping — even walking — when you move it beyond its stance), pulls beyond reach lift it to dangle under gravity, and releases settle as a short animation with the pose holding where you let go.
 * **Wavefront OBJ import** with materials and textures.
 * An **Asset Manager** for browsing library folders, plus virtual Collections and Favorites with drag-to-reorder, thumbnails, and search.
 * A live **Environment panel** — HDRI selection with thumbnails, exposure/key-light/shadow/backdrop dials, and a ground-projected dome mode.

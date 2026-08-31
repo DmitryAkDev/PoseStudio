@@ -10,7 +10,7 @@ cmake_minimum_required(VERSION 3.21)
 # C is enabled alongside C++ because a couple of third-party dependencies ship C implementation
 # files we compile directly into the target (e.g. miniz's inflate sources for the figure importer).
 # Without C in the language list, CMake classifies .c files as non-buildable and silently skips them.
-project(PoseStudio VERSION 0.3.6 LANGUAGES C CXX)
+project(PoseStudio VERSION 0.3.7 LANGUAGES C CXX)
 
 # ==============================================================================
 # [ COMPILER CONFIGURATION ]
@@ -257,8 +257,23 @@ add_executable(
     src/viewport/scene/grid.h
     src/viewport/scene/mesh.cpp
     src/viewport/scene/mesh.h
+    src/viewport/scene/meshik.cpp   # Model's FBIK integration (drag/settle/extraction)
     src/viewport/scene/scene.cpp
     src/viewport/scene/scene.h
+
+    # Full-body IK (Qt-free: std + GLM). See the FBIK section in CLAUDE.md.
+    src/viewport/scene/ik/ikmath.cpp          # shortest-arc / signed-angle / Euler decomposition
+    src/viewport/scene/ik/ikmath.h
+    src/viewport/scene/ik/skeletongraph.cpp   # undirected joint graph, dynamically re-rootable
+    src/viewport/scene/ik/skeletongraph.h
+    src/viewport/scene/ik/ikconstraints.cpp   # hinge/cone constraints derived from joint limits
+    src/viewport/scene/ik/ikconstraints.h
+    src/viewport/scene/ik/fabriksolver.cpp    # multi-chain FABRIK (branches, pins, constraints)
+    src/viewport/scene/ik/fabriksolver.h
+    src/viewport/scene/ik/balancecontroller.cpp # CoM + support polygon + pelvis correction
+    src/viewport/scene/ik/balancecontroller.h
+    src/viewport/scene/ik/ikrig.cpp           # per-figure orchestration (contacts -> solve -> balance)
+    src/viewport/scene/ik/ikrig.h
 
     # --- Preferences ---
     src/preferences/preferencesdialog.cpp
@@ -324,6 +339,7 @@ target_include_directories(PoseStudio PRIVATE
     src/viewport
     src/viewport/rendering
     src/viewport/scene
+    src/viewport/scene/ik
     src/viewport/import
     src/viewport/import/obj
     src/viewport/import/figure
