@@ -5,6 +5,7 @@
 #include <QMainWindow>
 
 class AssetManagerWidget;
+class QAction;
 
 namespace pose {
 class ViewportWidget;
@@ -53,6 +54,7 @@ private:
     QMainWindow *mainWindow;
     AssetManagerWidget *assetManagerWidget = nullptr;
     pose::ViewportWidget *viewportWidget = nullptr;
+    QAction *m_showSkeletonAction = nullptr; // View → Show Skeleton; wired in setViewportWidget
 };
 
 #endif // MENUMANAGER_H

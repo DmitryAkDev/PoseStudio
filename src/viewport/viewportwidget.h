@@ -66,6 +66,13 @@ public:
     /// the current pose's lowest point rests at y = 0. No-op if the viewport degraded.
     void groundFigure();
 
+    /// Toggles the skeleton overlay (the joint→parent bone lines drawn over the figure). Off by
+    /// default — the rotate gizmo is the posing affordance — but joints stay clickable either way.
+    /// Driven by the overlay's Skeleton button and the View menu (kept in sync via the
+    /// skeletonVisibilityChanged signal). No-op if the viewport degraded.
+    void setShowSkeleton(bool on);
+    bool showSkeleton() const;
+
     /// Loads @p hdrPath as the lighting environment (re-bakes the IBL). No-op if the viewport degraded.
     void setEnvironment(const QString& hdrPath);
     /// Applies the live lighting/exposure dials (Environment panel). No-op if the viewport degraded.
@@ -89,6 +96,10 @@ signals:
     /// Re-emitted from the viewport when undo/redo restores a lighting state, so the Environment
     /// panel can sync its widgets. The settings are already applied renderer-side.
     void lightingRestored(const LightingSettings& settings);
+    /// Emitted whenever the skeleton overlay's visibility changes (from the overlay's Skeleton
+    /// button or the View menu), so the two controls stay in sync. The renderer state is already
+    /// updated by the time this fires.
+    void skeletonVisibilityChanged(bool visible);
 
 protected:
     // The shader dropdown floats as a *top-level* window over the native viewport (a child widget would
@@ -110,6 +121,7 @@ private:
     QPushButton*                     m_shaderButton = nullptr;   // opens the shader-mode QMenu
     QPushButton*                     m_homeButton = nullptr;     // resets the camera to default framing
     QPushButton*                     m_groundButton = nullptr;   // drops the figure onto the floor plane
+    QPushButton*                     m_skeletonButton = nullptr; // toggles the skeleton overlay (View)
     QWidget*                         m_filteredWindow = nullptr; // top-level we filter for move/resize
 };
 
