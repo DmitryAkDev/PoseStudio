@@ -79,6 +79,12 @@ public:
     /// Remembered and applied once the renderer exists if it isn't built yet.
     void setShadeMode(int mode);
 
+    /// Toggles the skeleton overlay (the joint→parent bone lines drawn over the figure). Off by
+    /// default — the rotate gizmo is the posing affordance — but joints stay clickable either way.
+    /// Remembered and applied once the renderer exists if it isn't built yet.
+    void setShowSkeleton(bool on);
+    bool showSkeleton() const;
+
     /// Restores the camera's default framing (the viewport's Home button). No-op before the
     /// renderer exists — the camera is created with that framing, so there'd be nothing to undo.
     void resetView();
@@ -171,6 +177,7 @@ private:
     std::vector<QString> m_pendingFigures; // figure imports requested before the renderer existed
     QString              m_pendingPose;    // pose file to apply once the queued figure is loaded
     int                  m_shadeMode = 1;  // viewport shade mode (1 = PBR/IBL); applied to the renderer once it exists
+    bool                 m_showSkeleton = false; // skeleton overlay on/off; applied to the renderer once it exists
     QString              m_environmentPath;         // chosen HDRI (empty = the default at init); applied once the renderer exists
     quint64              m_environmentRequestId = 0; // ++ per HDRI request; a slower earlier bake with a stale id is discarded
     LightingSettings     m_lighting;                // live lighting dials; applied to the renderer once it exists

@@ -149,8 +149,20 @@ void MenuManager::setupMenus() {
     });
 
     // =========================================================================
-    // HELP MENU — documentation, support links, and the About dialog
+    // VIEW MENU — viewport display options (skeleton overlay)
     // =========================================================================
+    QMenu *viewMenu = mainWindow->menuBar()->addMenu("View");
+
+    // "Show Skeleton": toggle the skeleton overlay (the joint→parent bone lines drawn over the
+    // figure). Off by default — the rotate gizmo is the posing affordance — but joints stay
+    // clickable either way. Kept in sync with the overlay's Skeleton button via the
+    // skeletonVisibilityChanged signal. The viewport is registered after setupMenus() (see
+    // setViewportWidget), so the action's connections are attached there.
+    m_showSkeletonAction = viewMenu->addAction("Show Skeleton");
+    m_showSkeletonAction->setCheckable(true);
+
+    // =========================================================================
+    // HELP MENU — documentation, support links, and the About dialog
     QMenu *helpMenu = mainWindow->menuBar()->addMenu("Help");
 
     helpMenu->addAction("Release Notes")->setEnabled(false);
@@ -182,6 +194,24 @@ void MenuManager::setAssetManagerWidget(AssetManagerWidget *widget) {
 
 void MenuManager::setViewportWidget(pose::ViewportWidget *viewport) {
     viewportWidget = viewport;
+    if (!viewport || !m_showSkeletonAction) {
+        return;
+    }
+    // View → Show Skeleton drives the same overlay state as the viewport's Skeleton button; the
+    // skeletonVisibilityChanged signal keeps the two in lockstep (blockSignals keeps the round-trip
+    // to one hop).
+    m_showSkeletonAction->setChecked(viewport->showSkeleton());
+    QObject::connect(m_showSkeletonAction, &QAction::toggled, this, [this](bool on) {
+        if (viewportWidget) viewportWidget->setShowSkeleton(on);
+    });
+    QObject::connect(viewport, &pose::ViewportWidget::skeletonVisibilityChanged, this, [this](bool visible) {
+        if (!m_showSkeletonAction || m_showSkeletonAction->isChecked() == visible) {
+            return;
+        }
+        m_showSkeletonAction->blockSignals(true);
+        m_showSkeletonAction->setChecked(visible);
+        m_showSkeletonAction->blockSignals(false);
+    });
 }
 
 void MenuManager::importObjFile() {

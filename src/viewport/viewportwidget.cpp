@@ -109,6 +109,19 @@ void ViewportWidget::setShadeMode(int mode) {
     }
 }
 
+void ViewportWidget::setShowSkeleton(bool on) {
+    if (!m_window || m_window->showSkeleton() == on) {
+        return;
+    }
+    m_window->setShowSkeleton(on);
+    emit skeletonVisibilityChanged(on);
+}
+
+bool ViewportWidget::showSkeleton() const {
+    return m_window && m_window->showSkeleton();
+}
+
+
 void ViewportWidget::resetView() {
     if (m_window) {
         m_window->resetView();
@@ -279,6 +292,47 @@ void ViewportWidget::createShaderOverlay() {
     m_groundButton->setFixedSize(fieldHeight, fieldHeight);
     connect(m_groundButton, &QPushButton::clicked, this, &ViewportWidget::groundFigure);
     lay->addWidget(m_groundButton);
+
+    // "Skeleton": toggle the skeleton overlay (the joint→parent bone lines drawn over the figure).
+    // A persistent on/off view control (unlike the one-shot Home/Ground), so it's checkable and
+    // shows its state. Off by default — the rotate gizmo is the posing affordance — but joints stay
+    // clickable either way. Also reachable from the View menu; the two stay in sync via the
+    // skeletonVisibilityChanged signal.
+    m_skeletonButton = new QPushButton(m_overlay);
+    m_skeletonButton->setObjectName(QStringLiteral("ViewportSkeletonButton"));
+    m_skeletonButton->setToolTip(tr("Toggle the skeleton overlay"));
+    m_skeletonButton->setIcon(QIcon(QStringLiteral(":/resources/icons/skeleton.png")));
+    m_skeletonButton->setIconSize(QSize(16, 16));
+    m_skeletonButton->setCheckable(true);
+    m_skeletonButton->setStyleSheet(QStringLiteral(
+        "#ViewportSkeletonButton {"
+        "  background-color: #252627;"
+        "  border: 1px solid #555555;"
+        "  border-radius: 4px;"
+        "}"
+        "#ViewportSkeletonButton:hover { background-color: #3a3d40; }"
+        "#ViewportSkeletonButton:checked { background-color: #314D7A; }"""));
+    m_skeletonButton->setFixedSize(fieldHeight, fieldHeight);
+    connect(m_skeletonButton, &QPushButton::toggled, this, [this](bool on) {
+        // The View menu drives this button (and vice versa) via the signal; when we're the source
+        // of the change, block the re-entrant setChecked so the signal loop stays one round-trip.
+        if (on == (m_window && m_window->showSkeleton())) {
+            return;
+        }
+        setShowSkeleton(on);
+    });
+    lay->addWidget(m_skeletonButton);
+    // Keep the button's checked state in sync when the View menu (or anything else) toggles the
+    // overlay: the signal is the single source of truth, and blockSignals keeps the round-trip to
+    // one hop (no re-entrant toggled → setShowSkeleton → signal loop).
+    connect(this, &ViewportWidget::skeletonVisibilityChanged, this, [this](bool visible) {
+        if (m_skeletonButton->isChecked() == visible) {
+            return;
+        }
+        m_skeletonButton->blockSignals(true);
+        m_skeletonButton->setChecked(visible);
+        m_skeletonButton->blockSignals(false);
+    });
 
     m_overlay->adjustSize();
 }

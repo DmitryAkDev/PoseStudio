@@ -338,6 +338,7 @@ void VulkanWindow::initializeVulkan() {
         m_renderer = std::make_unique<VulkanRenderer>(*m_context, pixelExtent(),
                                                       m_shaderDir.toStdString());
         m_renderer->setShadeMode(m_shadeMode); // apply a mode chosen before first expose
+        m_renderer->setShowSkeleton(m_showSkeleton); // apply a skeleton toggle chosen before first expose
         m_renderer->setLightingSettings(m_lighting); // apply any dials set before first expose
 
         // Image-based lighting: bake a real HDR panorama over the renderer's built-in procedural studio
@@ -548,6 +549,17 @@ void VulkanWindow::setShadeMode(int mode) {
         requestUpdate();
     }
 }
+
+void VulkanWindow::setShowSkeleton(bool on) {
+    if (m_showSkeleton == on) return;
+    m_showSkeleton = on; // remembered so a toggle before first expose still applies
+    if (m_renderer) {
+        m_renderer->setShowSkeleton(on);
+        requestUpdate();
+    }
+}
+
+bool VulkanWindow::showSkeleton() const { return m_showSkeleton; }
 
 void VulkanWindow::resetView() {
     if (m_renderer) {
