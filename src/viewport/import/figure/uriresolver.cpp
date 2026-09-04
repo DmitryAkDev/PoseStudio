@@ -101,8 +101,9 @@ ResolvedUri UriResolver::resolve(const std::string& uri, const std::string& refe
     std::error_code ec;
     if (!relPath.empty() && (relPath.front() == '/' || relPath.front() == '\\')) {
         // Root-relative: try each content root. The leading slash makes it absolute within a root,
-        // so we strip it before joining. First existing file wins (NTFS resolves case for us; a
-        // case-folding pass would be needed for a case-sensitive filesystem — see header note).
+        // so we strip it before joining. First existing file wins: the exact-case path first (free on
+        // NTFS), then resolveCaseTolerant() re-derives it case-insensitively for the case-sensitive
+        // filesystems (Linux/macOS) where the URIs' mixed case would otherwise miss.
         const std::string tail = relPath.substr(1);
         for (const std::string& root : m_roots) {
             fs::path candidate = fs::path(root) / fs::path(tail);
