@@ -198,6 +198,22 @@ QSqlDatabase initializeDatabase(DbInitMode mode) {
             "FavoriteSortOrder INTEGER NOT NULL DEFAULT 0)"));
     }
 
+    // Repair for a 0.3.6 schema-file regression: the header comment in initialize.sql contained a
+    // semicolon, which the naive statement splitter above treated as a boundary — corrupting
+    // CREATE TABLE Preferences on every fresh install since. Databases created by those builds lack
+    // the table entirely; recreate it here (a no-op once present).
+    {
+        QSqlQuery q(db);
+        q.exec(QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS Preferences("
+            "PreferenceID INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "PreferenceName TEXT UNIQUE NOT NULL, "
+            "PreferenceValue TEXT NOT NULL DEFAULT '', "
+            "PreferenceStamp DATETIME DEFAULT CURRENT_TIMESTAMP)"));
+        q.exec(QStringLiteral(
+            "CREATE INDEX IF NOT EXISTS idx_PreferenceName ON Preferences(PreferenceName)"));
+    }
+
     // User-defined manual drag orders (Favorites pane / within a Collection). Seed existing rows
     // with a stable initial order matching their insertion order (the autoincrement ID).
     ensureColumn(db, "Favorites", "FavoriteSortOrder", "INTEGER NOT NULL DEFAULT 0",
