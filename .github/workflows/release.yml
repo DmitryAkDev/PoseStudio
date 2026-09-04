@@ -1,0 +1,188 @@
+# ==============================================================================
+# PoseStudio Open Source Project
+# File: .github/workflows/release.yml
+# Description: Builds the Windows installer + portable zip and publishes them
+#              to a GitHub Release.
+#
+# How a release happens (see docs/RELEASING.md for the full guide):
+#   1. Bump the version in CMakeLists.txt and CHANGELOG.md, merge to main.
+#   2. Tag it:  git tag v0.3.9 && git push origin v0.3.9
+#   3. This workflow builds everything and publishes the release automatically.
+#
+# It can also be run manually (Actions tab -> "Build Release" -> Run workflow)
+# to test the pipeline: a manual run builds the same artifacts and uploads them
+# as workflow artifacts, but does NOT publish a release.
+# ==============================================================================
+
+name: Build Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  QT_VERSION: '6.11.1'
+  # The stock HDRI lighting environments (CC0, Poly Haven) are published once as
+  # a "stock-content-*" release asset rather than committed to the repo (~50 MB
+  # of binaries). To update the pack, upload a new stock-content-v2 release and
+  # bump this tag — see docs/RELEASING.md.
+  STOCK_CONTENT_TAG: 'stock-content-v1'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Determine version
+        id: version
+        shell: pwsh
+        run: |
+          if ('${{ github.ref_type }}' -eq 'tag') {
+            $version = '${{ github.ref_name }}'.TrimStart('v')
+          } else {
+            # Manual pipeline-test run: not a release, use a throwaway version.
+            $version = '0.0.0-dev'
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          Write-Host "Building version $version"
+
+      - name: Install Qt ${{ env.QT_VERSION }}
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: win64_msvc2022_64
+          # qtimageformats adds the webp/tiff image plugins so asset thumbnails
+          # and HDRI previews in every common format decode at runtime.
+          modules: qtimageformats
+          cache: true
+
+      - name: Install Vulkan SDK
+        shell: pwsh
+        run: |
+          # LunarG's "latest SDK" redirect. Two URL spellings have existed over
+          # time; try both so a rename upstream doesn't break releases.
+          $urls = @(
+            'https://sdk.lunarg.com/sdk/download/latest/windows/vulkan_sdk.exe',
+            'https://sdk.lunarg.com/sdk/download/latest/windows/vulkan-sdk.exe'
+          )
+          $installer = Join-Path $env:RUNNER_TEMP 'vulkan_sdk.exe'
+          $downloaded = $false
+          foreach ($url in $urls) {
+            curl.exe -fSL -o $installer $url
+            if ($LASTEXITCODE -eq 0) { $downloaded = $true; break }
+          }
+          if (-not $downloaded) { throw 'Could not download the Vulkan SDK installer.' }
+          # Documented silent-install invocation for the LunarG SDK installer.
+          # It installs to C:\VulkanSDK\<version>, which CMakeLists.txt finds on
+          # its own (it globs C:/VulkanSDK/* when VULKAN_SDK is not set).
+          Start-Process -Wait -FilePath $installer -ArgumentList `
+            '--accept-licenses', '--default-answer', '--confirm-command', 'install'
+
+      - name: Configure and build (Release)
+        shell: pwsh
+        run: |
+          cmake -B build "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR"
+          if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed.' }
+          cmake --build build --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
+
+      - name: Stage application folder
+        shell: pwsh
+        run: |
+          # Assemble the exact folder a user ends up with: the exe, the compiled
+          # shaders and Maquettes library (mirrored next to the exe by the CMake
+          # post-build steps), then the Qt runtime via windeployqt.
+          New-Item -ItemType Directory -Force dist\app | Out-Null
+          Copy-Item build\Release\PoseStudio.exe dist\app\
+          Copy-Item -Recurse build\Release\shaders dist\app\shaders
+          Copy-Item -Recurse build\Release\Maquettes dist\app\Maquettes
+          & "$env:QT_ROOT_DIR\bin\windeployqt.exe" `
+            --release --no-translations --compiler-runtime dist\app\PoseStudio.exe
+          if ($LASTEXITCODE -ne 0) { throw 'windeployqt failed.' }
+
+      - name: Download stock HDRI content pack
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force dist\stock | Out-Null
+          gh release download $env:STOCK_CONTENT_TAG `
+            --repo ${{ github.repository }} `
+            --pattern 'PoseStudio-Stock-HDRIs*.zip' --dir dist\stock
+          if ($LASTEXITCODE -ne 0) { throw "Could not download the $env:STOCK_CONTENT_TAG release asset." }
+          $zip = Get-ChildItem dist\stock\PoseStudio-Stock-HDRIs*.zip | Select-Object -First 1
+          Expand-Archive $zip.FullName -DestinationPath dist\hdri
+
+      - name: Build installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup -y --no-progress
+            $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          }
+          New-Item -ItemType Directory -Force dist\out | Out-Null
+          & $iscc `
+            "/DAppVersion=${{ steps.version.outputs.version }}" `
+            "/DAppDir=$PWD\dist\app" `
+            "/DHdriDir=$PWD\dist\hdri" `
+            "/DOutDir=$PWD\dist\out" `
+            packaging\PoseStudio.iss
+          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup compilation failed.' }
+
+      - name: Build portable zip
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist\portable\PoseStudio | Out-Null
+          Copy-Item -Recurse dist\app\* dist\portable\PoseStudio\
+          # Portable users copy this folder into Documents themselves —
+          # README.txt (from packaging/portable-readme.txt) explains how.
+          New-Item -ItemType Directory -Force "dist\portable\PoseStudio\stock-content" | Out-Null
+          Copy-Item -Recurse dist\hdri "dist\portable\PoseStudio\stock-content\hdri"
+          Copy-Item packaging\portable-readme.txt dist\portable\PoseStudio\README.txt
+          Compress-Archive -Path dist\portable\PoseStudio `
+            -DestinationPath "dist\out\PoseStudio-${{ steps.version.outputs.version }}-Windows-Portable.zip"
+
+      - name: Generate checksums
+        shell: pwsh
+        run: |
+          $lines = Get-ChildItem dist\out | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$hash  $($_.Name)"
+          }
+          # ASCII (not the PS5 UTF-16 default) so shasum/CertUtil can read it.
+          $lines | Out-File dist\out\SHA256SUMS.txt -Encoding ascii
+          Get-Content dist\out\SHA256SUMS.txt
+
+      - name: Prepare release notes
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        run: |
+          $body = Get-Content packaging\release-notes-template.md -Raw
+          $body = $body.Replace('{{VERSION}}', '${{ steps.version.outputs.version }}')
+          $body | Out-File dist\release-body.md -Encoding utf8
+
+      - name: Publish GitHub Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: PoseStudio ${{ steps.version.outputs.version }}
+          body_path: dist/release-body.md
+          files: dist/out/*
+          # Appends an auto-generated "What's Changed" commit/PR list below the
+          # install instructions from the template.
+          generate_release_notes: true
+
+      - name: Upload build artifacts (manual test runs)
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: PoseStudio-windows-${{ steps.version.outputs.version }}
+          path: dist/out/*
