@@ -81,7 +81,7 @@ static std::string resolveCaseTolerant(const fs::path& base, const std::string& 
     }
     return current.lexically_normal().string();
 }
- 
+
 UriResolver::UriResolver(std::vector<std::string> contentRoots) : m_roots(std::move(contentRoots)) {}
 
 ResolvedUri UriResolver::resolve(const std::string& uri, const std::string& referringFileDir) const {
