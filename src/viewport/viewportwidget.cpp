@@ -301,7 +301,7 @@ void ViewportWidget::createShaderOverlay() {
     m_skeletonButton = new QPushButton(m_overlay);
     m_skeletonButton->setObjectName(QStringLiteral("ViewportSkeletonButton"));
     m_skeletonButton->setToolTip(tr("Toggle the skeleton overlay"));
-    m_skeletonButton->setIcon(QIcon(QStringLiteral(":/resources/icons/tree.png")));
+    m_skeletonButton->setIcon(QIcon(QStringLiteral(":/resources/icons/skeleton.png")));
     m_skeletonButton->setIconSize(QSize(16, 16));
     m_skeletonButton->setCheckable(true);
     m_skeletonButton->setStyleSheet(QStringLiteral(
