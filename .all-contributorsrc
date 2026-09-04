@@ -57,6 +57,16 @@
       "contributions": [
         "code"
       ]
+    },
+    {
+      "login": "DmitryAkDev",
+      "name": "DmitryAkDev",
+      "avatar_url": "https://avatars.githubusercontent.com/u/25522773?v=4",
+      "profile": "https://github.com/DmitryAkDev",
+      "contributions": [
+        "code",
+        "platform"
+      ]
     }
   ],
   "contributorsPerLine": 7,
