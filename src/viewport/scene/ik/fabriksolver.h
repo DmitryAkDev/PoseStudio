@@ -50,48 +50,55 @@ struct IkEffector {
     float     leashRadius = -1.0f; ///< Pins only: max root distance from this pin (see solver).
 };
 
+/// Solver configuration knobs (see FabrikSolver::solve). Lives at NAMESPACE SCOPE, not nested
+/// in FabrikSolver: a nested class's default member initializers are a complete-class context
+/// of the ENCLOSING class, so the `settings = {}` default argument inside the class body would
+/// need them before FabrikSolver's closing brace — ill-formed (GCC bug 88165, clang issue
+/// 36032). The in-class `using Settings` alias keeps the nested name stable.
+struct FabrikSettings {
+    int   maxIterations = 24;
+    float tolerance = 5e-4f;                ///< Max effector error to converge (world units).
+    float straightBias = 0.03490658503f;    ///< 2 deg: one-sided-hinge collinearity escape.
+    /// Trust region: no joint may move farther than this from its entry position in ONE
+    /// solve. The solver is called once per mouse EVENT, and without this cap any internal
+    /// basin switch (a fold-escape kick engaging, restoration finding a new configuration)
+    /// lands as a visible SNAP in a single event; capped, the same correction plays out
+    /// smoothly across a few events (mouse events are dense, so catch-up is fast).
+    float maxStepDisplacement = 0.05f;
+    /// Scale on each pose-prior application, letting the caller raise maxIterations without
+    /// stiffening the prior: the prior is applied PER ITERATION, so its per-solve pull
+    /// compounds with the iteration count — raising iterations 6→10 unnormalized broke the
+    /// hover-healing behavior by silently strengthening every stiffness. The rig passes
+    /// (reference iterations / actual iterations).
+    float priorIterationNorm = 1.0f;
+    /// Yield factor for the ROOT's prior against DOWNWARD displacement (1 = no yield). The
+    /// rig sets < 1 when the drag intent is downward (target below the grabbed joint): a
+    /// body pushed down at the chest or pulled down by a hand should CROUCH — the root gives
+    /// vertically, the legs fold onto the pinned feet — instead of the stiff root prior
+    /// holding the pelvis at standing height. Lateral/upward root stiffness is unaffected
+    /// (that stiffness is what prevents the swayback hip-slide).
+    float rootDownYield = 1.0f;
+    /// Downward bias (world units per iteration) applied to non-effector active nodes — the
+    /// SUSPENSION gravity. When the figure hangs from the drag target (see IkRig's lift-off
+    /// mode) this is what makes the free limbs and trunk settle vertically below the grab
+    /// point, within their joint limits: dangling, without a physics engine.
+    float gravityBias = 0.0f;
+    /// Output DEADBAND (0 = off): an active node whose solved position ends within this of
+    /// its entry position is snapped back to it exactly. The solve -> extract -> FK loop
+    /// carries a sub-millimeter limit cycle (near-equal configurations alternating tick to
+    /// tick) that under-relaxation damps but never kills — idle joints visibly SHIMMER
+    /// while the user pulls. Sub-deadband proposals become bit-identical stillness; real
+    /// corrections (multi-millimeter) pass untouched.
+    float minStepDisplacement = 0.0f;
+};
+
 /**
  * @class FabrikSolver
  * @brief Stateless multi-chain FABRIK: positions in, constrained positions out.
  */
 class FabrikSolver {
 public:
-    struct Settings {
-        int   maxIterations = 24;
-        float tolerance = 5e-4f;                ///< Max effector error to converge (world units).
-        float straightBias = 0.03490658503f;    ///< 2 deg: one-sided-hinge collinearity escape.
-        /// Trust region: no joint may move farther than this from its entry position in ONE
-        /// solve. The solver is called once per mouse EVENT, and without this cap any internal
-        /// basin switch (a fold-escape kick engaging, restoration finding a new configuration)
-        /// lands as a visible SNAP in a single event; capped, the same correction plays out
-        /// smoothly across a few events (mouse events are dense, so catch-up is fast).
-        float maxStepDisplacement = 0.05f;
-        /// Scale on each pose-prior application, letting the caller raise maxIterations without
-        /// stiffening the prior: the prior is applied PER ITERATION, so its per-solve pull
-        /// compounds with the iteration count — raising iterations 6→10 unnormalized broke the
-        /// hover-healing behavior by silently strengthening every stiffness. The rig passes
-        /// (reference iterations / actual iterations).
-        float priorIterationNorm = 1.0f;
-        /// Yield factor for the ROOT's prior against DOWNWARD displacement (1 = no yield). The
-        /// rig sets < 1 when the drag intent is downward (target below the grabbed joint): a
-        /// body pushed down at the chest or pulled down by a hand should CROUCH — the root gives
-        /// vertically, the legs fold onto the pinned feet — instead of the stiff root prior
-        /// holding the pelvis at standing height. Lateral/upward root stiffness is unaffected
-        /// (that stiffness is what prevents the swayback hip-slide).
-        float rootDownYield = 1.0f;
-        /// Downward bias (world units per iteration) applied to non-effector active nodes — the
-        /// SUSPENSION gravity. When the figure hangs from the drag target (see IkRig's lift-off
-        /// mode) this is what makes the free limbs and trunk settle vertically below the grab
-        /// point, within their joint limits: dangling, without a physics engine.
-        float gravityBias = 0.0f;
-        /// Output DEADBAND (0 = off): an active node whose solved position ends within this of
-        /// its entry position is snapped back to it exactly. The solve -> extract -> FK loop
-        /// carries a sub-millimeter limit cycle (near-equal configurations alternating tick to
-        /// tick) that under-relaxation damps but never kills — idle joints visibly SHIMMER
-        /// while the user pulls. Sub-deadband proposals become bit-identical stillness; real
-        /// corrections (multi-millimeter) pass untouched.
-        float minStepDisplacement = 0.0f;
-    };
+    using Settings = FabrikSettings;
 
     /// Solves @p positions (model space, per graph node) in place toward @p effectors, moving
     /// only nodes with @p active set. The graph MUST be rooted at the ANATOMICAL root (the
