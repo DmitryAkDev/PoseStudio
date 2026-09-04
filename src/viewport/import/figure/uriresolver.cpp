@@ -41,6 +41,47 @@ std::string UriResolver::urlDecode(const std::string& s) {
     return out;
 }
 
+// Resolves `base / tail` tolerating case differences in any path component. Linux/macOS filesystems
+// are case-sensitive, but the figure URIs mix cases (e.g. "one One" vs the on-disk "ONE One") that NTFS
+// would absorb for free — so when the exact-case path is missing we re-derive it component by
+// component, matching each name case-insensitively. Returns the actual on-disk path, or an empty
+// string if it can't be found.
+static std::string resolveCaseTolerant(const fs::path& base, const std::string& tail) {
+    std::error_code ec;
+    fs::path current = base;
+    for (const fs::path component : fs::path(tail)) {
+        const fs::path exact = current / component;
+        if (fs::exists(exact, ec)) {
+            current = exact;
+            continue;
+        }
+        // Exact case missing: search this component case-insensitively within `current`.
+        std::string lower = component.string();
+        std::transform(lower.begin(), lower.end(), lower.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+        fs::path found;
+        std::error_code dirEc;
+        for (const auto& entry : fs::directory_iterator(current, dirEc)) {
+            std::string name = entry.path().filename().string();
+            std::transform(name.begin(), name.end(), name.begin(),
+                           [](unsigned char c) { return std::tolower(c); });
+            if (name == lower) {
+                found = entry.path();
+                break;
+            }
+        }
+        if (found.empty()) {
+            return std::string(); // a component didn't match at all
+        }
+        current = found;
+    }
+    std::error_code existsEc;
+    if (!fs::exists(current, existsEc)) {
+        return std::string();
+    }
+    return current.lexically_normal().string();
+}
+ 
 UriResolver::UriResolver(std::vector<std::string> contentRoots) : m_roots(std::move(contentRoots)) {}
 
 ResolvedUri UriResolver::resolve(const std::string& uri, const std::string& referringFileDir) const {
@@ -69,6 +110,13 @@ ResolvedUri UriResolver::resolve(const std::string& uri, const std::string& refe
                 result.path = candidate.lexically_normal().string();
                 return result;
             }
+            // Exact case missing: retry tolerating case differences (Linux/macOS are case-sensitive,
+            // the URIs' "one One" vs the on-disk "ONE One").
+            const std::string tolerant = resolveCaseTolerant(fs::path(root), tail);
+            if (!tolerant.empty()) {
+                result.path = tolerant;
+                return result;
+            }
         }
         return result; // unresolved
     }
@@ -78,6 +126,11 @@ ResolvedUri UriResolver::resolve(const std::string& uri, const std::string& refe
         fs::path candidate = fs::path(referringFileDir) / fs::path(relPath);
         if (fs::exists(candidate, ec)) {
             result.path = candidate.lexically_normal().string();
+        } else {
+            const std::string tolerant = resolveCaseTolerant(fs::path(referringFileDir), relPath);
+            if (!tolerant.empty()) {
+                result.path = tolerant;
+            }
         }
     }
     return result;
