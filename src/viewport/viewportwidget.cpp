@@ -185,6 +185,7 @@ void ViewportWidget::createShaderOverlay() {
     m_overlay->setObjectName(QStringLiteral("ViewportShaderOverlay"));
     m_overlay->setAttribute(Qt::WA_TranslucentBackground, true);
     m_overlay->setAttribute(Qt::WA_ShowWithoutActivating, true);
+
     auto* lay = new QHBoxLayout(m_overlay);
     lay->setContentsMargins(0, 0, 0, 0);
     lay->setSpacing(6);
@@ -333,10 +334,13 @@ bool ViewportWidget::eventFilter(QObject* watched, QEvent* event) {
         const QEvent::Type t = event->type();
         if (t == QEvent::Move || t == QEvent::Resize || t == QEvent::WindowStateChange) {
             syncOverlayPosition();
-        } else if (t == QEvent::ActivationChange) {
-            // The main window came back to the front (focus, un-minimize, user click): re-raise the
-            // overlay strip so it can't sit BEHIND the main window. On X11 a top-level strip's stacking
-            // relative to its owner is the WM's call, so we re-assert it whenever the owner is raised.
+        } else if (t == QEvent::WindowActivate) {
+            // The main window was activated (focus, un-minimize, user click): re-raise the overlay
+            // strip so it can't sit BEHIND the main window. On X11 a top-level strip's stacking
+            // relative to its owner is the WM's call, so we re-assert it whenever the owner is
+            // raised. WindowActivate, not ActivationChange (which is also sent on deactivation):
+            // the strip must not be raised over a modal dialog or the splash while they hold the
+            // focus.
             if (m_overlay && m_overlay->isVisible()) {
                 m_overlay->raise();
             }

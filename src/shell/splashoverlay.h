@@ -128,11 +128,9 @@ protected:
     }
 
     void showEvent(QShowEvent *event) override {
-        // Parent geometry may have shifted between construction and show(); re-align and
-        // make sure we're stacked above the (native) viewport. Re-raise on EVERY show: the splash
-        // starts as the active window, so clicking the main window's taskbar entry re-activates
-        // (re-shows) it on top — without this, the splash would sit behind the main window
-        // until clicked.
+        // Parent geometry may have shifted between construction and show(); re-align, and
+        // make sure we're stacked above the (native) viewport. (The steady-state stacking on
+        // Linux comes from the tool window type itself; this re-raise covers the initial show.)
         syncGeometryToParent();
         raise();
         QWidget::showEvent(event);
@@ -147,8 +145,7 @@ protected:
             return true;
         }
         // As a top-level window we don't move with the parent automatically, so follow both
-        // its resizes and moves to stay aligned over the window. (An activation of the parent
-        // re-raises us via showEvent — see there.)
+        // its resizes and moves to stay aligned over the window.
         if (watched == parent() && (type == QEvent::Resize || type == QEvent::Move)) {
             syncGeometryToParent();
         }
