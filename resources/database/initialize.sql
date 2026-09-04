@@ -2,8 +2,8 @@
 -- see initializeDatabase() in src/core/database.cpp, which also applies additive migrations for
 -- pre-existing databases (add new columns/tables THERE as well, not only here).
 --
--- Statements are split on ';' by a naive splitter, so no semicolons inside string literals or
--- trigger bodies.
+-- Statements are split on a semicolon by a naive splitter, so keep semicolons out of string
+-- literals and trigger bodies.
 
 CREATE TABLE Preferences(PreferenceID INTEGER PRIMARY KEY AUTOINCREMENT, PreferenceName TEXT UNIQUE NOT NULL, PreferenceValue TEXT NOT NULL DEFAULT '',PreferenceStamp DATETIME DEFAULT CURRENT_TIMESTAMP);
 CREATE INDEX idx_PreferenceName ON Preferences(PreferenceName);
