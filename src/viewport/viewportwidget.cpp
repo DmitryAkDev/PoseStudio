@@ -173,11 +173,18 @@ void ViewportWidget::createShaderOverlay() {
     // A *top-level* frameless window owned by this widget — a child widget would be composited behind
     // the native viewport (see the SplashOverlay note). WA_ShowWithoutActivating so revealing it
     // doesn't steal focus from the app; the combo still takes clicks normally.
-    m_overlay = new QWidget(this, Qt::Window | Qt::FramelessWindowHint);
+    //
+    // Qt::Tool, not Qt::Window: this is an auxiliary control strip belonging to the main window, and
+    // the tool type is what tells the OS/WM to keep it OUT of the window list and stacked with its
+    // owner. A plain Qt::Window is a full application window: on X11 it shows up as a SECOND entry in
+    // the taskbar/window switcher, and nothing guarantees it stays above the main window — the WM
+    // stacks it wherever it pleases, so the strip sat BEHIND the main window until the user clicked
+    // it to activate it. (On Windows the owned-window z-order happens to hold for Qt::Window too, which
+    // is why this only showed up on Linux.)
+    m_overlay = new QWidget(this, Qt::Tool | Qt::FramelessWindowHint);
     m_overlay->setObjectName(QStringLiteral("ViewportShaderOverlay"));
     m_overlay->setAttribute(Qt::WA_TranslucentBackground, true);
     m_overlay->setAttribute(Qt::WA_ShowWithoutActivating, true);
-
     auto* lay = new QHBoxLayout(m_overlay);
     lay->setContentsMargins(0, 0, 0, 0);
     lay->setSpacing(6);
@@ -326,6 +333,13 @@ bool ViewportWidget::eventFilter(QObject* watched, QEvent* event) {
         const QEvent::Type t = event->type();
         if (t == QEvent::Move || t == QEvent::Resize || t == QEvent::WindowStateChange) {
             syncOverlayPosition();
+        } else if (t == QEvent::ActivationChange) {
+            // The main window came back to the front (focus, un-minimize, user click): re-raise the
+            // overlay strip so it can't sit BEHIND the main window. On X11 a top-level strip's stacking
+            // relative to its owner is the WM's call, so we re-assert it whenever the owner is raised.
+            if (m_overlay && m_overlay->isVisible()) {
+                m_overlay->raise();
+            }
         }
     }
     return QWidget::eventFilter(watched, event);

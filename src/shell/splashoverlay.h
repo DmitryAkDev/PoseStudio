@@ -31,8 +31,7 @@
  * 3D viewport is hosted in a native child window (QWidget::createWindowContainer), and native
  * windows are composited on top of ordinary overlay widgets — a child-widget overlay would be
  * hidden behind the viewport. A top-level window *owned by the parent* (the parent pointer plus
- * the Qt::Window type) is composited above the viewport surface instead.
- *
+ * the Qt::Tool type) is composited above the viewport surface instead.
  * Crucially it is NOT a global always-on-top window (no Qt::WindowStaysOnTopHint): because it's
  * an *owned* window, the OS keeps it above PoseStudio's own window/viewport, but it still yields
  * to other applications when they take focus. An always-on-top splash would float over and block
@@ -42,10 +41,14 @@ class SplashOverlay : public QWidget {
 public:
     /// @param parent The window this overlay should cover (usually the QMainWindow).
     SplashOverlay(QWidget *parent)
-        : QWidget(parent, Qt::Window | Qt::FramelessWindowHint) {
-        // Qt::Window (the window *type*, not just the hints) is what actually promotes this
+        : QWidget(parent, Qt::Tool | Qt::FramelessWindowHint) {
+        // Qt::Tool (the window *type*, not just the hints) is what actually promotes this
         // parented widget into a top-level window — without it the hints are ignored and it
-        // stays a child widget hidden behind the native viewport. Note: deliberately NO
+        // stays a child widget hidden behind the native viewport. Tool, not Qt::Window: the splash
+        // belongs to the main window, and a full application window type would show up as a
+        // SECOND taskbar entry on X11/Wayland, where the WM also stacks it wherever it pleases
+        // (the splash could end up BEHIND the main window and linger until clicked). A tool window
+        // is kept out of the window list and associated with its parent. Note: deliberately NO
         // Qt::WindowStaysOnTopHint — as an owned window it already sits above its parent's
         // viewport, and a global topmost hint would also block every *other* application.
         setAttribute(Qt::WA_StyledBackground, true);
@@ -126,7 +129,10 @@ protected:
 
     void showEvent(QShowEvent *event) override {
         // Parent geometry may have shifted between construction and show(); re-align and
-        // make sure we're stacked above the (native) viewport.
+        // make sure we're stacked above the (native) viewport. Re-raise on EVERY show: the splash
+        // starts as the active window, so clicking the main window's taskbar entry re-activates
+        // (re-shows) it on top — without this, the splash would sit behind the main window
+        // until clicked.
         syncGeometryToParent();
         raise();
         QWidget::showEvent(event);
@@ -141,7 +147,8 @@ protected:
             return true;
         }
         // As a top-level window we don't move with the parent automatically, so follow both
-        // its resizes and moves to stay aligned over the window.
+        // its resizes and moves to stay aligned over the window. (An activation of the parent
+        // re-raises us via showEvent — see there.)
         if (watched == parent() && (type == QEvent::Resize || type == QEvent::Move)) {
             syncGeometryToParent();
         }
