@@ -42,7 +42,7 @@ std::string UriResolver::urlDecode(const std::string& s) {
 }
 
 // Resolves `base / tail` tolerating case differences in any path component. Linux/macOS filesystems
-// are case-sensitive, but the figure URIs mix cases (e.g. "Daz 3D" vs the on-disk "DAZ 3D") that NTFS
+// are case-sensitive, but the figure URIs mix cases (e.g. "one One" vs the on-disk "ONE One") that NTFS
 // would absorb for free — so when the exact-case path is missing we re-derive it component by
 // component, matching each name case-insensitively. Returns the actual on-disk path, or an empty
 // string if it can't be found.
@@ -111,7 +111,7 @@ ResolvedUri UriResolver::resolve(const std::string& uri, const std::string& refe
                 return result;
             }
             // Exact case missing: retry tolerating case differences (Linux/macOS are case-sensitive,
-            // the URIs' "Daz 3D" vs the on-disk "DAZ 3D").
+            // the URIs' "one One" vs the on-disk "ONE One").
             const std::string tolerant = resolveCaseTolerant(fs::path(root), tail);
             if (!tolerant.empty()) {
                 result.path = tolerant;
