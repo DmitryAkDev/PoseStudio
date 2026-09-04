@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > public repository; this changelog, `CMakeLists.txt`, and `src/constants.h` are the
 > authoritative version record, and releases are tagged from 0.3.0 onward.
 
-## [Unreleased]
+## [0.3.8] - 2026-09-04
 ### Added
 * **IK benchmark and timing diagnostics** (developer): `POSESTUDIO_IK_BENCH=<bone>` runs a scripted drag of that joint with no desktop input and prints per-phase tick/frame intervals and hand-to-cursor lag; `POSESTUDIO_IK_PERF=1` prints the same report once per second during a real drag.
 * **Joint limits and balance are visible.** Each rotate-gizmo ring now shows its channel's allowed sweep as the bright arc, dims the forbidden part, greys out locked channels, and marks the current angle with a tick. During a full-body IK drag the balance support polygon is drawn on the floor between the planted feet.
@@ -182,6 +182,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * **Skeleton overlay hidden by default.** Importing a figure no longer draws the bone cage over the character; the rotate gizmo is the visual affordance. Joints stay clickable (picking is independent of what's drawn), so a click on a joint still selects it and brings up the gizmo.
 * **Menu styling refresh.** The menu-bar dropdown menus (and the viewport shader menu, which is itself a real menu) now share the Asset Manager's dark surface (`#252627`) and blue hover highlight (`#314D7A`), with rounded corners and no drop shadow.
 * **Default viewport lighting upgraded** from a single directional key light to the three-point rig above; the mesh fragment shading (both the default Rendered mode and PBR) was reworked to use it.
+
+### Fixed
+* **Linux / single-config CMake builds no longer fail on the shader mirror step** — the post-build copy of the compiled shaders was copying the folder onto itself when the build and output directories coincide. (#22 — thanks @yash-jain221)
 
 ## [0.2.0] - 2026-06-24
 ### Added
