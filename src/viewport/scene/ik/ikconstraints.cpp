@@ -2,6 +2,7 @@
 
 #include "ikmath.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace pose {
@@ -76,12 +77,203 @@ JointConstraint deriveJointConstraint(const glm::mat3& orientAxes, const glm::ve
     return out;
 }
 
+namespace {
+
+// The clamp proper, in one fixed frame (no twist freedom): see constrainSegmentDirection.
+glm::vec3 constrainInFrame(const JointConstraint& constraint, const glm::quat& frame,
+                           const glm::vec3& restDir, const glm::vec3& dir, float straightBias);
+
+} // namespace
+
 glm::vec3 constrainSegmentDirection(const JointConstraint& constraint, const glm::quat& frame,
                                     const glm::vec3& restDir, const glm::vec3& dir,
-                                    float straightBias) {
+                                    float straightBias, const glm::quat* seedFrame) {
     if (constraint.type == JointConstraint::Type::Free) {
         return dir;
     }
+    if (constraint.twistMax - constraint.twistMin <= 1e-6f) {
+        return constrainInFrame(constraint, frame, restDir, dir, straightBias);
+    }
+    // TWIST FREEDOM: the whole joint frame (rest direction, hinge/swing axes) may rotate about
+    // the parent segment's axis within the authored twist range — the fold plane swings to meet
+    // the proposed direction. Searched numerically (a coarse sweep, then a ternary refine of the
+    // best bracket): the residual as a function of twist is smooth but flat wherever the
+    // direction is reachable, and ties resolve toward the LEAST twist (zero is evaluated first
+    // and replaced only on strict improvement) so a reachable target never buys gratuitous
+    // twist. ~20 clamp evaluations per placement, on a handful of edges: negligible next to the
+    // solve.
+    const glm::vec3 u = glm::normalize(frame * constraint.twistAxis);
+    // The preferred twist: what the current pose already carries (see the header). The bend
+    // axis is the hinge axis or the cone's dominant swing axis; its azimuth about u in the
+    // chained frame vs the seed frame is the twist the chain dropped.
+    float phiPref = 0.0f;
+    if (seedFrame != nullptr) {
+        glm::vec3 bendAxis = constraint.hingeAxis;
+        if (constraint.type == JointConstraint::Type::Cone) {
+            const float reach0 = std::max(-constraint.swing0Min, constraint.swing0Max);
+            const float reach1 = std::max(-constraint.swing1Min, constraint.swing1Max);
+            bendAxis = reach0 >= reach1 ? constraint.swingAxis0 : constraint.swingAxis1;
+        }
+        glm::vec3 hChain = frame * bendAxis;
+        glm::vec3 hSeed = (*seedFrame) * bendAxis;
+        hChain -= u * glm::dot(hChain, u);
+        hSeed -= u * glm::dot(hSeed, u);
+        if (glm::dot(hChain, hChain) > 0.01f && glm::dot(hSeed, hSeed) > 0.01f) {
+            phiPref = glm::clamp(signedAngleAround(glm::normalize(hChain), glm::normalize(hSeed), u),
+                                 constraint.twistMin, constraint.twistMax);
+        }
+    }
+    constexpr float kContinuity = 1e-4f; // per radian of twist away from the preferred one
+    const auto evalAt = [&](float phi, glm::vec3& out) {
+        const glm::quat twisted = glm::normalize(glm::angleAxis(phi, u) * frame);
+        out = constrainInFrame(constraint, twisted, restDir, dir, straightBias);
+        return glm::dot(out, dir) - kContinuity * std::abs(phi - phiPref);
+    };
+    glm::vec3 best;
+    float bestScore = evalAt(phiPref, best);
+    float bestPhi = phiPref;
+    constexpr int kSamples = 8;
+    const float span = constraint.twistMax - constraint.twistMin;
+    for (int i = 0; i < kSamples; ++i) {
+        const float phi = constraint.twistMin + span * (static_cast<float>(i) + 0.5f) /
+                                                    static_cast<float>(kSamples);
+        glm::vec3 out;
+        const float score = evalAt(phi, out);
+        if (score > bestScore + 1e-6f) {
+            bestScore = score;
+            best = out;
+            bestPhi = phi;
+        }
+    }
+    const float step = span / static_cast<float>(kSamples);
+    float lo = std::max(constraint.twistMin, bestPhi - step);
+    float hi = std::min(constraint.twistMax, bestPhi + step);
+    for (int k = 0; k < 7; ++k) {
+        const float m1 = lo + (hi - lo) / 3.0f;
+        const float m2 = hi - (hi - lo) / 3.0f;
+        glm::vec3 o1;
+        glm::vec3 o2;
+        const float s1 = evalAt(m1, o1);
+        const float s2 = evalAt(m2, o2);
+        if (s1 >= s2) {
+            hi = m2;
+            if (s1 > bestScore + 1e-6f) {
+                bestScore = s1;
+                best = o1;
+            }
+        } else {
+            lo = m1;
+            if (s2 > bestScore + 1e-6f) {
+                bestScore = s2;
+                best = o2;
+            }
+        }
+    }
+    return best;
+}
+
+float fitTwistToDirection(const JointConstraint& constraint, const glm::quat& frame,
+                          const glm::vec3& restDir, const glm::vec3& dir) {
+    if (constraint.type == JointConstraint::Type::Free ||
+        constraint.twistMax - constraint.twistMin <= 1e-6f) {
+        return 0.0f;
+    }
+    const glm::vec3 u = glm::normalize(frame * constraint.twistAxis);
+    constexpr float kContinuity = 1e-4f;
+    const auto scoreAt = [&](float phi) {
+        const glm::quat twisted = glm::normalize(glm::angleAxis(phi, u) * frame);
+        const glm::vec3 out = constrainInFrame(constraint, twisted, restDir, dir, 0.0f);
+        return glm::dot(out, dir) - kContinuity * std::abs(phi);
+    };
+    constexpr float kPi = 3.14159265f;
+    constexpr int   kSamples = 12;
+    float bestPhi = 0.0f;
+    float bestScore = scoreAt(0.0f);
+    for (int i = 0; i < kSamples; ++i) {
+        const float phi = -kPi + 2.0f * kPi * (static_cast<float>(i) + 0.5f) /
+                                    static_cast<float>(kSamples);
+        const float score = scoreAt(phi);
+        if (score > bestScore + 1e-6f) {
+            bestScore = score;
+            bestPhi = phi;
+        }
+    }
+    const float step = 2.0f * kPi / static_cast<float>(kSamples);
+    float lo = bestPhi - step;
+    float hi = bestPhi + step;
+    for (int k = 0; k < 9; ++k) {
+        const float m1 = lo + (hi - lo) / 3.0f;
+        const float m2 = hi - (hi - lo) / 3.0f;
+        const float s1 = scoreAt(m1);
+        const float s2 = scoreAt(m2);
+        if (s1 >= s2) {
+            hi = m2;
+            if (s1 > bestScore + 1e-6f) {
+                bestScore = s1;
+                bestPhi = m1;
+            }
+        } else {
+            lo = m1;
+            if (s2 > bestScore + 1e-6f) {
+                bestScore = s2;
+                bestPhi = m2;
+            }
+        }
+    }
+    return bestPhi;
+}
+
+bool bendIsHingeLike(const JointConstraint& constraint) {
+    if (constraint.type == JointConstraint::Type::Hinge) {
+        return true;
+    }
+    if (constraint.type != JointConstraint::Type::Cone || !constraint.perAxis) {
+        return false;
+    }
+    const float reach0 = std::max(-constraint.swing0Min, constraint.swing0Max);
+    const float reach1 = std::max(-constraint.swing1Min, constraint.swing1Max);
+    return std::min(reach0, reach1) < 0.2617994f && std::max(reach0, reach1) >= 0.34906585f;
+}
+
+bool dominantBendTangent(const JointConstraint& constraint, const glm::vec3& restDir,
+                         glm::vec3& out) {
+    if (!bendIsHingeLike(constraint)) {
+        return false;
+    }
+    glm::vec3 axis(0.0f);
+    float sign = 1.0f;
+    if (constraint.type == JointConstraint::Type::Hinge) {
+        axis = constraint.hingeAxis;
+        sign = (constraint.maxAngle > -constraint.minAngle) ? 1.0f : -1.0f;
+    } else if (constraint.type == JointConstraint::Type::Cone && constraint.perAxis) {
+        const float reach0 = std::max(-constraint.swing0Min, constraint.swing0Max);
+        const float reach1 = std::max(-constraint.swing1Min, constraint.swing1Max);
+        if (std::max(reach0, reach1) < 0.34906585f) { // 20 degrees: no real bend to witness
+            return false;
+        }
+        if (reach0 >= reach1) {
+            axis = constraint.swingAxis0;
+            sign = (constraint.swing0Max > -constraint.swing0Min) ? 1.0f : -1.0f;
+        } else {
+            axis = constraint.swingAxis1;
+            sign = (constraint.swing1Max > -constraint.swing1Min) ? 1.0f : -1.0f;
+        }
+    } else {
+        return false;
+    }
+    const glm::vec3 t = glm::cross(axis, restDir) * sign; // angleAxis(+a, axis) moves rest this way
+    const float len = glm::length(t);
+    if (len < 1e-4f) {
+        return false;
+    }
+    out = t / len;
+    return true;
+}
+
+namespace {
+
+glm::vec3 constrainInFrame(const JointConstraint& constraint, const glm::quat& frame,
+                           const glm::vec3& restDir, const glm::vec3& dir, float straightBias) {
     const glm::vec3 rest = frame * restDir; // the segment's rest direction in the current frame
 
     if (constraint.type == JointConstraint::Type::Cone) {
@@ -185,5 +377,7 @@ glm::vec3 constrainSegmentDirection(const JointConstraint& constraint, const glm
     const glm::vec3 swung = glm::angleAxis(angle, axis) * restPerp;
     return glm::normalize(axis * restAlong + swung * restPerpLen);
 }
+
+} // namespace
 
 } // namespace pose

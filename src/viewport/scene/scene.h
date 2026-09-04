@@ -97,6 +97,13 @@ public:
     // --- Posing UI ---
     /// Whether the scene holds a posable figure (a model with a skeleton).
     bool hasPosableFigure() const;
+    /// The ACTIVE figure — the one every posing call (selection, gizmo, IK, pins, pose
+    /// snapshot, ground) addresses: the figure whose joint was last clicked (selectBoneAt
+    /// searches every figure's joints), else the first figure in the scene. -1 without one.
+    int  activeFigureIndex() const;
+    /// Makes model @p index the active figure (no-op unless it is a figure). Undo/redo restores
+    /// the figure a pose snapshot was taken from through this before applying it.
+    void setActiveFigure(int index);
     /// Show/hide the skeleton overlay (drawn over the figure so joints are visible + clickable).
     void setShowSkeleton(bool on) { m_showSkeleton = on; }
     bool showSkeleton() const { return m_showSkeleton; }
@@ -111,6 +118,8 @@ public:
     int selectBoneAt(float px, float py, float vpW, float vpH, const Camera& camera);
     /// True if a joint is currently selected on the figure.
     bool hasSelectedBone() const;
+    /// Selects the posable figure's bone named @p name (diagnostics / the IK benchmark).
+    int selectBoneByName(const std::string& name);
     /// Rotates the selected joint by @p deltaEulerDegrees (accumulated), re-posing the figure.
     void nudgeSelectedBone(const glm::vec3& deltaEulerDegrees);
     /// Settles the figure after an interactive pose edit: applies pose correctives, which are
@@ -135,9 +144,18 @@ public:
     /// World-space position of the figure's selected joint (the IK drag plane's anchor point).
     /// Returns false when no joint is selected.
     bool selectedBoneWorldPosition(glm::vec3& out) const;
+    // --- User joint pins (forwarded to the figure; see Model::togglePinSelectedBone) ---
+    bool togglePinSelectedBone();
+    bool selectedBonePinned() const;
+    bool hasPinnedBones() const;
+    void unpinAllBones();
     /// Drops the posable figure onto the ground plane: translates it so the CURRENT pose's lowest
     /// point rests at y = 0 (the viewport's "move to ground" button). Returns true if it moved.
     bool groundFigure();
+    /// The posable figure's current lowest world height (see Model::groundGap); false without one.
+    bool figureGroundGap(float& lowestY) const;
+    /// Translates the posable figure along world Y (the animated ground drop's per-frame step).
+    void translateFigureY(float dy);
 
     // --- Rotate gizmo (three axis rings on the selected joint) ---
     /// Returns which gizmo ring (0=X,1=Y,2=Z) the pixel (@p px,@p py) is over, or -1. Only valid when
@@ -218,6 +236,7 @@ private:
     glm::mat4                       m_lightViewProj{1.0f};
 
     std::vector<std::unique_ptr<Model>> m_models;
+    int m_activeFigure = -1; ///< See activeFigureIndex(): the posing target among the figures.
 };
 
 } // namespace pose

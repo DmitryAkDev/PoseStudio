@@ -97,10 +97,17 @@ VkSurfaceFormatKHR VulkanSwapchain::chooseSurfaceFormat(
 
 VkPresentModeKHR VulkanSwapchain::choosePresentMode(
     const std::vector<VkPresentModeKHR>& available) const {
-    // FIFO is always supported and is v-synced/tear-free — the right default for a DCC
-    // viewport. Mailbox would be lower-latency but burns power; revisit per a preference.
+    // MAILBOX when available: tear-free like FIFO, but presenting never BLOCKS on the vertical
+    // blank — a just-rendered frame replaces the queued one and shows at the next scan-out
+    // instead of waiting a whole refresh behind it. That is up to a frame (16ms at 60Hz) less
+    // input-to-photon latency on every interactive drag, which the user feels directly as
+    // responsiveness (the IK drag's damped dynamics already sit on a 60Hz tick, so pipeline
+    // latency is a large share of what is left). The usual power objection to mailbox
+    // (rendering as fast as possible) doesn't apply here: rendering is EVENT-DRIVEN — no
+    // frames are produced while nothing changes, and a drag produces at most one per tick.
+    // FIFO (always supported) is the fallback.
     for (VkPresentModeKHR mode : available) {
-        if (mode == VK_PRESENT_MODE_FIFO_KHR) {
+        if (mode == VK_PRESENT_MODE_MAILBOX_KHR) {
             return mode;
         }
     }

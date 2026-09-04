@@ -194,6 +194,15 @@ public:
 
     int  selectedBone() const { return m_selectedBone; }
     void setSelectedBone(int index) { m_selectedBone = index; }
+    /// Selects the bone named @p name (diagnostics / the IK benchmark); its index, or -1.
+    int selectBoneByName(const std::string& name) {
+        const auto it = m_boneIndex.find(name);
+        if (it == m_boneIndex.end()) {
+            return -1;
+        }
+        m_selectedBone = it->second;
+        return it->second;
+    }
     /// Adds @p deltaEulerDegrees to the selected bone's accumulated rotation and re-poses it.
     void nudgeSelectedBone(const glm::vec3& deltaEulerDegrees);
 
@@ -217,6 +226,40 @@ public:
     bool settleIkTick();
     /// Ends the FBIK drag (the solved pose stays; the caller settles correctives).
     void endIkDrag();
+    // --- User joint pins (see IkRig::beginDrag's userPins): a pinned joint is held exactly where
+    // it is through every later IK drag of OTHER joints, until unpinned. Dragging a pinned joint
+    // itself moves the pin. Pins are part of the POSE SNAPSHOT (capturePose/applyPose carry them
+    // as "@pin:<bone>" rows), so a pin toggle is undoable, undoing a drag restores the pins of
+    // that moment, and a .pose file reproduces its pins on load (a file without pin rows —
+    // an older one — loads with none).
+    /// Toggles the pin on the selected joint; returns the new pinned state (false with no selection).
+    bool togglePinSelectedBone();
+    bool isBonePinned(std::size_t index) const {
+        return index < m_bonePinned.size() && m_bonePinned[index] != 0;
+    }
+    bool selectedBonePinned() const {
+        return m_selectedBone >= 0 && isBonePinned(static_cast<std::size_t>(m_selectedBone));
+    }
+    bool hasPinnedBones() const;
+    void unpinAllBones();
+    /// The rig's CONTACT pins (ground-detected, not user pins) while an IK drag is active — for
+    /// the overlay's "which feet are planted" markers. Empty outside a drag.
+    std::vector<int> activeContactPins() const;
+    /// The balance support polygon of the live IK drag as WORLD-space points on the floor
+    /// (y = 0), closed by the caller; empty outside a drag. For the overlay.
+    std::vector<glm::vec3> activeSupportHull() const;
+    /// The accumulated pose rotation of bone @p i (Euler degrees, its rotation order).
+    const glm::vec3& boneEuler(std::size_t i) const { return m_boneEuler[i]; }
+    /// The authored range of bone @p i's Euler channel @p axis (degrees); false when the
+    /// channel is unconstrained. A range under 2° is a locked channel. For the gizmo's arcs.
+    bool boneRotationRange(std::size_t i, int axis, float& minDeg, float& maxDeg) const {
+        if (i >= m_bones.size() || axis < 0 || axis > 2 || !m_bones[i].rotLimited[axis]) {
+            return false;
+        }
+        minDeg = m_bones[i].rotMin[axis];
+        maxDeg = m_bones[i].rotMax[axis];
+        return true;
+    }
 
     /// World-space origin + rotation frame of the selected joint, for the rotate gizmo. Returns false
     /// if no joint is selected. @p axes receives the joint's three local rotation-channel axes (the
@@ -247,6 +290,13 @@ public:
     /// wrong); a static model uses its bind AABB through the transform (exact — it can't pose).
     /// Returns true if the transform actually changed (false when already grounded / no geometry).
     bool dropToGround();
+    /// The world height of the CURRENT pose's lowest point (the same scan dropToGround uses):
+    /// positive = hovering that far above the floor, negative = sunk into it. False when there is
+    /// no geometry to measure. The viewport animates the ground button's drop from this.
+    bool groundGap(float& lowestY) const;
+    /// Translates the model by @p dy along world Y and refreshes the transform-dependent bone
+    /// positions (the animated ground drop applies its per-frame fall increments through this).
+    void translateY(float dy);
 
 private:
     /// Recomputes each bone's skin matrix (poseGlobal · inverseBind) from the current pose, updates
@@ -270,6 +320,36 @@ private:
     /// limits, and re-skins once. Inactive subtrees keep their local pose and ride along.
     void applyIkSolution(const std::vector<glm::vec3>& solved, const std::vector<char>& active,
                          bool rotationPrior);
+
+    /// EXACT enforcement of the joint pins, run after every governed pose update of an IK tick
+    /// (drag and release settle alike). The solver holds a pin in POSITION space, but the
+    /// applied pose is what the user sees, and the extraction (aim fit, per-joint angular caps,
+    /// limit clamps, the rotational prior) plus the governor's under-relaxation — a blend in
+    /// JOINT space, which does not preserve an end effector's position — land a pinned joint
+    /// millimetres off every tick: visible micro-motion on a joint declared immovable, and
+    /// planted feet that slide by millimetres under a hand drag. This refines each pin's own
+    /// limb chain in joint space — damped least squares on the chain's unlocked Euler channels
+    /// against a numeric Jacobian, limits respected, iterated to 0.1mm — and re-imposes the
+    /// pin's drag-start world orientation exactly (the flat-sole hold in applyIkSolution is
+    /// capped and then relaxed by the governor, so it too left a residual). USER pins are held
+    /// unconditionally, every tick; the drag's CONTACT pins and the released joint the settle
+    /// holds only when @p settling — the release settle is where the pose comes to rest — and
+    /// only as residual cleanup, band-gated and per-tick capped so the landing stays animated
+    /// (see kContactRefineBand; holding contacts exact DURING the drag masked the FK slip that
+    /// is the balance stepper's strain signal, and its pelvis stage fought the solver root).
+    /// The correction is local to each pin's limb and never touches the trunk or another limb.
+    /// With @p dragTarget (a drag tick: the solve target, model space) the GRABBED joint itself
+    /// is refined onto it the same way — the cursor as a pin: the limb closes whatever part of
+    /// the gap it can reach from the current trunk NOW, deterministically, so the hand tracks
+    /// the cursor without lag while the body's redundant motion stays on the damped dynamics
+    /// underneath (and pixel noise passes through 1:1 instead of being amplified ~14x by the
+    /// whole-body solve — the fit is locally linear). The drag correction is a FINISHER: full
+    /// within kDragRefineFull of the target and fading to nothing by kDragRefineFade, so large
+    /// motions stay with the solve's own posture choice (a minimal-norm fit closing a whole
+    /// 15cm foot lift swung the straight leg back at the hip instead of flexing the knee, and
+    /// stalled at half the lift; a nullspace posture bias and column-scaled least squares were
+    /// both measured and rejected). Re-skins once when it changed anything.
+    void refinePins(bool settling, const glm::vec3* dragTarget = nullptr);
 
     /// Clamps m_boneEuler[index] in place to the bone's per-axis rotation limits (a no-op on axes the
     /// figure leaves unconstrained). The single enforcement point every posing path funnels through.
@@ -398,6 +478,15 @@ private:
     // the ankle and curled toes; orientation preservation at extraction fights nothing).
     std::vector<int>              m_ikFlatNodes;
     std::vector<glm::mat3>        m_ikFlatRot;
+    // User joint pins (per bone, see togglePinSelectedBone): persistent until unpinned.
+    std::vector<char>             m_bonePinned;
+    // Bones exempt from the drag-tick rotational prior for the current drag: the LIMB chain of
+    // each user pin (pin up to where its limb joins the axial skeleton — the rig's mass-based
+    // junction, IkRig::userPinLimbNodes). Those joints are fully determined
+    // by the pin's restoration every tick, and the prior — decaying toward the drag-START
+    // pose — could only fight the pin there: a hand pinned through a crouch ratcheted 8cm off
+    // its pin during the still hold as the prior pulled the arm back toward its standing pose.
+    std::vector<char>             m_ikRotPriorExempt;
     // Drag-start Euler pose: the ROTATIONAL prior. The extraction's aim fit determines only
     // part of each joint's rotation (a single aim child leaves twist unwitnessed), and the
     // undetermined components RATCHET across ticks — the spine's forward-biased limits turned
@@ -418,10 +507,20 @@ private:
     // the goals (ease-out), so gestures accelerate and decelerate like real limbs instead of
     // snapping to a constant governor rate. Zeroed when a tick applies nothing (frozen hold).
     float                         m_ikAppliedSpeed = 0.0f;
+    // Last tick's APPLIED speed of the GRABBED joint itself: the motion shaping bounds the
+    // effector's own step as well as the worst joint's (with the fold plane free to swing, the
+    // elbow is often the worst joint, and the hand could then jump 15mm in one tick — exactly
+    // the mechanical ramp the shaping exists to prevent).
+    float                         m_ikAppliedEffSpeed = 0.0f;
     // Grab offset (model space) for a PROMOTED drag: the rig solves the limb's real end joint
     // (a finger grab drives the HAND — see IkRig::dragEffector), so the window's targets, which
     // track the grabbed joint, are shifted by (grabbed - solved) captured at drag start.
     glm::vec3                     m_ikGrabOffset{0.0f};
+    // The solved effector's world rotation at drag start: the grab offset is carried through
+    // the effector's rotation since (offset_now = R_now * R_start^-1 * offset), so a finger
+    // grab keeps tracking the FINGER when the hand twists — with the solver now free to twist
+    // the forearm, a constant offset missed the fingertip by up to twice its length.
+    glm::mat3                     m_ikGrabRotStart{1.0f};
     // Previous drag target (model space): the world-space governor's per-event pose budget is
     // PROPORTIONAL to how far the target actually moved — a still-but-noisy cursor earns only a
     // millimeter budget (kills trembling), a fast pull earns the full step.
@@ -437,6 +536,13 @@ private:
     float                         m_ikErrPrevMin = 1e30f;
     bool                          m_ikFrozen = false;
     int                           m_ikSettleTicks = 0; ///< Animated release-settle tick budget.
+    // The worst pin error at the release settle's first tick — the STRAIN the drag left in the
+    // planted feet. A LIMB effector's pose-hold bound (the released hand/foot stays within 2cm
+    // of where it was let go) scales up with it (3x, at most 10cm): a beyond-reach pull leaves a
+    // foot centimetres in the air, and planting it costs the hand a few centimetres — a figure
+    // standing on air is the worse artifact. A TRUNK effector (IkRig::effectorIsTrunk) always
+    // gets the 10cm bound: planting the feet after a chest/hip drag necessarily moves the trunk.
+    float                         m_ikSettleStrain = 0.0f;
     // Stillness is CUMULATIVE drift from this anchor, not per-tick deltas: a slowly creeping
     // target (sub-mm per event) must keep the solve live — it accumulates past the threshold and
     // re-anchors — while zero-mean cursor noise stays inside the ball and allows the freeze.

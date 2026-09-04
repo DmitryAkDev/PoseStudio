@@ -43,6 +43,33 @@ constexpr float kKickErrorFloor = 0.025f;
 // application in solve()).
 constexpr float kPriorYieldWeight = 0.5f;
 
+// Forward-pass centroid weight of a branch that serves a PINNED effector, at non-root branching
+// joints (a plain average let a soft drag goal pull the chest out of a pinned hand's reach).
+constexpr float kPinPriority = 3.0f;
+
+// Hard-pin policy (see IkEffector::hard): after each iteration, if any hard pin misses by more
+// than kHardPinTol the goals back off by kGoalBackoffStep (their effective targets slide toward
+// the nodes' iteration-entry positions), so the pose converges to the best reach that keeps
+// every hard pin exactly held. Hard pins weigh kHardPinErrorWeight in the best-state metric, so
+// a pin-violating state can never be kept over a pin-holding one.
+constexpr float kHardPinTol = 0.005f;
+constexpr float kGoalBackoffStep = 0.25f;
+constexpr float kHardPinErrorWeight = 10.0f;
+
+// Restoration rounds per effector chain per iteration (see restoreChain in solve()), and the
+// rounds of the final hard-pin POLISH. Eight rounds converge a limb chain (a leg, an arm to its
+// collar) but under-converge a hard pin's LONG chain — a hand pinned through a pelvis crouch
+// restores through the whole spine (11 joints) and stalled 4-6cm off its pin every iteration,
+// which also fired the goal back-off spuriously and stopped the hips early. Raising the per-
+// iteration rounds instead is chaotic (24 hard-pin rounds passed the suite, 40 slipped the same
+// pin by 5cm, 40 everywhere broke a synthetic crouch): each iteration's main passes perturb the
+// chain again, so the round count reshapes the whole solve. The polish runs ONCE on the final
+// best state, where nothing perturbs the chain afterwards — the pin lands as exactly as the
+// joint limits allow regardless of how the iterations went, and it can never make a pin worse
+// (the chain keeps its best configuration).
+constexpr int kRestoreRounds = 8;
+constexpr int kHardPinPolishRounds = 24;
+
 } // namespace
 
 float FabrikSolver::solve(const SkeletonGraph& graph, const std::vector<char>& active,
@@ -85,6 +112,19 @@ float FabrikSolver::solve(const SkeletonGraph& graph, const std::vector<char>& a
             }
         }
     }
+    // Nodes on a PINNED effector's path to the root: at a branching joint the forward pass's
+    // centroid gives a pin-serving branch more say than a goal-serving one (see the sub-base
+    // rule below) — a pin is a constraint, the drag goal only a wish, and an equal vote let
+    // the chest settle where a pinned hand's arm could no longer reach it.
+    std::vector<char> servesPin(static_cast<std::size_t>(n), 0);
+    for (const IkEffector& e : effectors) {
+        if (!e.pinned || e.node < 0 || e.node >= n) {
+            continue;
+        }
+        for (int cur = e.node; cur >= 0; cur = graph.parentOf(cur)) {
+            servesPin[static_cast<std::size_t>(cur)] = 1;
+        }
+    }
 
     // Frames start from the CURRENT pose rotations, not identity: the backward pass overwrites
     // every ACTIVE node's frame from its placed swing, but an INACTIVE node's frame is read as-is
@@ -116,12 +156,12 @@ float FabrikSolver::solve(const SkeletonGraph& graph, const std::vector<char>& a
                     continue;
                 }
                 if (e.leashRadius > 0.0f) {
-                    // The rig supplies the radius: the DRAG-START root-to-pin distance (a stance
-                    // the figure provably held), with fractional path-length headroom for
-                    // bent-leg starts. The raw path-length SUM overcounts: the pelvis-to-hip-
-                    // socket offset is lateral, not collinear with the leg, so a sum-based ball
-                    // let the body lean until a foot became genuinely unreachable.
-                    leashes.push_back({e.target, e.leashRadius});
+                    // The rig supplies the radius (the DRAG-START socket-to-pin distance — a
+                    // stance the figure provably held — with fractional path-length headroom
+                    // for bent-leg starts) and the ball's center offset (see
+                    // IkEffector::leashOffset): the ball confines the SOCKET, expressed on the
+                    // root through the fixed root->socket offset.
+                    leashes.push_back({e.target - e.leashOffset, e.leashRadius});
                     continue;
                 }
                 float len = 0.0f;
@@ -155,6 +195,13 @@ float FabrikSolver::solve(const SkeletonGraph& graph, const std::vector<char>& a
     // parent `p`, accumulating the child's rotation frame. Shared by the backward pass and the
     // per-pin restoration chains. @p bias is the straight-limb escape for this edge (see the
     // bias policy in the iteration loop).
+    // IK_CHAIN_TRACE=<effector node>: per-round error and per-edge clamp angles of that
+    // effector's restoration chain (diagnostic only).
+    static const int kChainTraceNode = [] {
+        const char* v = std::getenv("IK_CHAIN_TRACE");
+        return v != nullptr ? std::atoi(v) : -1;
+    }();
+    bool chainTracing = false;
     auto placeChild = [&](int node, int p, float bias) {
         const float boneLen = lengthToParent[static_cast<std::size_t>(node)];
         if (boneLen <= kZeroLength) {
@@ -175,7 +222,51 @@ float FabrikSolver::solve(const SkeletonGraph& graph, const std::vector<char>& a
             clamped = frameSeed[static_cast<std::size_t>(p)] * restDir;
         } else {
             clamped = constrainSegmentDirection(edgeConstraint[static_cast<std::size_t>(node)],
-                                                parentFrame, restDir, dir, bias);
+                                                parentFrame, restDir, dir, bias,
+                                                &frameSeed[static_cast<std::size_t>(p)]);
+        }
+        // THE FLOOR (see Settings::floorClearance): a child placed below its clearance is
+        // swung UP to the floor plane at bone length — a constraint like the joint limits,
+        // applied where lengths are set, so the kept state stays reproducible by rotations (a
+        // post-hoc clamp lifted joints without their parents, and the extraction of that
+        // broken-length state rotated a pinned foot and sank the other 6cm). When even the
+        // plane is out of the segment's reach (the parent itself is under the floor), the
+        // child is lifted onto it and the next passes restore lengths around that.
+        // Free joints only: an effector has its own target (pins sit AT their clearance, and
+        // the Model clamps the drag goal) — projecting those too made the planted feet chatter
+        // at the boundary every pass (steps failed to trigger, releases landed 2cm off).
+        if (settings.floorClearance != nullptr &&
+            static_cast<int>(settings.floorClearance->size()) == n &&
+            effectorAt[static_cast<std::size_t>(node)] < 0) {
+            const float minY =
+                settings.floorY + (*settings.floorClearance)[static_cast<std::size_t>(node)];
+            if (parentPos.y + clamped.y * boneLen < minY) {
+                static const bool kFloorTrace = std::getenv("IK_FLOOR_TRACE") != nullptr;
+                if (kFloorTrace) {
+                    std::printf("[floor] node=%d lifted from y=%.3f to %.3f", node,
+                                parentPos.y + clamped.y * boneLen, minY);
+                    std::putchar(10);
+                }
+                const float dy = (minY - parentPos.y) / boneLen;
+                if (dy < 1.0f) {
+                    const float xzLen = std::sqrt(std::max(0.0f, 1.0f - dy * dy));
+                    glm::vec2 xz(clamped.x, clamped.z);
+                    const float l = glm::length(xz);
+                    xz = (l > 1e-6f) ? xz * (xzLen / l) : glm::vec2(xzLen, 0.0f);
+                    clamped = glm::vec3(xz.x, dy, xz.y);
+                } else {
+                    clamped = glm::vec3(0.0f, 1.0f, 0.0f);
+                }
+            }
+        }
+        if (chainTracing) {
+            const glm::vec3 restWorld = parentFrame * restDir;
+            const float wantDeg = glm::degrees(std::acos(glm::clamp(glm::dot(dir, restWorld), -1.0f, 1.0f)));
+            const float gotDeg = glm::degrees(std::acos(glm::clamp(glm::dot(clamped, restWorld), -1.0f, 1.0f)));
+            const float clampDeg = glm::degrees(std::acos(glm::clamp(glm::dot(dir, clamped), -1.0f, 1.0f)));
+            const JointConstraint& jc = edgeConstraint[static_cast<std::size_t>(node)];
+            std::printf("      [edge] node=%d p=%d type=%d wantSwing=%.1f gotSwing=%.1f clamp=%.1f deg\n",
+                        node, p, static_cast<int>(jc.type), wantDeg, gotDeg, clampDeg);
         }
         positions[static_cast<std::size_t>(node)] = parentPos + clamped * boneLen;
         // Accumulate the child's frame from how far the segment actually swung from rest.
@@ -207,6 +298,18 @@ float FabrikSolver::solve(const SkeletonGraph& graph, const std::vector<char>& a
             // the solve cannot move them; counting their error here made it a constant floor that
             // kept every iteration running and inflated the returned error past any freeze gate.
             if (e.node >= 0 && e.node < n && active[static_cast<std::size_t>(e.node)]) {
+                const float err =
+                    glm::length(positions[static_cast<std::size_t>(e.node)] - e.target);
+                worst = std::max(worst, e.hard ? err * kHardPinErrorWeight : err);
+            }
+        }
+        return worst;
+    };
+    // Any hard pin's true error (see the hard-pin policy): what the goal back-off watches.
+    auto worstHardPinError = [&]() {
+        float worst = 0.0f;
+        for (const IkEffector& e : effectors) {
+            if (e.hard && e.node >= 0 && e.node < n && active[static_cast<std::size_t>(e.node)]) {
                 worst = std::max(worst,
                                  glm::length(positions[static_cast<std::size_t>(e.node)] - e.target));
             }
@@ -225,15 +328,357 @@ float FabrikSolver::solve(const SkeletonGraph& graph, const std::vector<char>& a
     // edge-length INCONSISTENT (a directly-placed root with unmoved limbs), and only a backward
     // pass from the anchor re-establishes the lengths.
     std::vector<glm::vec3> bestPositions;
+    std::vector<glm::quat> bestFrame; // the best state's frames, for the hard-pin polish
     float bestError = 1e30f;
     const auto kickFor = [&settings](float err) {
         return std::min(0.5f, settings.straightBias + 2.0f * err);
     };
     // At least one iteration always runs: even with every effector at its target the state can be
     // inconsistent (see the best-state note above) and needs one forward/backward reconciliation.
+    // Effective per-iteration targets: hard pins and ground-contact pins always keep their own;
+    // the soft goals and a DRAGGED root slide toward their nodes' iteration-entry positions by
+    // the current back-off (0 = the true targets) once a hard pin has failed to hold.
+    std::vector<glm::vec3> effTarget(effectors.size());
+    float goalBackoff = 0.0f;
+    bool anyHardPin = false;
+    // Diagnostics for the POSESTUDIO_IK_SOLVER_TRACE dump: each effector's restoration chain
+    // (length, sub-base, best error) from the last iteration that ran it.
+    static const bool kSolverTrace = std::getenv("POSESTUDIO_IK_SOLVER_TRACE") != nullptr;
+    std::vector<std::size_t> traceChainLen(kSolverTrace ? effectors.size() : 0, 0);
+    std::vector<int> traceSubBase(kSolverTrace ? effectors.size() : 0, -1);
+    std::vector<float> traceChainErr(kSolverTrace ? effectors.size() : 0, -1.0f);
+    int traceIters = 0;
+    for (const IkEffector& e : effectors) {
+        anyHardPin = anyHardPin || (e.hard && e.node >= 0 && e.node < n);
+    }
+    // Single-chain restoration of effector @p ei: single-chain FABRIK from the effector up to
+    // its sub-base (the nearest branching ancestor, another effector, an inactive ancestor, or
+    // the root, held fixed) — forward-reach snaps the effector and walks up; the constrained
+    // backward walk re-imposes lengths and limits — iterated for up to @p maxRounds rounds,
+    // keeping the chain's BEST configuration. Called per effector after every iteration's main
+    // passes, and once more as the hard-pin POLISH on the final best state (see below).
+    // @p earlyPhase enables the straight-limb escape kick.
+    const auto restoreChain = [&](std::size_t ei, int maxRounds, bool earlyPhase) {
+        const IkEffector& e = effectors[ei];
+        if (e.node < 0 || e.node >= n || !active[static_cast<std::size_t>(e.node)]) {
+            return;
+        }
+        chain.clear();
+        int cur = e.node;
+        chain.push_back(cur);
+        while (true) {
+            const int p = graph.parentOf(cur);
+            if (p < 0) {
+                break; // cur is the root: it is the sub-base
+            }
+            chain.push_back(p);
+            // The chain's fixed end: the anchor, an INACTIVE ancestor (a caller-frozen base
+            // — e.g. the trunk during an upward limb drag; restoring through it moved nodes
+            // the active mask promised were untouched), a branching ancestor, or ANOTHER
+            // EFFECTOR — restoring through an interior goal (the dragged hip on the way to
+            // the far foot's pin) would undo that goal every round and the two would fight
+            // forever.
+            if (p == root || !active[static_cast<std::size_t>(p)] ||
+                activeChildren[static_cast<std::size_t>(p)].size() > 1 ||
+                effectorAt[static_cast<std::size_t>(p)] >= 0) {
+                break;
+            }
+            cur = p;
+        }
+        if (chain.size() < 2) {
+            return;
+        }
+        // The chain's goal honours the effector's WEIGHT: a full-strength goal (every pin,
+        // the drag effector) is restored exactly onto its target, while a soft goal fading
+        // in is restored only toward the weight-blended point — hard-snapping regardless of
+        // weight would defeat the continuous fade the forward pass and prior-yield implement
+        // (latent today: every restored effector currently carries weight 1).
+        const glm::vec3& eTarget = effTarget[ei]; // backed-off for soft goals (hard-pin policy)
+        const glm::vec3 goal =
+            e.weight >= 1.0f
+                ? eTarget
+                : glm::mix(positions[static_cast<std::size_t>(e.node)], eTarget,
+                           glm::clamp(e.weight, 0.0f, 1.0f));
+        // Single-chain FABRIK on the limb, iterated: one round is not enough when the limb
+        // must fold (the constrained backward walk re-orients the hinge planes, and the next
+        // forward-reach exploits the new orientation). Rounds run pure until one stops
+        // improving, then a kick (scaled by the chain's OWN error) tries to break a straight
+        // lock — and the chain KEEPS ITS BEST configuration across rounds: constrained greedy
+        // iteration can wander into legal-but-wrong basins, and a kicked round that helped is
+        // kept while one that hurt is discarded, so restoration can never make a pin WORSE.
+        //
+        // The kick is gated on FOLD NEED — the pin target lying well INSIDE the chain's reach,
+        // so a bend is geometrically required (a crouch: the sub-base dropped toward the
+        // feet). Error size alone is NOT a fold signal: a standing leg whose foot pin drifted
+        // a few cm has its target AT reach — kicking it (toward the thigh's dominant range
+        // side = hip flexion) hoisted the knee of a planted leg during ordinary hand drags.
+        float chainLen = 0.0f;
+        for (std::size_t m = 0; m + 1 < chain.size(); ++m) {
+            chainLen += lengthToParent[static_cast<std::size_t>(chain[m])];
+        }
+        // The kick fires only for targets requiring a DEEP fold (< 90% of chain length): a
+        // crouch's knees and a reaching arm's elbow qualify and benefit even mid-bend, while
+        // near-full-extension targets (a hovering figure healing down onto its pins at ~93%
+        // reach, a leg planting at a leash boundary) are EXTENSION problems where the same
+        // push over-folds the joint and holds the end off its target. This one threshold
+        // separated the three scenarios that defeated extension-ratio and must-shorten gates.
+        const bool foldNeeded =
+            glm::length(positions[static_cast<std::size_t>(chain.back())] - goal) <
+            0.90f * chainLen;
+        chainBest.clear();
+        chainBestFrame.clear();
+        for (const int cnode : chain) {
+            chainBest.push_back(positions[static_cast<std::size_t>(cnode)]);
+            chainBestFrame.push_back(frame[static_cast<std::size_t>(cnode)]);
+        }
+        float chainBestErr =
+            glm::length(positions[static_cast<std::size_t>(e.node)] - goal);
+        float chainPrevErr = chainBestErr;
+
+        // --- Analytic TWO-BONE assist (legs): greedy constrained rounds have a recurring
+        // failure basin at near-full extension — a leg whose foot pin sits at ~95% reach
+        // hard-stops centimeters short, and once there no amount of iteration recovers (the
+        // "extend-to-plant" soft spot: crouch feet lagging, a sustained hand pull gradually
+        // trading a planted foot away, strained releases stalling off their pins). For a
+        // chain that collapses to exactly TWO effective segments — its interior joints all
+        // rigid pass-throughs (mid-limb twist bones) except one (the knee) — the mid-joint
+        // position is computed ANALYTICALLY (two-sphere intersection circle, taking the
+        // point nearest the current mid joint so the existing bend side/pose continuity is
+        // preserved), the pass-throughs are seeded along the segments, and the normal
+        // constrained rounds below legalize the configuration against the joint limits.
+        // Purely exploratory: chainBest keeps the seed only if it actually lands the
+        // effector better, so a bad seed costs nothing. Arms (collar+shoulder+elbow chains
+        // have >2 effective joints) don't match and keep the iterative path.
+        if (chain.size() >= 4 && chainBestErr > settings.tolerance) {
+            int mid = -1;
+            int base = -1;
+            // The MID joint is the chain's deepest-folding real joint (knee/elbow class,
+            // widest dominant range, at least ~100°), the BASE the next real joint above it.
+            // Selecting by fold capability, not adjacency: a metatarsal-pinned chain's first
+            // two real joints are ankle+knee — a degenerate short-segment pair whose seed
+            // always lost, leaving the leg with no assist at all (feet lagged their pins
+            // whenever the pin sat below the ankle).
+            const auto dominantRange = [&](std::size_t m) {
+                const JointConstraint& jc =
+                    edgeConstraint[static_cast<std::size_t>(chain[m - 1])];
+                if (jc.type == JointConstraint::Type::Hinge) {
+                    return jc.maxAngle - jc.minAngle;
+                }
+                if (jc.type == JointConstraint::Type::Cone && jc.perAxis) {
+                    return std::max(jc.swing0Max - jc.swing0Min, jc.swing1Max - jc.swing1Min);
+                }
+                if (jc.type == JointConstraint::Type::Free) {
+                    return 6.2831853f;
+                }
+                return 0.0f; // rigid (zero-swing) pass-through
+            };
+            // First DEEP-FOLD joint from the effector (>= 120°: knees ~166° and elbows
+            // ~155° qualify; a ~110° ankle or a small wrist does not — those articulate
+            // slightly inside the lower segment and the constrained walk absorbs them).
+            // Taking the WIDEST joint instead broke arms whose shoulder is freer than the
+            // elbow: the pair straddled the articulated elbow and fought its fold.
+            // A qualifying mid must also carry a REAL lower segment (>= 20% of the chain,
+            // scale-invariant): a FINGER effector's chain runs through the knuckles, and a
+            // knuckle's ~140° curl range passed the fold gate — the assist then worked a
+            // 4cm finger pair while the ELBOW (the joint that actually extends the arm
+            // overhead) got no assist at all, stalling a raised-by-the-finger hand at chin
+            // height (grabbing near a hand almost always picks a finger).
+            for (std::size_t m = 1; m + 1 < chain.size(); ++m) {
+                if (dominantRange(m) < glm::radians(120.0f)) {
+                    continue;
+                }
+                float lowerLen = 0.0f;
+                for (std::size_t k = 0; k < m; ++k) {
+                    lowerLen += lengthToParent[static_cast<std::size_t>(
+                        chain[static_cast<std::size_t>(k)])];
+                }
+                if (lowerLen < 0.2f * chainLen) {
+                    continue;
+                }
+                mid = static_cast<int>(m);
+                break;
+            }
+            if (mid >= 0) {
+                for (std::size_t m = static_cast<std::size_t>(mid) + 1; m + 1 < chain.size();
+                     ++m) {
+                    if (dominantRange(m) > 1e-5f) {
+                        base = static_cast<int>(m); // nearest real joint above the fold
+                        break;
+                    }
+                }
+            }
+            static const bool kTwoBoneTrace = std::getenv("IK_TWOBONE_TRACE") != nullptr;
+            if (kTwoBoneTrace) {
+                std::printf("[2bone] eff=%d chainN=%zu mid=%d(node %d) base=%d(node %d)\n",
+                            e.node, chain.size(), mid,
+                            mid >= 0 ? chain[static_cast<std::size_t>(mid)] : -1, base,
+                            base >= 0 ? chain[static_cast<std::size_t>(base)] : -1);
+            }
+            if (base > mid && mid > 0) {
+                // Segment rest offsets (kinks included) from the rest geometry: base->mid
+                // spans edges chain[mid..base-1], mid->effector spans chain[0..mid-1].
+                glm::vec3 upper(0.0f);
+                for (int k = mid; k < base; ++k) {
+                    upper += edgeRestDir[static_cast<std::size_t>(chain[static_cast<std::size_t>(k)])] *
+                             lengthToParent[static_cast<std::size_t>(chain[static_cast<std::size_t>(k)])];
+                }
+                glm::vec3 lower(0.0f);
+                for (int k = 0; k < mid; ++k) {
+                    lower += edgeRestDir[static_cast<std::size_t>(chain[static_cast<std::size_t>(k)])] *
+                             lengthToParent[static_cast<std::size_t>(chain[static_cast<std::size_t>(k)])];
+                }
+                const float len1 = glm::length(upper);
+                const float len2 = glm::length(lower);
+                const glm::vec3 basePos =
+                    positions[static_cast<std::size_t>(chain[static_cast<std::size_t>(base)])];
+                glm::vec3 toTarget = goal - basePos;
+                float d = glm::length(toTarget);
+                if (len1 > kZeroLength && len2 > kZeroLength && d > kZeroLength) {
+                    d = glm::clamp(d, std::abs(len1 - len2) + 1e-4f, len1 + len2 - 1e-4f);
+                    const glm::vec3 axis = toTarget / glm::length(toTarget);
+                    // Mid-joint circle: distance a from the base along the axis, radius r.
+                    const float a = (len1 * len1 - len2 * len2 + d * d) / (2.0f * d);
+                    const float r2 = len1 * len1 - a * a;
+                    const glm::vec3 center = basePos + axis * a;
+                    const glm::vec3 curMid =
+                        positions[static_cast<std::size_t>(chain[static_cast<std::size_t>(mid)])];
+                    glm::vec3 perp = (curMid - center) - axis * glm::dot(curMid - center, axis);
+                    float perpLen = glm::length(perp);
+                    // WHICH SIDE of the axis the mid joint bulges to: the current knee's side
+                    // keeps pose continuity, but only while that side is the joint's FLEXION
+                    // side. A knee that drifted onto its hyperextension/lateral side (the
+                    // constrained rounds leave a blocked knee wherever the clamp stopped it)
+                    // was re-seeded there every solve, the clamp cut the seed's 21° swing to
+                    // its 12° of hyperextension-plus-play, and the foot sat 7cm off its pin
+                    // with the thigh creeping toward the fix at 0.2°/round: every walk landing
+                    // ended 5cm inside its stance and 1.5cm through the floor. Flexing a hinge
+                    // swings the lower segment along its dominant tangent, so the mid joint
+                    // bulges the OPPOSITE way — that is the side a bendable joint can hold.
+                    {
+                        const JointConstraint& midJc = edgeConstraint[static_cast<std::size_t>(
+                            chain[static_cast<std::size_t>(mid - 1)])];
+                        glm::vec3 tangent(0.0f);
+                        if (dominantBendTangent(
+                                midJc,
+                                edgeRestDir[static_cast<std::size_t>(chain[static_cast<std::size_t>(mid - 1)])],
+                                tangent)) {
+                            glm::vec3 pref =
+                                -(frame[static_cast<std::size_t>(chain[static_cast<std::size_t>(mid)])] *
+                                  tangent);
+                            pref -= axis * glm::dot(pref, axis);
+                            const float prefLen = glm::length(pref);
+                            if (prefLen > 1e-5f && (perpLen <= 1e-5f || glm::dot(perp, pref) < 0.0f)) {
+                                perp = pref;
+                                perpLen = prefLen;
+                            }
+                        }
+                    }
+                    if (r2 > 1e-8f && perpLen > 1e-5f) {
+                        const glm::vec3 midPos = center + perp * (std::sqrt(r2) / perpLen);
+                        // Seed: mid joint on the circle, pass-throughs linearly along their
+                        // segment (cumulative rest length), effector on the target.
+                        float acc = 0.0f;
+                        for (int k = base - 1; k >= mid; --k) {
+                            acc += lengthToParent[static_cast<std::size_t>(
+                                chain[static_cast<std::size_t>(k)])];
+                            positions[static_cast<std::size_t>(chain[static_cast<std::size_t>(k)])] =
+                                glm::mix(basePos, midPos, glm::min(1.0f, acc / len1));
+                        }
+                        acc = 0.0f;
+                        for (int k = mid - 1; k >= 0; --k) {
+                            acc += lengthToParent[static_cast<std::size_t>(
+                                chain[static_cast<std::size_t>(k)])];
+                            positions[static_cast<std::size_t>(chain[static_cast<std::size_t>(k)])] =
+                                glm::mix(midPos, goal, glm::min(1.0f, acc / len2));
+                        }
+                    }
+                }
+            }
+        }
+        chainTracing = (e.node == kChainTraceNode);
+        if (chainTracing) {
+            std::printf("    [chain] eff=%d len=%zu subBase=%d seedErr=%.4f chainLen=%.3f goalDist=%.3f\n",
+                        e.node, chain.size(), chain.back(),
+                        glm::length(positions[static_cast<std::size_t>(e.node)] - goal), chainLen,
+                        glm::length(positions[static_cast<std::size_t>(chain.back())] - goal));
+        }
+        for (int round = 0; round < maxRounds && chainBestErr > settings.tolerance; ++round) {
+            const float pinErr =
+                glm::length(positions[static_cast<std::size_t>(e.node)] - goal);
+            const bool chainStalled = round > 0 && pinErr > chainPrevErr - settings.tolerance;
+            if (chainTracing) {
+                std::printf("     [round %d] entryErr=%.4f stalled=%d\n", round, pinErr, chainStalled ? 1 : 0);
+            }
+            chainPrevErr = pinErr;
+            const float chainBias =
+                (earlyPhase && chainStalled && foldNeeded && pinErr > kKickErrorFloor)
+                    ? kickFor(pinErr)
+                    : 0.0f;
+            // Forward-reach from the pin toward the (fixed) sub-base.
+            positions[static_cast<std::size_t>(chain[0])] = goal;
+            for (std::size_t m = 1; m + 1 < chain.size(); ++m) {
+                const glm::vec3& prev = positions[static_cast<std::size_t>(chain[m - 1])];
+                glm::vec3 toNode = positions[static_cast<std::size_t>(chain[m])] - prev;
+                const float len = glm::length(toNode);
+                const float boneLen = lengthToParent[static_cast<std::size_t>(chain[m - 1])];
+                positions[static_cast<std::size_t>(chain[m])] =
+                    (len > kZeroLength) ? prev + toNode * (boneLen / len) : prev;
+            }
+            // Constrained backward walk from the sub-base down to the pin.
+            for (std::size_t m = chain.size() - 1; m-- > 0;) {
+                placeChild(chain[m], chain[m + 1], chainBias);
+            }
+#ifdef IK_DEBUG_PRINT
+            std::printf("  [restore] pin %d chain %zu sub-base %d round %d err %g bias %g\n",
+                        e.node, chain.size(), chain.back(), round,
+                        glm::length(positions[static_cast<std::size_t>(e.node)] - goal),
+                        chainBias);
+#endif
+            const float roundErr =
+                glm::length(positions[static_cast<std::size_t>(e.node)] - goal);
+            if (roundErr < chainBestErr) {
+                chainBestErr = roundErr;
+                for (std::size_t m = 0; m < chain.size(); ++m) {
+                    chainBest[m] = positions[static_cast<std::size_t>(chain[m])];
+                    chainBestFrame[m] = frame[static_cast<std::size_t>(chain[m])];
+                }
+            }
+        }
+        if (chainTracing) {
+            std::printf("    [chain] eff=%d bestErr=%.4f\n", e.node, chainBestErr);
+        }
+        chainTracing = false;
+        // Leave the limb in its best configuration, not the last round's — FRAMES included:
+        // a later effector's chain may anchor at this effector's node (the "another effector"
+        // sub-base case), and restoring positions while leaving the frames at a discarded
+        // kicked round's values constrained that chain about an orientation this node no
+        // longer holds.
+        for (std::size_t m = 0; m < chain.size(); ++m) {
+            positions[static_cast<std::size_t>(chain[m])] = chainBest[m];
+            frame[static_cast<std::size_t>(chain[m])] = chainBestFrame[m];
+        }
+        if (kSolverTrace) {
+            traceChainLen[ei] = chain.size();
+            traceSubBase[ei] = chain.back();
+            traceChainErr[ei] = chainBestErr;
+        }
+    };
+
     for (int iter = 0;
          iter < settings.maxIterations && (iter == 0 || error > settings.tolerance); ++iter) {
         const bool earlyPhase = iter < settings.maxIterations - 4;
+        for (std::size_t ei = 0; ei < effectors.size(); ++ei) {
+            const IkEffector& e = effectors[ei];
+            const bool backsOff = !e.hard && (!e.pinned || e.node == root);
+            // Back off toward the SOLVE-ENTRY position (not the node's current one, which the
+            // early iterations already advanced — that "retreat" never retreated): at full
+            // back-off the goal asks for no progress this solve at all.
+            effTarget[ei] =
+                (backsOff && goalBackoff > 0.0f && e.node >= 0 && e.node < n)
+                    ? glm::mix(e.target, entryPositions[static_cast<std::size_t>(e.node)],
+                               goalBackoff)
+                    : e.target;
+        }
         // --- Forward pass (leaves -> root): reach for the targets. ---
         for (std::size_t idx = order.size(); idx-- > 0;) {
             const int node = order[idx];
@@ -244,17 +689,24 @@ float FabrikSolver::solve(const SkeletonGraph& graph, const std::vector<char>& a
             glm::vec3 pos = positions[static_cast<std::size_t>(node)];
             if (!kids.empty()) {
                 // Sub-base rule: each moved child proposes a position at bone-length back along
-                // the child->node direction; a branching joint takes the centroid.
+                // the child->node direction; a branching joint takes the centroid — WEIGHTED
+                // toward pin-serving branches at non-root joints (kPinPriority; the root keeps
+                // the plain average — its reach is governed by the leashes). See servesPin.
                 glm::vec3 centroid(0.0f);
+                float weightSum = 0.0f;
                 for (const int c : kids) {
                     const glm::vec3& childPos = positions[static_cast<std::size_t>(c)];
                     const glm::vec3 toNode = pos - childPos;
                     const float len = glm::length(toNode);
                     const float boneLen = lengthToParent[static_cast<std::size_t>(c)];
-                    centroid += (len > kZeroLength) ? childPos + toNode * (boneLen / len)
-                                                    : childPos;
+                    const float w =
+                        (node != root && servesPin[static_cast<std::size_t>(c)]) ? kPinPriority
+                                                                                  : 1.0f;
+                    centroid += w * ((len > kZeroLength) ? childPos + toNode * (boneLen / len)
+                                                         : childPos);
+                    weightSum += w;
                 }
-                pos = centroid / static_cast<float>(kids.size());
+                pos = centroid / weightSum;
             }
             const int e = effectorAt[static_cast<std::size_t>(node)];
             if (e >= 0) {
@@ -263,7 +715,7 @@ float FabrikSolver::solve(const SkeletonGraph& graph, const std::vector<char>& a
                 const IkEffector& eff = effectors[static_cast<std::size_t>(e)];
                 const float w = kids.empty() ? glm::clamp(eff.weight, 0.0f, 1.0f)
                                              : glm::clamp(eff.weight, 0.0f, 1.0f) * 0.5f;
-                pos = glm::mix(pos, eff.target, w);
+                pos = glm::mix(pos, effTarget[static_cast<std::size_t>(e)], w);
             }
             positions[static_cast<std::size_t>(node)] = pos;
         }
@@ -336,6 +788,16 @@ float FabrikSolver::solve(const SkeletonGraph& graph, const std::vector<char>& a
                 }
             }
         }
+        if (settings.floorClearance != nullptr &&
+            static_cast<int>(settings.floorClearance->size()) == n) {
+            // The root is placed by nobody: hold it above its own clearance.
+            glm::vec3& rootPos = positions[static_cast<std::size_t>(root)];
+            const float minY =
+                settings.floorY + (*settings.floorClearance)[static_cast<std::size_t>(root)];
+            if (rootPos.y < minY) {
+                rootPos.y = minY;
+            }
+        }
         IK_NAN_CHECK("forward", iter);
 
         // --- Backward pass (root -> leaves): restore lengths and constraints from the root out.
@@ -344,7 +806,7 @@ float FabrikSolver::solve(const SkeletonGraph& graph, const std::vector<char>& a
         const int rootEffector = effectorAt[static_cast<std::size_t>(root)];
         if (rootEffector >= 0 && effectors[static_cast<std::size_t>(rootEffector)].pinned) {
             positions[static_cast<std::size_t>(root)] =
-                effectors[static_cast<std::size_t>(rootEffector)].target;
+                effTarget[static_cast<std::size_t>(rootEffector)];
         }
         frame[static_cast<std::size_t>(root)] = frameSeed[static_cast<std::size_t>(root)];
         for (const int node : order) {
@@ -370,267 +832,20 @@ float FabrikSolver::solve(const SkeletonGraph& graph, const std::vector<char>& a
         // limb moves — the body keeps the global solution. The fold-escape kick lives HERE and
         // only here, because fold need is geometrically well-defined per chain (see below) —
         // this is also what lets a straight arm bend its elbow to bring the hand inward.
-        for (const IkEffector& e : effectors) {
-            if (e.node < 0 || e.node >= n || !active[static_cast<std::size_t>(e.node)]) {
-                continue;
-            }
-            chain.clear();
-            int cur = e.node;
-            chain.push_back(cur);
-            while (true) {
-                const int p = graph.parentOf(cur);
-                if (p < 0) {
-                    break; // cur is the root: it is the sub-base
-                }
-                chain.push_back(p);
-                // The chain's fixed end: the anchor, an INACTIVE ancestor (a caller-frozen base
-                // — e.g. the trunk during an upward limb drag; restoring through it moved nodes
-                // the active mask promised were untouched), a branching ancestor, or ANOTHER
-                // EFFECTOR — restoring through an interior goal (the dragged hip on the way to
-                // the far foot's pin) would undo that goal every round and the two would fight
-                // forever.
-                if (p == root || !active[static_cast<std::size_t>(p)] ||
-                    activeChildren[static_cast<std::size_t>(p)].size() > 1 ||
-                    effectorAt[static_cast<std::size_t>(p)] >= 0) {
-                    break;
-                }
-                cur = p;
-            }
-            if (chain.size() < 2) {
-                continue;
-            }
-            // The chain's goal honours the effector's WEIGHT: a full-strength goal (every pin,
-            // the drag effector) is restored exactly onto its target, while a soft goal fading
-            // in is restored only toward the weight-blended point — hard-snapping regardless of
-            // weight would defeat the continuous fade the forward pass and prior-yield implement
-            // (latent today: every restored effector currently carries weight 1).
-            const glm::vec3 goal =
-                e.weight >= 1.0f
-                    ? e.target
-                    : glm::mix(positions[static_cast<std::size_t>(e.node)], e.target,
-                               glm::clamp(e.weight, 0.0f, 1.0f));
-            // Single-chain FABRIK on the limb, iterated: one round is not enough when the limb
-            // must fold (the constrained backward walk re-orients the hinge planes, and the next
-            // forward-reach exploits the new orientation). Rounds run pure until one stops
-            // improving, then a kick (scaled by the chain's OWN error) tries to break a straight
-            // lock — and the chain KEEPS ITS BEST configuration across rounds: constrained greedy
-            // iteration can wander into legal-but-wrong basins, and a kicked round that helped is
-            // kept while one that hurt is discarded, so restoration can never make a pin WORSE.
-            //
-            // The kick is gated on FOLD NEED — the pin target lying well INSIDE the chain's reach,
-            // so a bend is geometrically required (a crouch: the sub-base dropped toward the
-            // feet). Error size alone is NOT a fold signal: a standing leg whose foot pin drifted
-            // a few cm has its target AT reach — kicking it (toward the thigh's dominant range
-            // side = hip flexion) hoisted the knee of a planted leg during ordinary hand drags.
-            float chainLen = 0.0f;
-            for (std::size_t m = 0; m + 1 < chain.size(); ++m) {
-                chainLen += lengthToParent[static_cast<std::size_t>(chain[m])];
-            }
-            // The kick fires only for targets requiring a DEEP fold (< 90% of chain length): a
-            // crouch's knees and a reaching arm's elbow qualify and benefit even mid-bend, while
-            // near-full-extension targets (a hovering figure healing down onto its pins at ~93%
-            // reach, a leg planting at a leash boundary) are EXTENSION problems where the same
-            // push over-folds the joint and holds the end off its target. This one threshold
-            // separated the three scenarios that defeated extension-ratio and must-shorten gates.
-            const bool foldNeeded =
-                glm::length(positions[static_cast<std::size_t>(chain.back())] - goal) <
-                0.90f * chainLen;
-            chainBest.clear();
-            chainBestFrame.clear();
-            for (const int cnode : chain) {
-                chainBest.push_back(positions[static_cast<std::size_t>(cnode)]);
-                chainBestFrame.push_back(frame[static_cast<std::size_t>(cnode)]);
-            }
-            float chainBestErr =
-                glm::length(positions[static_cast<std::size_t>(e.node)] - goal);
-            float chainPrevErr = chainBestErr;
-
-            // --- Analytic TWO-BONE assist (legs): greedy constrained rounds have a recurring
-            // failure basin at near-full extension — a leg whose foot pin sits at ~95% reach
-            // hard-stops centimeters short, and once there no amount of iteration recovers (the
-            // "extend-to-plant" soft spot: crouch feet lagging, a sustained hand pull gradually
-            // trading a planted foot away, strained releases stalling off their pins). For a
-            // chain that collapses to exactly TWO effective segments — its interior joints all
-            // rigid pass-throughs (mid-limb twist bones) except one (the knee) — the mid-joint
-            // position is computed ANALYTICALLY (two-sphere intersection circle, taking the
-            // point nearest the current mid joint so the existing bend side/pose continuity is
-            // preserved), the pass-throughs are seeded along the segments, and the normal
-            // constrained rounds below legalize the configuration against the joint limits.
-            // Purely exploratory: chainBest keeps the seed only if it actually lands the
-            // effector better, so a bad seed costs nothing. Arms (collar+shoulder+elbow chains
-            // have >2 effective joints) don't match and keep the iterative path.
-            if (chain.size() >= 4 && chainBestErr > settings.tolerance) {
-                int mid = -1;
-                int base = -1;
-                // The MID joint is the chain's deepest-folding real joint (knee/elbow class,
-                // widest dominant range, at least ~100°), the BASE the next real joint above it.
-                // Selecting by fold capability, not adjacency: a metatarsal-pinned chain's first
-                // two real joints are ankle+knee — a degenerate short-segment pair whose seed
-                // always lost, leaving the leg with no assist at all (feet lagged their pins
-                // whenever the pin sat below the ankle).
-                const auto dominantRange = [&](std::size_t m) {
-                    const JointConstraint& jc =
-                        edgeConstraint[static_cast<std::size_t>(chain[m - 1])];
-                    if (jc.type == JointConstraint::Type::Hinge) {
-                        return jc.maxAngle - jc.minAngle;
-                    }
-                    if (jc.type == JointConstraint::Type::Cone && jc.perAxis) {
-                        return std::max(jc.swing0Max - jc.swing0Min, jc.swing1Max - jc.swing1Min);
-                    }
-                    if (jc.type == JointConstraint::Type::Free) {
-                        return 6.2831853f;
-                    }
-                    return 0.0f; // rigid (zero-swing) pass-through
-                };
-                // First DEEP-FOLD joint from the effector (>= 120°: knees ~166° and elbows
-                // ~155° qualify; a ~110° ankle or a small wrist does not — those articulate
-                // slightly inside the lower segment and the constrained walk absorbs them).
-                // Taking the WIDEST joint instead broke arms whose shoulder is freer than the
-                // elbow: the pair straddled the articulated elbow and fought its fold.
-                // A qualifying mid must also carry a REAL lower segment (>= 20% of the chain,
-                // scale-invariant): a FINGER effector's chain runs through the knuckles, and a
-                // knuckle's ~140° curl range passed the fold gate — the assist then worked a
-                // 4cm finger pair while the ELBOW (the joint that actually extends the arm
-                // overhead) got no assist at all, stalling a raised-by-the-finger hand at chin
-                // height (grabbing near a hand almost always picks a finger).
-                for (std::size_t m = 1; m + 1 < chain.size(); ++m) {
-                    if (dominantRange(m) < glm::radians(120.0f)) {
-                        continue;
-                    }
-                    float lowerLen = 0.0f;
-                    for (std::size_t k = 0; k < m; ++k) {
-                        lowerLen += lengthToParent[static_cast<std::size_t>(
-                            chain[static_cast<std::size_t>(k)])];
-                    }
-                    if (lowerLen < 0.2f * chainLen) {
-                        continue;
-                    }
-                    mid = static_cast<int>(m);
-                    break;
-                }
-                if (mid >= 0) {
-                    for (std::size_t m = static_cast<std::size_t>(mid) + 1; m + 1 < chain.size();
-                         ++m) {
-                        if (dominantRange(m) > 1e-5f) {
-                            base = static_cast<int>(m); // nearest real joint above the fold
-                            break;
-                        }
-                    }
-                }
-                static const bool kTwoBoneTrace = std::getenv("IK_TWOBONE_TRACE") != nullptr;
-                if (kTwoBoneTrace) {
-                    std::printf("[2bone] eff=%d chainN=%zu mid=%d(node %d) base=%d(node %d)\n",
-                                e.node, chain.size(), mid,
-                                mid >= 0 ? chain[static_cast<std::size_t>(mid)] : -1, base,
-                                base >= 0 ? chain[static_cast<std::size_t>(base)] : -1);
-                }
-                if (base > mid && mid > 0) {
-                    // Segment rest offsets (kinks included) from the rest geometry: base->mid
-                    // spans edges chain[mid..base-1], mid->effector spans chain[0..mid-1].
-                    glm::vec3 upper(0.0f);
-                    for (int k = mid; k < base; ++k) {
-                        upper += edgeRestDir[static_cast<std::size_t>(chain[static_cast<std::size_t>(k)])] *
-                                 lengthToParent[static_cast<std::size_t>(chain[static_cast<std::size_t>(k)])];
-                    }
-                    glm::vec3 lower(0.0f);
-                    for (int k = 0; k < mid; ++k) {
-                        lower += edgeRestDir[static_cast<std::size_t>(chain[static_cast<std::size_t>(k)])] *
-                                 lengthToParent[static_cast<std::size_t>(chain[static_cast<std::size_t>(k)])];
-                    }
-                    const float len1 = glm::length(upper);
-                    const float len2 = glm::length(lower);
-                    const glm::vec3 basePos =
-                        positions[static_cast<std::size_t>(chain[static_cast<std::size_t>(base)])];
-                    glm::vec3 toTarget = goal - basePos;
-                    float d = glm::length(toTarget);
-                    if (len1 > kZeroLength && len2 > kZeroLength && d > kZeroLength) {
-                        d = glm::clamp(d, std::abs(len1 - len2) + 1e-4f, len1 + len2 - 1e-4f);
-                        const glm::vec3 axis = toTarget / glm::length(toTarget);
-                        // Mid-joint circle: distance a from the base along the axis, radius r.
-                        const float a = (len1 * len1 - len2 * len2 + d * d) / (2.0f * d);
-                        const float r2 = len1 * len1 - a * a;
-                        const glm::vec3 center = basePos + axis * a;
-                        const glm::vec3 curMid =
-                            positions[static_cast<std::size_t>(chain[static_cast<std::size_t>(mid)])];
-                        glm::vec3 perp = (curMid - center) - axis * glm::dot(curMid - center, axis);
-                        const float perpLen = glm::length(perp);
-                        if (r2 > 1e-8f && perpLen > 1e-5f) {
-                            const glm::vec3 midPos = center + perp * (std::sqrt(r2) / perpLen);
-                            // Seed: mid joint on the circle, pass-throughs linearly along their
-                            // segment (cumulative rest length), effector on the target.
-                            float acc = 0.0f;
-                            for (int k = base - 1; k >= mid; --k) {
-                                acc += lengthToParent[static_cast<std::size_t>(
-                                    chain[static_cast<std::size_t>(k)])];
-                                positions[static_cast<std::size_t>(chain[static_cast<std::size_t>(k)])] =
-                                    glm::mix(basePos, midPos, glm::min(1.0f, acc / len1));
-                            }
-                            acc = 0.0f;
-                            for (int k = mid - 1; k >= 0; --k) {
-                                acc += lengthToParent[static_cast<std::size_t>(
-                                    chain[static_cast<std::size_t>(k)])];
-                                positions[static_cast<std::size_t>(chain[static_cast<std::size_t>(k)])] =
-                                    glm::mix(midPos, goal, glm::min(1.0f, acc / len2));
-                            }
-                        }
-                    }
-                }
-            }
-            for (int round = 0; round < 8 && chainBestErr > settings.tolerance; ++round) {
-                const float pinErr =
-                    glm::length(positions[static_cast<std::size_t>(e.node)] - goal);
-                const bool chainStalled = round > 0 && pinErr > chainPrevErr - settings.tolerance;
-                chainPrevErr = pinErr;
-                const float chainBias =
-                    (earlyPhase && chainStalled && foldNeeded && pinErr > kKickErrorFloor)
-                        ? kickFor(pinErr)
-                        : 0.0f;
-                // Forward-reach from the pin toward the (fixed) sub-base.
-                positions[static_cast<std::size_t>(chain[0])] = goal;
-                for (std::size_t m = 1; m + 1 < chain.size(); ++m) {
-                    const glm::vec3& prev = positions[static_cast<std::size_t>(chain[m - 1])];
-                    glm::vec3 toNode = positions[static_cast<std::size_t>(chain[m])] - prev;
-                    const float len = glm::length(toNode);
-                    const float boneLen = lengthToParent[static_cast<std::size_t>(chain[m - 1])];
-                    positions[static_cast<std::size_t>(chain[m])] =
-                        (len > kZeroLength) ? prev + toNode * (boneLen / len) : prev;
-                }
-                // Constrained backward walk from the sub-base down to the pin.
-                for (std::size_t m = chain.size() - 1; m-- > 0;) {
-                    placeChild(chain[m], chain[m + 1], chainBias);
-                }
-#ifdef IK_DEBUG_PRINT
-                std::printf("  [restore] pin %d chain %zu sub-base %d round %d err %g bias %g\n",
-                            e.node, chain.size(), chain.back(), round,
-                            glm::length(positions[static_cast<std::size_t>(e.node)] - goal),
-                            chainBias);
-#endif
-                const float roundErr =
-                    glm::length(positions[static_cast<std::size_t>(e.node)] - goal);
-                if (roundErr < chainBestErr) {
-                    chainBestErr = roundErr;
-                    for (std::size_t m = 0; m < chain.size(); ++m) {
-                        chainBest[m] = positions[static_cast<std::size_t>(chain[m])];
-                        chainBestFrame[m] = frame[static_cast<std::size_t>(chain[m])];
-                    }
-                }
-            }
-            // Leave the limb in its best configuration, not the last round's — FRAMES included:
-            // a later effector's chain may anchor at this effector's node (the "another effector"
-            // sub-base case), and restoring positions while leaving the frames at a discarded
-            // kicked round's values constrained that chain about an orientation this node no
-            // longer holds.
-            for (std::size_t m = 0; m < chain.size(); ++m) {
-                positions[static_cast<std::size_t>(chain[m])] = chainBest[m];
-                frame[static_cast<std::size_t>(chain[m])] = chainBestFrame[m];
-            }
+        for (std::size_t ei = 0; ei < effectors.size(); ++ei) {
+            restoreChain(ei, kRestoreRounds, earlyPhase);
         }
 
         IK_NAN_CHECK("restore", iter);
+        traceIters = iter + 1;
+        if (anyHardPin && worstHardPinError() > kHardPinTol) {
+            goalBackoff = std::min(1.0f, goalBackoff + kGoalBackoffStep);
+        }
         error = worstError();
         if (error < bestError) {
             bestError = error;
             bestPositions = positions;
+            bestFrame = frame;
         }
 #ifdef IK_DEBUG_PRINT
         std::printf("[fabrik] iter %d error %g\n", iter, error);
@@ -642,6 +857,31 @@ float FabrikSolver::solve(const SkeletonGraph& graph, const std::vector<char>& a
     }
     if (!bestPositions.empty()) {
         positions = bestPositions;
+        frame = bestFrame;
+    }
+    // HARD-PIN POLISH (see kHardPinPolishRounds): one well-converged restoration of each hard
+    // pin's chain on the final state — no kick (pure), frames consistent with the kept state.
+    if (anyHardPin) {
+        for (std::size_t ei = 0; ei < effectors.size(); ++ei) {
+            if (effectors[ei].hard) {
+                restoreChain(ei, kHardPinPolishRounds, false);
+            }
+        }
+        bestError = worstError();
+    }
+    if (kSolverTrace) {
+        std::printf("    [solver] iters=%d backoff=%.2f best=%.4f\n", traceIters, goalBackoff,
+                    bestError);
+        for (std::size_t ei = 0; ei < effectors.size(); ++ei) {
+            const IkEffector& e = effectors[ei];
+            const float err = (e.node >= 0 && e.node < n)
+                                  ? glm::length(positions[static_cast<std::size_t>(e.node)] - e.target)
+                                  : -1.0f;
+            std::printf("      eff node=%d pinned=%d hard=%d w=%.2f err=%.4f chainLen=%zu "
+                        "subBase=%d chainErr=%.4f\n",
+                        e.node, e.pinned ? 1 : 0, e.hard ? 1 : 0, e.weight, err,
+                        traceChainLen[ei], traceSubBase[ei], traceChainErr[ei]);
+        }
     }
     // Trust region (see Settings): clamp every active node's displacement from its entry
     // position, so per-event pose change is bounded and internal basin switches can never snap.

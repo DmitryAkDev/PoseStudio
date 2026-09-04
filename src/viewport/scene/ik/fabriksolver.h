@@ -48,6 +48,17 @@ struct IkEffector {
     bool      pinned = false;
     float     weight = 1.0f;      ///< Pull strength (1 = snap): interior soft goals use less.
     float     leashRadius = -1.0f; ///< Pins only: max root distance from this pin (see solver).
+    /// Pins only: the leash ball is centered at (target - leashOffset), not the target — a limb
+    /// hangs from its SOCKET (the root's child on the pin's chain), which sits off the root by a
+    /// fixed offset in the root's (never-solved) frame; a ball centered on the pin itself let
+    /// the root sit on the ball's far side with the socket genuinely out of reach (a planted
+    /// foot 8cm short under a hard lean). The rig supplies the drag-start root->socket offset.
+    glm::vec3 leashOffset{0.0f};
+    /// HARD pin (a user-placed pin): it beats every goal. When the iteration cannot hold a hard
+    /// pin, the solver backs the soft goals (and a dragged root) off toward where they already
+    /// are until the pin holds — the pin never slips to serve a drag. Ground-contact pins are
+    /// NOT hard: their slipping under strain is the signal the balance stepper reads.
+    bool hard = false;
 };
 
 /// Solver configuration knobs (see FabrikSolver::solve). Lives at NAMESPACE SCOPE, not nested
@@ -90,6 +101,15 @@ struct FabrikSettings {
     /// while the user pulls. Sub-deadband proposals become bit-identical stillness; real
     /// corrections (multi-millimeter) pass untouched.
     float minStepDisplacement = 0.0f;
+    /// THE FLOOR as a hard constraint (the rig supplies both; null = off): after every
+    /// iteration's restoration, each active node is projected up to floorY + its clearance —
+    /// a joint's rest height above the floor for the ground contacts (an ankle's 8cm, a toe's
+    /// 1cm), a flesh radius for everything else — so the solve never PROPOSES a pose with a
+    /// hand, knee, or heel through the floor (the next passes restore lengths around the
+    /// projection; it converges like any FABRIK constraint). Extraction-side lifts were tried
+    /// instead and ratcheted the figure upward against the governor's relaxed push.
+    float                     floorY = -1e9f;
+    const std::vector<float>* floorClearance = nullptr;
 };
 
 /**

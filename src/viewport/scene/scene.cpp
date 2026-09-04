@@ -448,6 +448,13 @@ int Scene::pickModel(const Ray& ray) const {
 void Scene::removeModel(std::size_t index) {
     if (index < m_models.size()) {
         m_models.erase(m_models.begin() + static_cast<std::ptrdiff_t>(index));
+        // Keep the active figure pointing at the same model (indices above shift down); the
+        // deleted figure itself falls back to the first remaining one.
+        if (m_activeFigure == static_cast<int>(index)) {
+            m_activeFigure = -1;
+        } else if (m_activeFigure > static_cast<int>(index)) {
+            --m_activeFigure;
+        }
     }
 }
 
@@ -669,16 +676,106 @@ void Scene::record(VkCommandBuffer cmd, const Camera& camera, uint32_t frameInde
             const glm::vec3 axisColor[3] = {
                 glm::vec3(1.0f, 0.35f, 0.35f), glm::vec3(0.4f, 1.0f, 0.4f), glm::vec3(0.45f, 0.55f, 1.0f)};
             constexpr float kTwoPi = 6.2831853f;
-            for (int a = 0; a < 3 && count + 2 * kGizmoRingSegments <= kMaxSkeletonVerts; ++a) {
+            constexpr float kPi = 3.14159265f;
+            // Each ring shows the channel's AUTHORED RANGE as the bright arc (theta = 0 is the
+            // rest direction; a positive Euler angle sweeps toward the next axis, the right-hand
+            // rule the ring drag itself uses), the forbidden remainder dimmed; a LOCKED channel
+            // (range under 2°: a knee's sideways axes, a twist bone's swings) draws entirely
+            // grey; and a radial tick marks the channel's CURRENT angle. The rings sit in the
+            // oriented rest frame, so arcs on the second and third channels of the rotation
+            // order are approximate under large first-channel rotations — the same
+            // approximation the ring drag makes.
+            const glm::vec3 euler = fig->boneEuler(static_cast<std::size_t>(selected));
+            for (int a = 0; a < 3 && count + 2 * kGizmoRingSegments + 2 <= kMaxSkeletonVerts; ++a) {
                 const glm::vec3 u = axes[(a + 1) % 3];
                 const glm::vec3 v = axes[(a + 2) % 3];
+                float minDeg = -180.0f;
+                float maxDeg = 180.0f;
+                const bool limited =
+                    fig->boneRotationRange(static_cast<std::size_t>(selected), a, minDeg, maxDeg);
+                const bool locked = limited && (maxDeg - minDeg) < 2.0f;
+                const glm::vec3 dim = axisColor[a] * 0.28f;
+                const glm::vec3 grey(0.45f, 0.45f, 0.45f);
+                const float rMin = glm::radians(minDeg);
+                const float rMax = glm::radians(maxDeg);
                 glm::vec3 prev = center + radius * u; // theta = 0
                 for (int s = 1; s <= kGizmoRingSegments; ++s) {
                     const float t = kTwoPi * static_cast<float>(s) / static_cast<float>(kGizmoRingSegments);
                     const glm::vec3 p = center + radius * (std::cos(t) * u + std::sin(t) * v);
-                    verts[count++] = {prev, axisColor[a]};
-                    verts[count++] = {p, axisColor[a]};
+                    // Signed mid-angle in (-pi, pi], compared against the range.
+                    const float tMid = t - 0.5f * kTwoPi / static_cast<float>(kGizmoRingSegments);
+                    const float signedMid = tMid > kPi ? tMid - kTwoPi : tMid;
+                    const bool inRange = !limited || (signedMid >= rMin && signedMid <= rMax);
+                    const glm::vec3 col = locked ? grey : (inRange ? axisColor[a] : dim);
+                    verts[count++] = {prev, col};
+                    verts[count++] = {p, col};
                     prev = p;
+                }
+                if (!locked) {
+                    // Current-angle tick: a short radial line across the ring.
+                    const float tc = glm::radians(euler[a]);
+                    const glm::vec3 dir = std::cos(tc) * u + std::sin(tc) * v;
+                    const glm::vec3 tickColor(1.0f, 1.0f, 1.0f);
+                    verts[count++] = {center + radius * 0.82f * dir, tickColor};
+                    verts[count++] = {center + radius * 1.18f * dir, tickColor};
+                }
+            }
+        }
+
+        // Balance support polygon: the convex hull of the planted contacts, drawn on the floor
+        // while an IK drag is live — the region the centre of mass must stay over, and the
+        // stance a step re-plants around. A touch above the floor so the grid's lines don't
+        // fight it.
+        {
+            const std::vector<glm::vec3> hull = fig->activeSupportHull();
+            const glm::vec3 hullColor(0.2f, 0.62f, 0.68f);
+            if (hull.size() >= 2 && count + 2 * hull.size() <= kMaxSkeletonVerts) {
+                for (std::size_t h = 0; h < hull.size(); ++h) {
+                    const glm::vec3 a = hull[h] + glm::vec3(0.0f, 0.003f, 0.0f);
+                    const glm::vec3 b = hull[(h + 1) % hull.size()] + glm::vec3(0.0f, 0.003f, 0.0f);
+                    verts[count++] = {a, hullColor};
+                    verts[count++] = {b, hullColor};
+                }
+            }
+        }
+
+        // Pin markers: a small wireframe octahedron on every USER-pinned joint (orange, always
+        // shown — the pin persists across drags), and a smaller cyan one on each ground-contact
+        // pin while an IK drag is live, so it's visible which feet the solve is holding planted.
+        // Screen-constant sizing via the gizmo's radius rule. 12 edges = 24 line vertices each.
+        const auto emitPinMarker = [&](const glm::vec3& c, float r, const glm::vec3& col) {
+            if (count + 24 > kMaxSkeletonVerts) {
+                return;
+            }
+            const glm::vec3 ax[3] = {glm::vec3(r, 0.0f, 0.0f), glm::vec3(0.0f, r, 0.0f),
+                                     glm::vec3(0.0f, 0.0f, r)};
+            for (int i = 0; i < 3; ++i) {
+                const int j = (i + 1) % 3;
+                for (int si = -1; si <= 1; si += 2) {
+                    const glm::vec3 a = c + ax[i] * static_cast<float>(si);
+                    for (int sj = -1; sj <= 1; sj += 2) {
+                        verts[count++] = {a, col};
+                        verts[count++] = {c + ax[j] * static_cast<float>(sj), col};
+                    }
+                }
+            }
+        };
+        const glm::vec3 userPinColor(1.0f, 0.55f, 0.12f);
+        const glm::vec3 contactPinColor(0.25f, 0.9f, 0.95f);
+        for (const int node : fig->activeContactPins()) {
+            if (node >= 0 && static_cast<std::size_t>(node) < fig->boneCount()) {
+                const glm::vec3 c = fig->boneWorldPosition(static_cast<std::size_t>(node));
+                emitPinMarker(c, 0.3f * gizmoRadius(c, camera), contactPinColor);
+            }
+        }
+        for (const std::unique_ptr<Model>& anyFig : m_models) {
+            if (!anyFig->hasSkeleton()) {
+                continue;
+            }
+            for (std::size_t i = 0; i < anyFig->boneCount(); ++i) {
+                if (anyFig->isBonePinned(i)) {
+                    const glm::vec3 c = anyFig->boneWorldPosition(i);
+                    emitPinMarker(c, 0.45f * gizmoRadius(c, camera), userPinColor);
                 }
             }
         }
@@ -697,12 +794,28 @@ void Scene::record(VkCommandBuffer cmd, const Camera& camera, uint32_t frameInde
 }
 
 Model* Scene::figureModel() const {
-    for (const std::unique_ptr<Model>& model : m_models) {
-        if (model->hasSkeleton()) {
-            return model.get();
+    const int idx = activeFigureIndex();
+    return idx >= 0 ? m_models[static_cast<std::size_t>(idx)].get() : nullptr;
+}
+
+int Scene::activeFigureIndex() const {
+    if (m_activeFigure >= 0 && static_cast<std::size_t>(m_activeFigure) < m_models.size() &&
+        m_models[static_cast<std::size_t>(m_activeFigure)]->hasSkeleton()) {
+        return m_activeFigure;
+    }
+    for (std::size_t i = 0; i < m_models.size(); ++i) {
+        if (m_models[i]->hasSkeleton()) {
+            return static_cast<int>(i); // the first figure until one is clicked
         }
     }
-    return nullptr;
+    return -1;
+}
+
+void Scene::setActiveFigure(int index) {
+    if (index >= 0 && static_cast<std::size_t>(index) < m_models.size() &&
+        m_models[static_cast<std::size_t>(index)]->hasSkeleton()) {
+        m_activeFigure = index;
+    }
 }
 
 bool Scene::hasPosableFigure() const { return figureModel() != nullptr; }
@@ -712,26 +825,38 @@ bool Scene::hasSelectedBone() const {
     return fig != nullptr && fig->selectedBone() >= 0;
 }
 
-int Scene::selectBoneAt(float px, float py, float vpW, float vpH, const Camera& camera) {
+int Scene::selectBoneByName(const std::string& name) {
     Model* fig = figureModel();
-    if (!fig) {
-        return -1;
-    }
+    return fig ? fig->selectBoneByName(name) : -1;
+}
+
+int Scene::selectBoneAt(float px, float py, float vpW, float vpH, const Camera& camera) {
+    // Every figure's joints compete: the nearest projected joint of ANY figure wins, and its
+    // figure becomes the active one (the posing target). Without this a second figure in the
+    // scene could never be posed — every call went to the first skeleton.
     const glm::mat4 viewProj = camera.viewProjection();
+    int bestModel = -1;
     int best = -1;
     float bestDist = 1e9f;
-    for (std::size_t i = 0; i < fig->boneCount(); ++i) {
-        const glm::vec4 clip = viewProj * glm::vec4(fig->boneWorldPosition(i), 1.0f);
-        if (clip.w <= 1e-4f) {
-            continue; // behind the camera
+    for (std::size_t m = 0; m < m_models.size(); ++m) {
+        const Model* fig = m_models[m].get();
+        if (!fig->hasSkeleton()) {
+            continue;
         }
-        const glm::vec3 ndc = glm::vec3(clip) / clip.w;
-        const float sx = (ndc.x * 0.5f + 0.5f) * vpW;
-        const float sy = (ndc.y * 0.5f + 0.5f) * vpH; // viewProj already carries Vulkan's Y flip
-        const float dist = glm::length(glm::vec2(sx - px, sy - py));
-        if (dist < bestDist) {
-            bestDist = dist;
-            best = static_cast<int>(i);
+        for (std::size_t i = 0; i < fig->boneCount(); ++i) {
+            const glm::vec4 clip = viewProj * glm::vec4(fig->boneWorldPosition(i), 1.0f);
+            if (clip.w <= 1e-4f) {
+                continue; // behind the camera
+            }
+            const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+            const float sx = (ndc.x * 0.5f + 0.5f) * vpW;
+            const float sy = (ndc.y * 0.5f + 0.5f) * vpH; // viewProj already carries Vulkan's Y flip
+            const float dist = glm::length(glm::vec2(sx - px, sy - py));
+            if (dist < bestDist) {
+                bestDist = dist;
+                best = static_cast<int>(i);
+                bestModel = static_cast<int>(m);
+            }
         }
     }
     // (Re)select only when the click lands near a joint. On a miss return -1 (so the caller orbits the
@@ -739,7 +864,14 @@ int Scene::selectBoneAt(float px, float py, float vpW, float vpH, const Camera& 
     // a joint is selected.
     constexpr float kPickRadiusPx = 32.0f; // click tolerance around a projected joint
     if (best >= 0 && bestDist <= kPickRadiusPx) {
-        fig->setSelectedBone(best);
+        if (bestModel != activeFigureIndex()) {
+            // Switching figures: the previous one's selection (and gizmo) goes away.
+            if (Model* previous = figureModel()) {
+                previous->setSelectedBone(-1);
+            }
+        }
+        setActiveFigure(bestModel);
+        m_models[static_cast<std::size_t>(bestModel)]->setSelectedBone(best);
         return best;
     }
     return -1;
@@ -793,6 +925,38 @@ bool Scene::groundFigure() {
         return fig->dropToGround();
     }
     return false;
+}
+
+bool Scene::figureGroundGap(float& lowestY) const {
+    const Model* fig = figureModel();
+    return fig != nullptr && fig->groundGap(lowestY);
+}
+
+void Scene::translateFigureY(float dy) {
+    if (Model* fig = figureModel()) {
+        fig->translateY(dy);
+    }
+}
+
+bool Scene::togglePinSelectedBone() {
+    Model* fig = figureModel();
+    return fig && fig->togglePinSelectedBone();
+}
+
+bool Scene::selectedBonePinned() const {
+    const Model* fig = figureModel();
+    return fig && fig->selectedBonePinned();
+}
+
+bool Scene::hasPinnedBones() const {
+    const Model* fig = figureModel();
+    return fig && fig->hasPinnedBones();
+}
+
+void Scene::unpinAllBones() {
+    if (Model* fig = figureModel()) {
+        fig->unpinAllBones();
+    }
 }
 
 int Scene::gizmoAxisAt(float px, float py, float vpW, float vpH, const Camera& camera) const {

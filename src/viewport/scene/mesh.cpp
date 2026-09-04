@@ -65,6 +65,11 @@ glm::mat4 eulerMatrix(const glm::vec3& degrees, const std::string& order) {
 // files load and old builds skip the rows). Written by FBIK for the skeleton root: rotations
 // alone can't move it, and a feet-pinned crouch must drop the hip.
 constexpr char kPoseTranslationPrefix[] = "@trans:";
+// Likewise "@pin:<boneName>" rows carry the user's joint PINS (value unused, written as 1 0 0):
+// a pin is part of the pose snapshot, so pin toggles are undoable, a drag's undo restores the
+// pins of that moment, and a .pose file reproduces its pins. Old builds skip the rows; a file
+// without them loads with no pins.
+constexpr char kPosePinPrefix[] = "@pin:";
 
 // Evaluates a corrective driver spline at @p x: a Catmull-Rom Hermite through the (ascending-in-x)
 // knots, clamped flat outside the knot range and — within each segment — clamped to that segment's
@@ -609,6 +614,11 @@ std::vector<std::pair<std::string, glm::vec3>> Model::capturePose() const {
             pose.emplace_back(kPoseTranslationPrefix + m_boneNames[i], t);
         }
     }
+    for (std::size_t i = 0; i < m_bonePinned.size() && i < m_bones.size(); ++i) {
+        if (m_bonePinned[i]) {
+            pose.emplace_back(kPosePinPrefix + m_boneNames[i], glm::vec3(1.0f, 0.0f, 0.0f));
+        }
+    }
     return pose;
 }
 
@@ -619,8 +629,17 @@ void Model::applyPose(const std::vector<std::pair<std::string, glm::vec3>>& pose
     for (glm::vec3& t : m_boneTranslation) {
         t = glm::vec3(0.0f);
     }
+    m_bonePinned.assign(m_bones.size(), 0); // the snapshot's pins replace the current ones
     constexpr std::size_t prefixLen = sizeof(kPoseTranslationPrefix) - 1;
+    constexpr std::size_t pinPrefixLen = sizeof(kPosePinPrefix) - 1;
     for (const auto& [name, value] : pose) {
+        if (name.compare(0, pinPrefixLen, kPosePinPrefix) == 0) {
+            const auto it = m_boneIndex.find(name.substr(pinPrefixLen));
+            if (it != m_boneIndex.end()) {
+                m_bonePinned[static_cast<std::size_t>(it->second)] = 1;
+            }
+            continue;
+        }
         if (name.compare(0, prefixLen, kPoseTranslationPrefix) == 0) {
             const auto it = m_boneIndex.find(name.substr(prefixLen));
             if (it != m_boneIndex.end()) {
@@ -958,6 +977,45 @@ bool Model::intersectRay(const Ray& ray, float& tOut) const {
     if (!m_hasBounds) {
         return false;
     }
+    if (!m_bones.empty() && m_boneWorldPos.size() == m_bones.size()) {
+        // A POSED figure is picked against the world-space box of its live joints plus a flesh
+        // margin, not its bind box: full-body IK walks and crouches move the whole figure
+        // through the hip's pose translation, so after a walk the mesh sat far outside the
+        // bind bounds — a right-click on the character found its joints (those are picked by
+        // live position) but not the model, and the context menu lost its Delete entry.
+        constexpr float kFleshMargin = 0.16f; // metres: the torso's depth around the spine
+        glm::vec3 lo(std::numeric_limits<float>::max());
+        glm::vec3 hi(std::numeric_limits<float>::lowest());
+        for (const glm::vec3& p : m_boneWorldPos) {
+            lo = glm::min(lo, p);
+            hi = glm::max(hi, p);
+        }
+        lo -= glm::vec3(kFleshMargin);
+        hi += glm::vec3(kFleshMargin);
+        float tMin = 0.0f;
+        float tMax = std::numeric_limits<float>::max();
+        for (int axis = 0; axis < 3; ++axis) {
+            if (std::abs(ray.direction[axis]) < 1e-8f) {
+                if (ray.origin[axis] < lo[axis] || ray.origin[axis] > hi[axis]) {
+                    return false;
+                }
+                continue;
+            }
+            const float invD = 1.0f / ray.direction[axis];
+            float t1 = (lo[axis] - ray.origin[axis]) * invD;
+            float t2 = (hi[axis] - ray.origin[axis]) * invD;
+            if (t1 > t2) {
+                std::swap(t1, t2);
+            }
+            tMin = std::max(tMin, t1);
+            tMax = std::min(tMax, t2);
+            if (tMin > tMax) {
+                return false;
+            }
+        }
+        tOut = tMin;
+        return true;
+    }
     // Transform the ray into local space so we can slab-test the AABB directly (equivalent to an
     // oriented-box test in world space, but cheaper). The transform is affine, so the ray
     // parameter t is preserved — the t we find is the same world-space distance for every model.
@@ -992,6 +1050,20 @@ bool Model::intersectRay(const Ray& ray, float& tOut) const {
 }
 
 bool Model::dropToGround() {
+    float minY = 0.0f;
+    if (!groundGap(minY) || std::abs(minY) < 1e-4f) {
+        return false; // nothing sampled, or already resting on the floor
+    }
+    translateY(-minY);
+    return true;
+}
+
+void Model::translateY(float dy) {
+    m_transform = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, dy, 0.0f)) * m_transform;
+    computeSkinMatrices(); // refresh the transform-dependent bone world positions (picking/gizmo)
+}
+
+bool Model::groundGap(float& lowestY) const {
     float minY = std::numeric_limits<float>::max();
     if (!m_bones.empty() && !m_groundSamples.empty()) {
         // Posed lowest point: CPU-skin every ground sample with the CURRENT pose's skin matrices
@@ -1026,11 +1098,10 @@ bool Model::dropToGround() {
     } else {
         return false; // no geometry to ground
     }
-    if (!(minY < std::numeric_limits<float>::max()) || std::abs(minY) < 1e-4f) {
-        return false; // nothing sampled, or already resting on the floor
+    if (!(minY < std::numeric_limits<float>::max())) {
+        return false; // nothing sampled
     }
-    m_transform = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -minY, 0.0f)) * m_transform;
-    computeSkinMatrices(); // refresh the transform-dependent bone world positions (picking/gizmo)
+    lowestY = minY;
     return true;
 }
 

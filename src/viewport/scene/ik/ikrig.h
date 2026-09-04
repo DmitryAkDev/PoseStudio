@@ -70,9 +70,28 @@ public:
     /// (the Model's transform may translate the figure vertically — the Ground button does —
     /// and every bind-height ground reference here must shift with it, or pins heal to a floor
     /// that no longer matches the visible one). Picks the anchor root, pins, active subgraph,
-    /// and support polygon. Returns false if the rig isn't built or the effector is invalid.
+    /// and support polygon. @p userPins (optional) are joints the USER pinned: each is held at
+    /// its current position as a hard pin — never ground-healed, never released by the drag's
+    /// lift reach, never moved by the balance stepper, and kept through suspension (an explicit
+    /// pin is intent). A user pin on the effector itself or in its subtree is ignored for that
+    /// drag (dragging a pinned hand moves the pin). Returns false if the rig isn't built or the
+    /// effector is invalid.
     bool beginDrag(int effectorNode, const std::vector<glm::vec3>& positions,
-                   const std::vector<int>& contactNodes, float groundOffsetY = 0.0f);
+                   const std::vector<int>& contactNodes, float groundOffsetY = 0.0f,
+                   const std::vector<int>* userPins = nullptr);
+
+    /// True if pin @p index (into pins()) is a USER pin rather than a ground contact.
+    bool pinIsUser(std::size_t index) const {
+        return index < m_pinUser.size() && m_pinUser[index] != 0;
+    }
+
+    /// Per node (parallel to the skeleton), 1 = on a USER pin's LIMB chain for the current drag:
+    /// the pin up to (excluding) the junction where its limb joins the axial skeleton — the same
+    /// mass rule as the trunk chain, so a pinned hand's chain runs through the fingers' branching
+    /// up to the collar. The Model exempts these joints from its drag-tick rotational prior: the
+    /// pin's restoration determines them every tick, and a prior decaying toward the drag-START
+    /// pose could only pull the limb off its pin.
+    const std::vector<char>& userPinLimbNodes() const { return m_userPinLimb; }
 
     /// One drag update: solves @p positions (model space, in place) toward @p target with the
     /// pins held and auto-balancing active. @p frameSeed = per-bone current rest->posed rotation
@@ -103,6 +122,17 @@ public:
     }
     bool dragActive() const { return m_effector >= 0; }
 
+    /// True when the current drag's effector carries real body mass below it (its subtree over
+    /// ~5% of the body: the hip, the spine, the chest, the head; a thigh) — a TRUNK gesture that
+    /// moves the body, as opposed to a LIMB gesture placing a hand or a foot. The release settle's
+    /// pose-hold bound (the released joint stays within 2cm of where it was let go) applies to
+    /// limb effectors only: planting the feet after a trunk drag necessarily moves the trunk,
+    /// and the absolute bound left the figure standing 4cm in the air after a stepping chest drag.
+    bool effectorIsTrunk() const {
+        return m_effector >= 0 && static_cast<std::size_t>(m_effector) < m_subtreeMass.size() &&
+               m_subtreeMass[static_cast<std::size_t>(m_effector)] > 0.05f;
+    }
+
     /// The figure's size relative to the adult reference the rig's world-space tuning constants
     /// were calibrated on (pelvis bind height / ~1m, clamped). Every GEOMETRIC threshold —
     /// contact release reach, ground-heal bands, step geometry, suspension strain — scales by
@@ -117,6 +147,19 @@ public:
     /// The current drag's pins (planted contacts / the airborne root fallback) — the Model's
     /// progress-based governor measures goal error against these.
     const std::vector<IkEffector>& pins() const { return m_pins; }
+
+    /// A joint's floor clearance (see FabrikSettings::floorClearance): its rest height above
+    /// the floor for a ground contact, a flesh radius otherwise. The Model clamps the drag
+    /// target with it so the cursor cannot ask for a joint below the floor either.
+    float floorClearance(int node) const {
+        return (node >= 0 && node < static_cast<int>(m_floorClearance.size()))
+                   ? m_floorClearance[static_cast<std::size_t>(node)]
+                   : 0.0f;
+    }
+
+    /// The balance SUPPORT POLYGON of the current drag (model-space XZ, convex hull of the
+    /// planted contacts; empty outside a drag or while suspended) — the overlay draws it.
+    const std::vector<glm::vec2>& supportHull() const { return m_supportHull; }
 
     /// The FBIK solve root (the "pelvis": first multi-child descendant of the anatomical root —
     /// real figures root at an origin-level FIGURE NODE with the hip as its lone child). The
@@ -136,6 +179,17 @@ public:
         }
         const JointConstraint& c = m_edgeConstraint[static_cast<std::size_t>(child)];
         return c.type == JointConstraint::Type::Cone && !c.perAxis && c.coneHalfAngle <= 1e-5f;
+    }
+
+    /// The positional constraint of the edge from @p child's anatomical parent to @p child (a
+    /// default Free constraint for an invalid index). The Model's extraction reads it for the
+    /// TWIST WITNESS (dominantBendTangent): a twist bone's rotation about its own segment is
+    /// fitted from the plane the solve bent its grandchild in.
+    const JointConstraint& edgeConstraint(int child) const {
+        static const JointConstraint kFree{};
+        return (child >= 0 && child < static_cast<int>(m_edgeConstraint.size()))
+                   ? m_edgeConstraint[static_cast<std::size_t>(child)]
+                   : kFree;
     }
 
     /// The node the current drag actually solves for. Usually the grabbed joint passed to
@@ -160,6 +214,13 @@ public:
     /// Balance steps completed during the current drag (diagnostics / tests).
     int stepsTaken() const { return m_stepsTaken; }
 
+    /// The node where @p node's limb joins the AXIAL skeleton — the first ancestor whose
+    /// off-path descendants carry real body mass (the upper chest for anything on an arm, the
+    /// pelvis for a leg or a spine bone). The Model's pin refinement corrects a pin through
+    /// exactly this chain (the pin up to, excluding, the junction): the limb serves its own pin
+    /// and the trunk is never recruited for it.
+    int limbJunction(int node) const { return limbJunction(node, m_subtreeMass); }
+
 private:
     // Built once per figure:
     SkeletonGraph                m_graph;
@@ -168,7 +229,15 @@ private:
     std::vector<glm::vec3>       m_edgeRestDir;    ///< Per bone: rest direction parent -> bone.
     std::vector<float>           m_edgeRestLen;    ///< Per bone: rest length of that edge.
     std::vector<JointConstraint> m_edgeConstraint; ///< Per bone: constraint of that edge.
+    // Per bone: the built twist range of a NEAR-HINGE cone edge (a knee), re-applied per drag:
+    // the knee's fold-plane freedom serves gestures that drive the legs (a trunk drag's crouch
+    // or walk, a foot drag) and is switched off for other limb drags — under a strained hand
+    // pull the legs used it to give laterally, the feet slipped 8cm off their pins, and the
+    // stepper fired mid-pull. True hinges (elbows) keep theirs always.
+    std::vector<glm::vec2>       m_edgeTwistBuilt;
     std::vector<float>           m_masses;         ///< Per bone: segment mass (balance).
+    std::vector<float>           m_subtreeMass;    ///< Per bone: own + descendants' mass.
+    std::vector<float>           m_floorClearance; ///< Per bone: see floorClearance().
     std::vector<char>            m_bodyNode;       ///< False for the figure-node chain above the
                                                    ///< pelvis: no edges, contacts, or mass.
     int                          m_pelvis = -1;    ///< The FBIK root (see rootNode()).
@@ -221,7 +290,15 @@ private:
     // so the support polygon can be rebuilt around a moved pin).
     std::vector<std::vector<glm::vec2>> m_pinFootprint;
     std::vector<glm::vec2>              m_pinStanceOffset;
+    /// The stance center's drag-start XZ offset from the ROOT: an explicit (pelvis-drag)
+    /// anchor is offset by it, so the walk re-creates the stance the figure actually held
+    /// under its hip (the feet naturally sit a few centimetres behind it) rather than one
+    /// centered under the hip. Balance-driven steps stay centered on the CoM itself — that IS
+    /// the re-centering they exist for (offsetting them cost two of a chest drag's four steps).
+    glm::vec2                           m_stanceRootOffset{0.0f};
     std::vector<char>                   m_pinSteppable;
+    std::vector<char>                   m_pinUser; ///< Parallel to m_pins: 1 = user pin.
+    std::vector<char>                   m_userPinLimb; ///< See userPinLimbNodes().
     int       m_stepPin = -1;      ///< Index into m_pins of the foot in flight (-1 = none).
     glm::vec3 m_stepFrom{0.0f};
     glm::vec3 m_stepTo{0.0f};
@@ -238,6 +315,21 @@ private:
     /// Summed bone rest lengths from @p node up to the pelvis (the one metric distance used by
     /// leashes, reach clamps, and suspension alike).
     float pathLenToRoot(int node) const;
+
+    /// The node where @p node's limb joins the AXIAL skeleton: the first ancestor whose OFF-PATH
+    /// descendants carry real body mass (per @p subtreeMass, own + descendants); the pelvis when
+    /// none does. Mass, not branching, identifies the junction — see m_trunkChain.
+    int limbJunction(int node, const std::vector<float>& subtreeMass) const;
+
+    /// Socket-centered reach leash for a pin at @p node held at @p target, in the pose
+    /// @p positions: the limb hangs from its SOCKET (the root's child on the pin's chain), so
+    /// the ball confines the socket — radius = the socket-to-pin distance in this pose (a
+    /// stance the figure provably holds) with fractional headroom for a bent start — and is
+    /// expressed on the root through the root->socket offset written to @p offsetOut (see
+    /// IkEffector::leashOffset). A root-centered ball let the root sit on its far side with the
+    /// socket genuinely out of reach: a planted foot 8cm short under a hard lean.
+    float socketLeash(int node, const glm::vec3& target, const std::vector<glm::vec3>& positions,
+                      glm::vec3& offsetOut) const;
 
     /// Lands the in-flight step: pin onto m_stepTo, leash recomputed against the current root,
     /// support hull rebuilt, step + trigger state cleared. Shared by the swing's final tick and

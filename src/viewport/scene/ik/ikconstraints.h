@@ -55,7 +55,47 @@ struct JointConstraint {
     glm::vec3 swingAxis1{0.0f, 0.0f, 1.0f};
     float     swing0Min = -3.14159265f, swing0Max = 3.14159265f;
     float     swing1Min = -3.14159265f, swing1Max = 3.14159265f;
+    // TWIST FREEDOM (hinges and asymmetric cones): the bend plane may rotate about twistAxis —
+    // the PARENT segment's rest direction (unit, rest space) — within [twistMin, twistMax]
+    // (radians about +twistAxis; equal = none), the authored twist range of the joint that owns
+    // that segment: a mid-limb twist bone (the upper arm's twist swings the elbow's fold plane,
+    // the thigh's the knee's). Without it the solver carried no twist at all — its frames chain
+    // swing-only from the root — so a limb could fold only in the plane its drag-start twist
+    // left it in: a hand pulled in front of the chest stopped 10cm short of a plainly reachable
+    // point, and no damping or prior tuning could touch that (IkRig::build derives it; the
+    // Model's extraction realizes the chosen twist through the TWIST WITNESS, see
+    // dominantBendTangent).
+    glm::vec3 twistAxis{0.0f, 1.0f, 0.0f};
+    float     twistMin = 0.0f;
+    float     twistMax = 0.0f;
 };
+
+/// The direction (unit, rest space) in which @p constraint's segment moves when its joint bends
+/// from rest toward its DOMINANT side — the bend plane's tangent at rest (a hinge's, or an
+/// asymmetric cone's wider swing axis). False for constraints without a dominant bend (free,
+/// isotropic, locked, or a cone whose reach is under 20°). The rotation extraction uses it as a
+/// TWIST WITNESS: the grandchild's solved bend direction, compared against this tangent about the
+/// parent segment, tells the parent twist bone how far to twist so the fold plane lands where the
+/// solve put it — the one component a single aim child leaves unwitnessed.
+bool dominantBendTangent(const JointConstraint& constraint, const glm::vec3& restDir,
+                         glm::vec3& out);
+
+/// The twist (radians about frame * twistAxis, RELATIVE to @p frame) at which @p constraint's
+/// clamp brings @p dir closest — the exact inverse of the solve's twist search, for the rotation
+/// extraction: given the direction the solve bent the segment in, how far its parent must twist
+/// from the fitted frame for the bend to land there. A full turn is searched (the bend's minor
+/// side is a half-turn away), preferring the least change. 0 when the constraint has no twist
+/// freedom.
+float fitTwistToDirection(const JointConstraint& constraint, const glm::quat& frame,
+                          const glm::vec3& restDir, const glm::vec3& dir);
+
+/// True when @p constraint bends essentially in ONE plane: a hinge, or an asymmetric cone whose
+/// minor swing axis reaches under 15° (a knee's few degrees of lateral play). Twist freedom and
+/// the twist witness apply to these joints ONLY — a 2-DoF ball joint (a shoulder, the spine)
+/// chooses its own bend azimuth through its second swing axis, so its "fold plane" is no
+/// witness of the parent's twist, and searching twist there only enlarged the solution space
+/// into churn (the collar drove to its limit, the hand missed its own rest position by 5cm).
+bool bendIsHingeLike(const JointConstraint& constraint);
 
 /// Derives one segment's constraint from its parent joint's authored per-axis Euler limits.
 /// @param orientAxes   The joint's oriented rotation axes (columns; rest/model space) — the frame
@@ -74,10 +114,16 @@ JointConstraint deriveJointConstraint(const glm::mat3& orientAxes, const glm::ve
 /// hinge (a knee/elbow, whose range extends far to one side only) at least that many radians into
 /// its allowed side — FABRIK's escape hatch from the straight-limb singularity, where a fully
 /// extended chain is collinear with its target and no positional pass can decide a bend direction.
+/// @p seedFrame (optional) is the joint's ACTUAL current frame (the solve's frameSeed): with
+/// twist freedom, the twist the current pose already carries — the angle between the chained
+/// swing-only frame's bend axis and the seed's, about the twist axis — is the PREFERRED twist,
+/// evaluated first and favoured by a tiny continuity penalty, so a reachable direction never
+/// flips the fold plane between two equally-good twists from one solve to the next (the
+/// extraction realizes whatever twist the solve chose, the next seed carries it back in).
 /// Returns the clamped unit direction.
 glm::vec3 constrainSegmentDirection(const JointConstraint& constraint, const glm::quat& frame,
                                     const glm::vec3& restDir, const glm::vec3& dir,
-                                    float straightBias = 0.0f);
+                                    float straightBias = 0.0f, const glm::quat* seedFrame = nullptr);
 
 } // namespace pose
 

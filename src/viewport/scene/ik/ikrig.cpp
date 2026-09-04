@@ -212,10 +212,94 @@ void IkRig::build(const std::vector<IkRigBone>& bones) {
     if (m_pelvis >= 0) {
         m_graph.setRoot(m_pelvis);
     }
+    // TWIST FREEDOM for the bend joints (see JointConstraint::twistAxis): the edge J->C
+    // articulated by joint J may rotate its bend plane about the segment T->J within T's
+    // authored twist range, T being J's parent and its twist axis the oriented axis most
+    // parallel to that segment (a mid-limb twist bone's one free channel; on rigs without twist
+    // bones, the limb root's own twist channel). The range is expressed about +T->J, so a twist
+    // axis authored pointing the other way flips it. The pelvis (never rotated by the solve) and
+    // the figure-node chain contribute none. Realized by the Model's twist witness.
+    for (std::size_t c = 0; c < n; ++c) {
+        JointConstraint& jc = m_edgeConstraint[c];
+        if (!bendIsHingeLike(jc)) {
+            continue; // only single-plane benders need (or can use) a movable fold plane
+        }
+        // Near-hinge cones (the knees) take the freedom too: a deep crouch drops and rolls the
+        // pelvis, and a knee that can fold only in its rest plane cannot keep its foot planted
+        // — the solver's own chain error on one foot reached 11cm (the foot buried to the ankle
+        // during a chest push-down). First tried before the landing round, when it perturbed
+        // a strained release; the leash cap and the contact refinement now absorb that.
+        const int j = m_parents[c];
+        if (j < 0) {
+            continue;
+        }
+        const int t = m_parents[static_cast<std::size_t>(j)];
+        if (t < 0 || !m_bodyNode[static_cast<std::size_t>(t)] || t == m_pelvis) {
+            continue;
+        }
+        if (!edgeRigid(j)) {
+            continue; // T must be a PURE twist bone (swings locked): its one channel IS the twist
+        }
+        const glm::vec3 seg = m_bindPos[static_cast<std::size_t>(j)] - m_bindPos[static_cast<std::size_t>(t)];
+        const float segLen = glm::length(seg);
+        if (segLen < 1e-6f) {
+            continue;
+        }
+        const glm::vec3 u = seg / segLen;
+        const IkRigBone& tb = bones[static_cast<std::size_t>(t)];
+        int twist = 0;
+        float bestDot = -1.0f;
+        float signedDot = 0.0f;
+        for (int a = 0; a < 3; ++a) {
+            const float d = glm::dot(glm::normalize(tb.orientAxes[a]), u);
+            if (std::abs(d) > bestDot) {
+                bestDot = std::abs(d);
+                signedDot = d;
+                twist = a;
+            }
+        }
+        if (bestDot < 0.9f) {
+            continue; // the channel would swing the segment more than spin it: not a twist
+        }
+        float lo = glm::radians(-90.0f);
+        float hi = glm::radians(90.0f);
+        if (tb.rotLimited[twist]) {
+            if (tb.rotMaxDeg[twist] - tb.rotMinDeg[twist] < 2.0f) {
+                continue; // locked twist: no freedom
+            }
+            lo = glm::radians(tb.rotMinDeg[twist]);
+            hi = glm::radians(tb.rotMaxDeg[twist]);
+        }
+        if (signedDot < 0.0f) {
+            const float flippedLo = -hi;
+            hi = -lo;
+            lo = flippedLo;
+        }
+        jc.twistAxis = u;
+        jc.twistMin = lo;
+        jc.twistMax = hi;
+    }
+    m_edgeTwistBuilt.assign(n, glm::vec2(0.0f));
+    for (std::size_t c = 0; c < n; ++c) {
+        const JointConstraint& jc = m_edgeConstraint[c];
+        if (jc.type == JointConstraint::Type::Cone && jc.twistMax - jc.twistMin > 1e-6f) {
+            m_edgeTwistBuilt[c] = glm::vec2(jc.twistMin, jc.twistMax);
+        }
+    }
     m_masses = BalanceController::assignMasses(names);
     for (std::size_t i = 0; i < n; ++i) {
         if (!m_bodyNode[i]) {
             m_masses[i] = 0.0f;
+        }
+    }
+    // Per-node subtree mass (own + all descendants): the token-limb promotion and the
+    // trunk-junction search read it. Figure skeletons list parents before children (hierarchy
+    // order), so one reverse pass accumulates leaves into roots.
+    m_subtreeMass = m_masses;
+    for (std::size_t i = n; i-- > 1;) {
+        const int p = m_parents[i];
+        if (p >= 0) {
+            m_subtreeMass[static_cast<std::size_t>(p)] += m_subtreeMass[i];
         }
     }
     // Figure size relative to the adult reference every world-space threshold here was tuned
@@ -231,6 +315,19 @@ void IkRig::build(const std::vector<IkRigBone>& bones) {
             m_sizeScale = glm::clamp(raw, 0.25f, 2.5f);
         }
     }
+    // Floor clearances (see floorClearance()): a joint that rests within the contact band of
+    // the floor keeps its rest height (the ankle above the sole, the toes just off the ground);
+    // any other joint gets a flesh radius. Relative to the bind floor — the per-drag ground
+    // offset is added by the solve.
+    m_floorClearance.assign(n, 0.0f);
+    for (std::size_t i = 0; i < n; ++i) {
+        if (!m_bodyNode[i]) {
+            continue;
+        }
+        const float bindY = m_bindPos[i].y;
+        m_floorClearance[i] = bindY < 0.15f * m_sizeScale ? std::max(bindY, 0.0f)
+                                                          : 0.015f * m_sizeScale;
+    }
 }
 
 float IkRig::pathLenToRoot(int node) const {
@@ -242,8 +339,35 @@ float IkRig::pathLenToRoot(int node) const {
     return len;
 }
 
+float IkRig::socketLeash(int node, const glm::vec3& target,
+                         const std::vector<glm::vec3>& positions, glm::vec3& offsetOut) const {
+    const glm::vec3& rootPos = positions[static_cast<std::size_t>(m_pelvis)];
+    int socket = node;
+    while (socket >= 0 && m_parents[static_cast<std::size_t>(socket)] >= 0 &&
+           m_parents[static_cast<std::size_t>(socket)] != m_pelvis) {
+        socket = m_parents[static_cast<std::size_t>(socket)];
+    }
+    if (socket < 0 || m_parents[static_cast<std::size_t>(socket)] != m_pelvis) {
+        // The pin is the root itself (or above it): a plain root-centered ball.
+        offsetOut = glm::vec3(0.0f);
+        return std::max(glm::length(rootPos - target), 0.9f * pathLenToRoot(node));
+    }
+    const glm::vec3& socketPos = positions[static_cast<std::size_t>(socket)];
+    offsetOut = socketPos - rootPos;
+    const float limb = pathLenToRoot(node) - m_edgeRestLen[static_cast<std::size_t>(socket)];
+    // Never beyond what the limb can SPAN (its straight rest path): a leash measured from an
+    // overstretched stance — a step landed while its leg could not yet reach the spot — recorded
+    // the impossible distance as the allowed maximum, and two such balls pinned the root
+    // between them (every forward-pass move toward one foot left the other's ball and was
+    // projected straight back), so the release settle could never bring the feet down: the
+    // figure stood 4cm in the air after every stepping chest drag. Capped, the projection pulls
+    // the root back INTO reach and the feet plant.
+    return std::min(std::max(glm::length(socketPos - target), 0.9f * limb), 0.995f * limb);
+}
+
 bool IkRig::beginDrag(int effectorNode, const std::vector<glm::vec3>& positions,
-                      const std::vector<int>& contactNodes, float groundOffsetY) {
+                      const std::vector<int>& contactNodes, float groundOffsetY,
+                      const std::vector<int>* userPins) {
     const int n = m_graph.nodeCount();
     if (!built() || m_pelvis < 0 || effectorNode < 0 || effectorNode >= n ||
         static_cast<int>(positions.size()) != n ||
@@ -253,22 +377,29 @@ bool IkRig::beginDrag(int effectorNode, const std::vector<glm::vec3>& positions,
     }
     m_effector = effectorNode;
     m_groundOffsetY = groundOffsetY;
+    // Knee fold-plane freedom per drag (see m_edgeTwistBuilt): on for trunk gestures and for
+    // the dragged limb's own knee, off for other limb drags.
+    {
+        const bool trunkDrag = effectorIsTrunk();
+        std::vector<char> onEffectorChain(static_cast<std::size_t>(n), 0);
+        for (int cur = m_effector; cur >= 0 && cur != m_pelvis;
+             cur = m_parents[static_cast<std::size_t>(cur)]) {
+            onEffectorChain[static_cast<std::size_t>(cur)] = 1;
+        }
+        for (std::size_t c = 0; c < m_edgeTwistBuilt.size(); ++c) {
+            const glm::vec2& built = m_edgeTwistBuilt[c];
+            if (built.y - built.x <= 1e-6f) {
+                continue;
+            }
+            const bool enabled = trunkDrag || onEffectorChain[c];
+            m_edgeConstraint[c].twistMin = enabled ? built.x : 0.0f;
+            m_edgeConstraint[c].twistMax = enabled ? built.y : 0.0f;
+        }
+    }
 
     // Per-node subtree mass (own + all descendants), used twice below: the token-limb
-    // rigidification and the trunk-junction search. Figure skeletons list parents before
-    // children (hierarchy order), so one reverse pass accumulates leaves into roots.
-    std::vector<float> subtreeMass(static_cast<std::size_t>(n), 0.0f);
-    for (int i = 0; i < n; ++i) {
-        if (m_bodyNode[static_cast<std::size_t>(i)]) {
-            subtreeMass[static_cast<std::size_t>(i)] += m_masses[static_cast<std::size_t>(i)];
-        }
-    }
-    for (int i = n - 1; i > 0; --i) {
-        const int p = m_parents[static_cast<std::size_t>(i)];
-        if (p >= 0) {
-            subtreeMass[static_cast<std::size_t>(p)] += subtreeMass[static_cast<std::size_t>(i)];
-        }
-    }
+    // rigidification and the trunk-junction search (built once with the masses).
+    const std::vector<float>& subtreeMass = m_subtreeMass;
 
     // TOKEN-LIMB PROMOTION: when the grabbed joint sits in a token-mass extremity (clicking near
     // a hand almost always picks a FINGER; a face grab picks a nose/brow bone), the drag
@@ -397,12 +528,74 @@ bool IkRig::beginDrag(int effectorNode, const std::vector<glm::vec3>& positions,
         if (ancestorPlanted) {
             continue;
         }
-        const float radius =
-            std::max(glm::length(rootStart - target), 0.9f * pathLenToRoot(c));
-        m_pins.push_back({c, target, true, 1.0f, radius});
+        IkEffector pin{c, target, true, 1.0f, -1.0f};
+        pin.leashRadius = socketLeash(c, target, positions, pin.leashOffset);
+        m_pins.push_back(pin);
     }
-    if (planted.empty() && m_effector != m_pelvis) {
+    // USER pins: joints the user explicitly pinned are held exactly where they are — no ground
+    // healing (the pin is wherever the user left it), no lift-reach release, and they are never
+    // stepped (a pinned foot is intent, even when it stands on the ground). A pin on the
+    // effector or inside its subtree would fight the drag itself, so it sits out this drag:
+    // dragging a pinned hand simply moves the pin. A user pin that coincides with a contact
+    // pin takes the contact's place with user semantics.
+    m_pinUser.assign(m_pins.size(), 0);
+    m_userPinLimb.assign(static_cast<std::size_t>(n), 0);
+    std::size_t userPinCount = 0;
+    if (userPins != nullptr) {
+        for (const int u : *userPins) {
+            if (u < 0 || u >= n || u == m_effector || !m_bodyNode[static_cast<std::size_t>(u)]) {
+                continue;
+            }
+            // The subtree exclusion is for LIMB drags (a pinned toe under a dragged foot would
+            // fight the drag). A PELVIS drag has the whole body in its subtree — there the user
+            // pins are exactly the anchors the drag must respect (a crouch under a held hand).
+            bool inEffectorSubtree = false;
+            if (m_effector != m_pelvis) {
+                for (int cur = m_parents[static_cast<std::size_t>(u)]; cur >= 0;
+                     cur = m_parents[static_cast<std::size_t>(cur)]) {
+                    if (cur == m_effector) {
+                        inEffectorSubtree = true;
+                        break;
+                    }
+                }
+            }
+            if (inEffectorSubtree) {
+                continue;
+            }
+            const glm::vec3& held = positions[static_cast<std::size_t>(u)];
+            IkEffector userPin{u, held, true, 1.0f, -1.0f};
+            userPin.leashRadius = socketLeash(u, held, positions, userPin.leashOffset);
+            userPin.hard = true; // beats every goal (see the solver's hard-pin policy)
+            bool replaced = false;
+            for (std::size_t p = 0; p < m_pins.size(); ++p) {
+                if (m_pins[p].node == u) {
+                    m_pins[p] = userPin;
+                    m_pinUser[p] = 1;
+                    replaced = true;
+                    break;
+                }
+            }
+            if (!replaced) {
+                m_pins.push_back(userPin);
+                m_pinUser.push_back(1);
+            }
+            ++userPinCount;
+            // The pin's limb chain (see userPinLimbNodes()): pin up to, excluding, its junction.
+            // The trunk keeps its prior even under a pelvis drag: exempting it let the hips drop
+            // further while the held hand drifted MORE (3.2 -> 3.8cm) — the spine's damping is
+            // what the pin's restoration works against.
+            const int junction = limbJunction(u, subtreeMass);
+            for (int cur = u; cur >= 0 && cur != junction;
+                 cur = m_parents[static_cast<std::size_t>(cur)]) {
+                m_userPinLimb[static_cast<std::size_t>(cur)] = 1;
+            }
+        }
+    }
+    // Airborne fallback: nothing planted AND nothing user-pinned — pin the root in place (a
+    // user-pinned hand is an anchor in its own right; the body may swing from it).
+    if (planted.empty() && userPinCount == 0 && m_effector != m_pelvis) {
         m_pins.push_back({m_pelvis, positions[static_cast<std::size_t>(m_pelvis)], true, 1.0f});
+        m_pinUser.push_back(0);
     }
     m_supportHull = BalanceController::supportPolygon(std::move(support));
     m_balanceCorrection = glm::vec2(0.0f);
@@ -448,7 +641,7 @@ bool IkRig::beginDrag(int effectorNode, const std::vector<glm::vec3>& positions,
             const int node = m_pins[p].node;
             // A steppable pin is a STANDING FOOT: a low joint whose pin target sits at its bind
             // height (ground-healed). A kneeling knee or an airborne-kept contact never steps.
-            if (m_pins.size() >= 2 &&
+            if (m_pins.size() >= 2 && !m_pinUser[p] &&
                 m_bindPos[static_cast<std::size_t>(node)].y < 0.2f * m_sizeScale &&
                 std::abs(m_pins[p].target.y -
                          (m_bindPos[static_cast<std::size_t>(node)].y + m_groundOffsetY)) <
@@ -458,6 +651,7 @@ bool IkRig::beginDrag(int effectorNode, const std::vector<glm::vec3>& positions,
                 ++stanceCount;
             }
         }
+        m_stanceRootOffset = glm::vec2(0.0f);
         if (stanceCount >= 2) {
             stanceCenter /= static_cast<float>(stanceCount);
             for (std::size_t p = 0; p < m_pins.size(); ++p) {
@@ -466,6 +660,10 @@ bool IkRig::beginDrag(int effectorNode, const std::vector<glm::vec3>& positions,
                         glm::vec2(m_pins[p].target.x, m_pins[p].target.z) - stanceCenter;
                 }
             }
+            // Where the stance naturally sits relative to the hip (see m_stanceRootOffset):
+            // a pelvis-drag landing re-creates THIS relationship at the drag target.
+            const glm::vec3& rootPos = positions[static_cast<std::size_t>(m_graph.root())];
+            m_stanceRootOffset = stanceCenter - glm::vec2(rootPos.x, rootPos.z);
         } else {
             // Fewer than two standing feet: stepping the single support would be a fall.
             m_pinSteppable.assign(m_pins.size(), 0);
@@ -569,27 +767,7 @@ bool IkRig::beginDrag(int effectorNode, const std::vector<glm::vec3>& positions,
         // LAST branching ancestor landed on the lower chest (the token-mass pectoral bones
         // branch there), leaving the upper chest free to pitch the head down again.
         // (subtreeMass was computed at the top of beginDrag.)
-        constexpr float kTrunkJunctionMass = 0.05f; // ~5% of body mass hanging off the path
-        int trunkStart = -1;
-        int prevOnPath = m_effector;
-        for (int cur = m_parents[static_cast<std::size_t>(m_effector)];
-             cur >= 0 && cur != m_pelvis; cur = m_parents[static_cast<std::size_t>(cur)]) {
-            float offPathMass = 0.0f;
-            for (int c = 0; c < n; ++c) {
-                if (m_parents[static_cast<std::size_t>(c)] == cur && c != prevOnPath &&
-                    m_bodyNode[static_cast<std::size_t>(c)]) {
-                    offPathMass += subtreeMass[static_cast<std::size_t>(c)];
-                }
-            }
-            if (offPathMass > kTrunkJunctionMass) {
-                trunkStart = cur; // first real junction walking up = where the limb attaches
-                break;
-            }
-            prevOnPath = cur;
-        }
-        if (trunkStart < 0) {
-            trunkStart = m_pelvis;
-        }
+        const int trunkStart = limbJunction(m_effector, subtreeMass);
         for (int cur = trunkStart; cur >= 0; cur = m_parents[static_cast<std::size_t>(cur)]) {
             m_trunkChain.push_back(cur);
             if (cur == m_pelvis) {
@@ -603,6 +781,27 @@ bool IkRig::beginDrag(int effectorNode, const std::vector<glm::vec3>& positions,
         }
     }
     return true;
+}
+
+int IkRig::limbJunction(int node, const std::vector<float>& subtreeMass) const {
+    constexpr float kTrunkJunctionMass = 0.05f; // ~5% of body mass hanging off the path
+    const int n = static_cast<int>(m_parents.size());
+    int prevOnPath = node;
+    for (int cur = m_parents[static_cast<std::size_t>(node)];
+         cur >= 0 && cur != m_pelvis; cur = m_parents[static_cast<std::size_t>(cur)]) {
+        float offPathMass = 0.0f;
+        for (int c = 0; c < n; ++c) {
+            if (m_parents[static_cast<std::size_t>(c)] == cur && c != prevOnPath &&
+                m_bodyNode[static_cast<std::size_t>(c)]) {
+                offPathMass += subtreeMass[static_cast<std::size_t>(c)];
+            }
+        }
+        if (offPathMass > kTrunkJunctionMass) {
+            return cur; // first real junction walking up = where the limb attaches
+        }
+        prevOnPath = cur;
+    }
+    return m_pelvis;
 }
 
 void IkRig::beginSettle(const std::vector<glm::vec3>& positions) {
@@ -669,12 +868,20 @@ bool IkRig::settleToPins(std::vector<glm::vec3>& positions,
     for (const IkEffector& pin : m_pins) {
         effectorPinned = effectorPinned || pin.node == m_effector;
     }
-    if (!effectorPinned) {
+    // The released joint is held only for LIMB gestures (a placed hand or foot). After a TRUNK
+    // drag (chest, hip, head — effectorIsTrunk) the body must be free to drop onto its feet:
+    // with the chest pinned the settle's first round could only make the worst foot pin WORSE
+    // (the body cannot descend 4cm around a fixed chest), was reverted, and the figure stayed
+    // standing 4cm in the air after every stepping chest drag. The release pose stays the soft
+    // prior, so the trunk follows the landing rather than being yanked anywhere else.
+    if (!effectorPinned && !effectorIsTrunk()) {
         effectors.push_back({m_effector, m_settleEffectorTarget, true, 1.0f});
     }
     FabrikSolver::Settings settings;
     settings.maxIterations = kIterationsPerTick;
     settings.priorIterationNorm = kPriorIterationNorm; // settle stiffness tuned at 6 iterations
+    settings.floorY = m_groundOffsetY;
+    settings.floorClearance = &m_floorClearance;
     FabrikSolver::solve(m_graph, m_active, effectors, m_edgeRestDir, m_edgeRestLen,
                         m_edgeConstraint, frameSeed, positions, settings, &m_settlePrior,
                         &m_settlePriorWeights);
@@ -698,9 +905,7 @@ void IkRig::rebuildSupportHull(int excludePin) {
 void IkRig::landStep(const std::vector<glm::vec3>& positions) {
     IkEffector& pin = m_pins[static_cast<std::size_t>(m_stepPin)];
     pin.target = m_stepTo;
-    pin.leashRadius =
-        std::max(glm::length(positions[static_cast<std::size_t>(m_pelvis)] - m_stepTo),
-                 0.9f * pathLenToRoot(pin.node));
+    pin.leashRadius = socketLeash(pin.node, m_stepTo, positions, pin.leashOffset);
     rebuildSupportHull(-1);
     m_stepPin = -1;
     m_imbalanceTicks = 0;
@@ -737,9 +942,11 @@ void IkRig::updateStepping(const std::vector<glm::vec3>& positions, bool allowTr
     // (upper-body drags: the balance point is the intent signal). Anchoring steps on the
     // current CoM during a pelvis drag placed every landing behind the moving hip and the walk
     // ended in a collapsed, machinery-looking stance.
+    // The explicit anchor is offset by the stance's drag-start relationship to the hip (see
+    // m_stanceRootOffset); the CoM anchor is the balance point itself.
     glm::vec2 anchor(0.0f);
     if (anchorXZ != nullptr) {
-        anchor = *anchorXZ;
+        anchor = *anchorXZ + m_stanceRootOffset;
     } else {
         const glm::vec3 com = BalanceController::centerOfMass(positions, m_parents, m_masses);
         anchor = glm::vec2(com.x, com.z);
@@ -935,13 +1142,32 @@ bool IkRig::solveDrag(const glm::vec3& target, std::vector<glm::vec3>& positions
     settings.maxIterations = kIterationsPerTick;
     settings.priorIterationNorm = kPriorIterationNorm;
     settings.minStepDisplacement = kOutputDeadband;
+    settings.floorY = m_groundOffsetY;
+    settings.floorClearance = &m_floorClearance;
 
     if (m_effector == m_graph.root()) {
         // An explicit pelvis drag is a deliberate whole-body gesture (a crouch): both legs must
         // fold in coordination every tick, which needs more solver iterations than a limb drag.
         settings.maxIterations = kIterationsPerTick * 3;
         std::vector<IkEffector> effectors = m_pins;
-        effectors.push_back({m_effector, target, true, 1.0f});
+        // USER pins bound an explicit pelvis drag: the root target is projected into each user
+        // pin's reach ball (a pinned hand holds — the hip drop stops where the arm runs out),
+        // unlike ground contacts, which a pelvis drag may lift by design (the leashes are off
+        // for a pinned root in the solver).
+        glm::vec3 rootTarget = target;
+        for (std::size_t p = 0; p < m_pins.size(); ++p) {
+            const IkEffector& pin = m_pins[p];
+            if (!m_pinUser[p] || pin.leashRadius <= 0.0f || pin.leashRadius > 1e8f) {
+                continue;
+            }
+            const glm::vec3 center = pin.target - pin.leashOffset;
+            const glm::vec3 d = rootTarget - center;
+            const float len = glm::length(d);
+            if (len > pin.leashRadius) {
+                rootTarget = center + d * (pin.leashRadius / len);
+            }
+        }
+        effectors.push_back({m_effector, rootTarget, true, 1.0f});
         FabrikSolver::solve(m_graph, m_active, effectors, m_edgeRestDir, m_edgeRestLen,
                             m_edgeConstraint, frameSeed, positions, settings, &m_startPose,
                             &m_priorWeights);
@@ -988,7 +1214,11 @@ bool IkRig::solveDrag(const glm::vec3& target, std::vector<glm::vec3>& positions
     // the arm along its natural arc, predictably; pulls the arc cannot serve leave the hand
     // short until SUSPENSION takes over. Forward/lateral/downward intents keep full trunk
     // recruitment (leaning into a reach, crouching under a push).
-    const bool upIntent = target.y > effPos.y + 0.10f;
+    // A TRUNK effector (the head, the chest — effectorIsTrunk) is exempt: its "limb" is the
+    // neck or nothing, and excluding the trunk left a 12cm head pull moving the head 7mm.
+    // Pulling the head up should straighten the spine — that is the trunk's own gesture, not
+    // an arm's residual recruiting it.
+    const bool upIntent = target.y > effPos.y + 0.10f && !effectorIsTrunk();
     const std::vector<float>* solveWeights = &m_priorWeights;
     const std::vector<char>* solveActive = &m_active;
     if (upIntent && !m_trunkChain.empty()) {
@@ -1030,7 +1260,23 @@ bool IkRig::solveDrag(const glm::vec3& target, std::vector<glm::vec3>& positions
             strain.y > kSuspendUpFraction * strainLen) {
             if (++m_suspendTicks >= kSuspendConfirmTicks) {
                 m_suspended = true;
-                m_pins.clear();
+                // Ground contacts release; USER pins stay (they are explicit intent — a body
+                // hanging from a pinned hand is exactly what a lift against one produces).
+                {
+                    std::vector<IkEffector> kept;
+                    std::vector<char> keptUser;
+                    for (std::size_t p = 0; p < m_pins.size(); ++p) {
+                        if (m_pinUser[p]) {
+                            kept.push_back(m_pins[p]);
+                            keptUser.push_back(1);
+                        }
+                    }
+                    m_pins = std::move(kept);
+                    m_pinUser = std::move(keptUser);
+                    m_pinFootprint.assign(m_pins.size(), {});
+                    m_pinSteppable.assign(m_pins.size(), 0);
+                    m_pinStanceOffset.assign(m_pins.size(), glm::vec2(0.0f));
+                }
                 m_supportHull.clear();
                 m_stepPin = -1; // an in-flight step's foot is released with the rest
                 m_suspendHang = chainLen;
@@ -1070,6 +1316,7 @@ bool IkRig::solveDrag(const glm::vec3& target, std::vector<glm::vec3>& positions
         std::vector<IkEffector> effectors{
             {m_effector, target, false, 1.0f},
             {m_pelvis, glm::vec3(target.x, target.y - m_suspendHang, target.z), false, 0.5f}};
+        effectors.insert(effectors.end(), m_pins.begin(), m_pins.end()); // surviving user pins
         // No pose prior: the hanging body is shaped by gravity + the joint limits alone.
         FabrikSolver::solve(m_graph, m_active, effectors, m_edgeRestDir, m_edgeRestLen,
                             m_edgeConstraint, frameSeed, positions, settings, nullptr, nullptr);

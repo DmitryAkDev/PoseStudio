@@ -89,6 +89,8 @@ public:
 
     // --- Posing UI (forwarded to the Scene) ---
     bool hasPosableFigure() const;
+    int  activeFigureIndex() const;   // the posing target among the figures (see Scene)
+    void setActiveFigure(int index);
     void setShowSkeleton(bool on);
     bool showSkeleton() const;
 
@@ -100,6 +102,7 @@ public:
     /// Returns the selected bone index, or -1 if none.
     int  selectBoneAt(float px, float py, float vpW, float vpH);
     bool hasSelectedBone() const;
+    int  selectBoneByName(const std::string& name); // diagnostics / the IK benchmark
     void nudgeSelectedBone(const glm::vec3& deltaEulerDegrees);
     /// Settles the figure after an interactive pose edit (applies pose correctives). Call on drag end.
     void finalizePose();
@@ -116,9 +119,16 @@ public:
     void endBoneIkDrag();
     /// World position of the selected joint (the IK drag plane anchor); false if none selected.
     bool selectedBoneWorldPosition(glm::vec3& out) const;
+    // --- User joint pins (forwarded to the Scene; see Model::togglePinSelectedBone) ---
+    bool togglePinSelectedBone();
+    bool selectedBonePinned() const;
+    bool hasPinnedBones() const;
+    void unpinAllBones();
     /// Drops the posable figure onto the ground plane (posed lowest point → y = 0). Returns true
     /// if it actually moved (the caller then requests a frame).
     bool groundFigure();
+    bool figureGroundGap(float& lowestY) const; // the figure's lowest world height (see Scene)
+    void translateFigureY(float dy);            // the animated drop's per-frame step
 
     // --- Rotate gizmo (forwarded to the Scene; use the renderer's own camera) ---
     int  gizmoAxisAt(float px, float py, float vpW, float vpH) const;

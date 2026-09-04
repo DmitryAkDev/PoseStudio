@@ -100,6 +100,16 @@ void VulkanRenderer::deleteModel(std::size_t index) {
 
 bool VulkanRenderer::hasPosableFigure() const { return m_scene && m_scene->hasPosableFigure(); }
 
+int VulkanRenderer::activeFigureIndex() const {
+    return m_scene ? m_scene->activeFigureIndex() : -1;
+}
+
+void VulkanRenderer::setActiveFigure(int index) {
+    if (m_scene) {
+        m_scene->setActiveFigure(index);
+    }
+}
+
 void VulkanRenderer::setShowSkeleton(bool on) {
     if (m_scene) {
         m_scene->setShowSkeleton(on);
@@ -134,6 +144,10 @@ int VulkanRenderer::selectBoneAt(float px, float py, float vpW, float vpH) {
 
 bool VulkanRenderer::hasSelectedBone() const { return m_scene && m_scene->hasSelectedBone(); }
 
+int VulkanRenderer::selectBoneByName(const std::string& name) {
+    return m_scene ? m_scene->selectBoneByName(name) : -1;
+}
+
 void VulkanRenderer::nudgeSelectedBone(const glm::vec3& deltaEulerDegrees) {
     if (m_scene) {
         m_scene->nudgeSelectedBone(deltaEulerDegrees);
@@ -166,8 +180,30 @@ bool VulkanRenderer::selectedBoneWorldPosition(glm::vec3& out) const {
     return m_scene && m_scene->selectedBoneWorldPosition(out);
 }
 
+bool VulkanRenderer::togglePinSelectedBone() { return m_scene && m_scene->togglePinSelectedBone(); }
+
+bool VulkanRenderer::selectedBonePinned() const { return m_scene && m_scene->selectedBonePinned(); }
+
+bool VulkanRenderer::hasPinnedBones() const { return m_scene && m_scene->hasPinnedBones(); }
+
+void VulkanRenderer::unpinAllBones() {
+    if (m_scene) {
+        m_scene->unpinAllBones();
+    }
+}
+
 bool VulkanRenderer::groundFigure() {
     return m_scene ? m_scene->groundFigure() : false;
+}
+
+bool VulkanRenderer::figureGroundGap(float& lowestY) const {
+    return m_scene && m_scene->figureGroundGap(lowestY);
+}
+
+void VulkanRenderer::translateFigureY(float dy) {
+    if (m_scene) {
+        m_scene->translateFigureY(dy);
+    }
 }
 
 int VulkanRenderer::gizmoAxisAt(float px, float py, float vpW, float vpH) const {

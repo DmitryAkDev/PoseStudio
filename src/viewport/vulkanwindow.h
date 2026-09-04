@@ -26,6 +26,10 @@ class QTimer;
 
 #include <glm/glm.hpp>
 
+#include <QElapsedTimer>
+
+#include <algorithm>
+
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -80,7 +84,10 @@ public:
     void resetView();
 
     /// Drops the posable figure onto the ground plane (the overlay's ground button): translates it
-    /// so the current pose's lowest point rests at y = 0. No-op before the renderer exists.
+    /// so the current pose's lowest point rests at y = 0. A figure ABOVE the floor FALLS there —
+    /// free fall from rest at 9.81 m/s² on real elapsed time (world units are metres, so a 1m drop
+    /// lands in ~0.45s), animated on m_fallTimer; a figure sunk below the floor is lifted
+    /// instantly (nothing falls upward). No-op before the renderer exists or mid-drag.
     void groundFigure();
 
     /// Loads @p hdrPath as the lighting environment and re-bakes the IBL. Remembered and applied
@@ -124,11 +131,14 @@ private:
     using PoseSnapshot = std::vector<std::pair<std::string, glm::vec3>>;
 
     // One committed, undoable edit. A single stack holds both kinds so undo walks pose and
-    // lighting changes together, in the order the user made them.
+    // lighting changes together, in the order the user made them. Joint PIN toggles are pose
+    // edits too: the snapshot carries the pins ("@pin:" rows), so undoing a pin or a drag
+    // restores the pins of that moment.
     struct UndoEntry {
         enum class Kind { Pose, Lighting };
         Kind kind = Kind::Pose;
         PoseSnapshot pose;         // the pre-edit pose  (kind == Pose)
+        int figure = -1;           // which figure the pose belongs to (kind == Pose)
         LightingSettings lighting; // the pre-edit dials (kind == Lighting)
     };
 
@@ -210,6 +220,56 @@ private:
     void finishIkSettle();
     /// Commits an undo entry for the pose edit bracketed by m_preEditPose (no-op if unchanged).
     void commitPoseUndo();
+    /// Completes an in-flight ground fall NOW (applies the remaining drop, stops the timer):
+    /// any interaction that reads the figure's transform (a press, a pose save) calls this first.
+    void finishGroundFall();
+
+    // The animated ground drop (groundFigure): the height still to fall, how much has fallen so
+    // far, and the real-time clock the free-fall curve is evaluated against.
+    QTimer*       m_fallTimer = nullptr;
+    QElapsedTimer m_fallClock;
+    float         m_fallHeight = 0.0f;
+    float         m_fallDropped = 0.0f;
+
+    // --- IK loop diagnostics (POSESTUDIO_IK_PERF=1) and the scripted IK benchmark
+    // (POSESTUDIO_IK_BENCH=<bone>, e.g. lHand): the benchmark runs a Ctrl-drag of that joint
+    // along a fixed cursor path with NO desktop input — the real timer, solve, render, and
+    // present chain — and prints per-phase tick/frame intervals and the grabbed joint's
+    // distance from the (virtual) cursor, then exits. This is how the loop's real rate and the
+    // user-perceived lag are measured on the actual machine (the harness assumes 60 Hz ticks).
+    struct PerfStat {
+        double sum = 0.0;
+        double max = 0.0;
+        int    n = 0;
+        void add(double v) { sum += v; max = std::max(max, v); ++n; }
+        double mean() const { return n > 0 ? sum / n : 0.0; }
+        void reset() { sum = 0.0; max = 0.0; n = 0; }
+    };
+    void perfReport(const char* label);
+    void startBench();
+    void benchAdvance();
+    void benchFinish();
+    bool          m_ikPerf = false;
+    QElapsedTimer m_perfClock;
+    qint64        m_perfLastTickNs = -1;
+    qint64        m_perfLastFrameNs = -1;
+    PerfStat      m_perfTickInterval;
+    PerfStat      m_perfTickWork;
+    PerfStat      m_perfFrameInterval;
+    PerfStat      m_perfDraw;
+    PerfStat      m_perfLag;
+    // Oscillation of the grabbed joint: the accumulated overlap of consecutive per-tick steps
+    // pointing against each other (a smooth track reverses never; trembling reverses every tick).
+    double        m_perfOsc = 0.0;
+    glm::vec3     m_perfPrevEff{0.0f};
+    glm::vec3     m_perfPrevStep{0.0f};
+    bool          m_perfHasPrevEff = false;
+    int           m_perfTicks = 0;
+    QString       m_benchSpec;
+    bool          m_benchActive = false;
+    int           m_benchTick = 0;
+    int           m_benchRetries = 0;
+    glm::vec3     m_benchStart{0.0f};
 
     // Undo/redo: each committed edit (a pose drag, or a registered lighting gesture) pushes its
     // pre-edit state. m_preEditPose snapshots the pose at drag start (committed on release).

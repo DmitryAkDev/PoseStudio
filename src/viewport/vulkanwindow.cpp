@@ -33,6 +33,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <optional>
 
@@ -58,16 +60,58 @@ VulkanWindow::VulkanWindow(QVulkanInstance* instance, uint32_t apiVersion, QStri
     // the mouse stops moving and mouse-move events stop with it.
     m_ikTimer = new QTimer(this);
     m_ikTimer->setInterval(16);
+    if (qEnvironmentVariableIsSet("POSESTUDIO_IK_PRECISE_TIMER")) {
+        m_ikTimer->setTimerType(Qt::PreciseTimer); // diagnostics A/B against the coarse default
+    }
+    // The ground button's fall (see groundFigure): free fall from rest, evaluated against real
+    // elapsed time so the landing takes the same 0.45s per metre whatever the frame cadence.
+    m_fallTimer = new QTimer(this);
+    m_fallTimer->setInterval(16);
+    connect(m_fallTimer, &QTimer::timeout, this, [this]() {
+        if (!m_renderer || m_fallHeight <= 0.0f) {
+            m_fallTimer->stop();
+            return;
+        }
+        constexpr float kGravity = 9.81f; // m/s², world units are metres
+        const float t = static_cast<float>(m_fallClock.nsecsElapsed()) * 1e-9f;
+        const float dropped = std::min(m_fallHeight, 0.5f * kGravity * t * t);
+        const float dy = dropped - m_fallDropped;
+        if (dy > 0.0f) {
+            m_renderer->translateFigureY(-dy);
+            m_fallDropped = dropped;
+            requestUpdate();
+        }
+        if (dropped >= m_fallHeight) {
+            m_fallTimer->stop(); // landed
+            m_fallHeight = 0.0f;
+        }
+    });
+    m_benchSpec = qEnvironmentVariable("POSESTUDIO_IK_BENCH");
+    m_ikPerf = qEnvironmentVariableIsSet("POSESTUDIO_IK_PERF") || !m_benchSpec.isEmpty();
+    m_perfClock.start();
     connect(m_ikTimer, &QTimer::timeout, this, [this]() {
         if (!m_renderer) {
             m_ikTimer->stop();
             m_ikSettling = false;
             return;
         }
+        const qint64 tickStart = m_ikPerf ? m_perfClock.nsecsElapsed() : 0;
+        if (m_ikPerf) {
+            if (m_perfLastTickNs >= 0) {
+                m_perfTickInterval.add(static_cast<double>(tickStart - m_perfLastTickNs) * 1e-6);
+            }
+            m_perfLastTickNs = tickStart;
+        }
+        if (m_benchActive && m_ikDragging) {
+            benchAdvance(); // the scripted cursor: moves m_ikLastTarget along the bench path
+        }
         if (m_ikSettling) {
             // Animated release settle: one capped round per tick until the feet land.
             if (!m_renderer->settleBoneIkTick()) {
                 finishIkSettle();
+                if (m_benchActive) {
+                    benchFinish();
+                }
             }
             requestUpdate();
         } else if (m_ikDragging && m_ikHasTarget) {
@@ -77,6 +121,32 @@ VulkanWindow::VulkanWindow(QVulkanInstance* instance, uint32_t apiVersion, QStri
             if (issueIkTarget()) {
                 m_ikPoseChanged = true; // a real edit: the release may settle + commit undo
                 requestUpdate();
+            }
+        }
+        if (m_ikPerf) {
+            m_perfTickWork.add(static_cast<double>(m_perfClock.nsecsElapsed() - tickStart) * 1e-6);
+            glm::vec3 eff;
+            if (m_ikDragging && m_ikHasTarget && m_renderer->selectedBoneWorldPosition(eff)) {
+                m_perfLag.add(static_cast<double>(glm::length(eff - m_ikLastTarget)) * 1000.0);
+                if (m_perfHasPrevEff) {
+                    const glm::vec3 step = eff - m_perfPrevEff;
+                    const float pl = glm::length(m_perfPrevStep);
+                    if (pl > 1e-6f && glm::length(step) > 1e-6f) {
+                        const float against = -glm::dot(step, m_perfPrevStep) / pl;
+                        if (against > 0.0f) {
+                            m_perfOsc += static_cast<double>(std::min(against, pl));
+                        }
+                    }
+                    m_perfPrevStep = step;
+                }
+                m_perfPrevEff = eff;
+                m_perfHasPrevEff = true;
+            } else {
+                m_perfHasPrevEff = false;
+            }
+            ++m_perfTicks;
+            if (!m_benchActive && m_perfTicks % 60 == 0) {
+                perfReport("drag"); // the interactive case: a report per second of dragging
             }
         }
     });
@@ -90,9 +160,15 @@ bool VulkanWindow::issueIkTarget() {
     // follows tightly, so smoothing costs almost no lag exactly when the user moves fast. The
     // old fixed 0.35 charged ~40ms of lag on flicks while passing ~2x the noise on precise
     // holds. Mirrored in the IK loop harness — keep the constants in sync.
-    constexpr float kIkAlphaMin = 0.18f;
-    constexpr float kIkAlphaMax = 0.85f;
-    constexpr float kIkAlphaGain = 12.0f; // per meter of lag
+    // Retuned with the exact drag refinement (Model::refinePins with the drag target): the
+    // whole-body solve no longer amplifies target noise into the hand (the limb fit that
+    // places the hand is locally linear, so noise passes 1:1 - a pixel), so the filter only
+    // has to keep a NEAR-STILL cursor's jitter out (alpha 0.30 at zero lag) and can open all
+    // the way (alpha 1.0 from ~7mm of lag): its steady-state lag at 0.45 m/s drops from ~11mm
+    // to ~3mm, and a fast flick pays nothing.
+    constexpr float kIkAlphaMin = 0.30f;
+    constexpr float kIkAlphaMax = 1.0f;
+    constexpr float kIkAlphaGain = 100.0f; // per meter of lag
     const float lag = glm::length(m_ikLastTarget - m_ikSmoothedTarget);
     const float alpha = glm::clamp(kIkAlphaMin + lag * kIkAlphaGain, kIkAlphaMin, kIkAlphaMax);
     m_ikSmoothedTarget = glm::mix(m_ikSmoothedTarget, m_ikLastTarget, alpha);
@@ -114,11 +190,124 @@ void VulkanWindow::finishIkSettle() {
     }
 }
 
+void VulkanWindow::perfReport(const char* label) {
+    std::fprintf(stderr,
+                 "[ikperf] %-8s ticks %4d | tick interval mean %6.2f max %6.2f ms | tick work mean "
+                 "%5.2f max %5.2f ms | frame interval mean %6.2f max %6.2f ms (%d) | draw mean "
+                 "%5.2f max %5.2f ms | lag mean %6.1f max %6.1f mm | osc %6.1f mm\n",
+                 label, m_perfTickInterval.n, m_perfTickInterval.mean(), m_perfTickInterval.max,
+                 m_perfTickWork.mean(), m_perfTickWork.max, m_perfFrameInterval.mean(),
+                 m_perfFrameInterval.max, m_perfFrameInterval.n, m_perfDraw.mean(), m_perfDraw.max,
+                 m_perfLag.mean(), m_perfLag.max, m_perfOsc * 1000.0);
+    std::fflush(stderr);
+    m_perfTickInterval.reset();
+    m_perfTickWork.reset();
+    m_perfFrameInterval.reset();
+    m_perfDraw.reset();
+    m_perfLag.reset();
+    m_perfOsc = 0.0;
+}
+
+void VulkanWindow::startBench() {
+    const std::string bone = m_benchSpec.section(QLatin1Char(':'), 0, 0).toStdString();
+    const int boneIndex = m_renderer ? m_renderer->selectBoneByName(bone) : -2;
+    if (boneIndex == -1 && m_benchRetries++ < 120) {
+        // No figure yet: a command-line figure imports through the progress dialog, whose
+        // processEvents() fires this timer mid-import. Poll until the figure exists.
+        QTimer::singleShot(500, this, &VulkanWindow::startBench);
+        return;
+    }
+    const bool began = boneIndex >= 0 && m_renderer->beginBoneIkDrag();
+    const bool placed = began && m_renderer->selectedBoneWorldPosition(m_ikPlanePoint);
+    if (!placed) {
+        std::fprintf(stderr, "[ikbench] cannot start: bone '%s' index %d, beginDrag %d, position %d\n",
+                     bone.c_str(), boneIndex, began ? 1 : 0, placed ? 1 : 0);
+        std::fflush(stderr);
+        std::_Exit(2); // diagnostic mode: no teardown
+        return;
+    }
+    std::fprintf(stderr, "[ikbench] dragging %s from (%.3f %.3f %.3f)\n", bone.c_str(),
+                 m_ikPlanePoint.x, m_ikPlanePoint.y, m_ikPlanePoint.z);
+    {
+        // Pick diagnostic: a ray through the grabbed joint's screen position must hit its model.
+        const glm::mat4 vp = m_renderer->camera().viewProjection();
+        const glm::vec4 clip = vp * glm::vec4(m_ikPlanePoint, 1.0f);
+        if (clip.w > 1e-4f) {
+            const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+            const float sx = (ndc.x * 0.5f + 0.5f) * static_cast<float>(width());
+            const float sy = (ndc.y * 0.5f + 0.5f) * static_cast<float>(height());
+            const Ray ray = m_renderer->camera().screenPointToRay(
+                sx, sy, static_cast<float>(width()), static_cast<float>(height()));
+            std::fprintf(stderr, "[ikbench] pick through joint at px(%.0f %.0f): model %d; ray o(%.2f %.2f %.2f) d(%.2f %.2f %.2f)\n",
+                         sx, sy, m_renderer->pickModel(ray), ray.origin.x, ray.origin.y, ray.origin.z,
+                         ray.direction.x, ray.direction.y, ray.direction.z);
+        }
+    }
+    m_preEditPose = m_renderer->capturePose();
+    m_benchStart = m_ikPlanePoint;
+    m_ikLastTarget = m_benchStart;
+    m_ikSmoothedTarget = m_benchStart;
+    m_ikHasTarget = true;
+    m_ikDragging = true;
+    m_ikPoseChanged = false;
+    m_benchActive = true;
+    m_benchTick = 0;
+    m_perfLastTickNs = -1;
+    m_perfLastFrameNs = -1;
+    perfReport("reset");
+    m_ikTimer->start();
+}
+
+void VulkanWindow::benchAdvance() {
+    // The scripted cursor path, in ticks: a moderate 30cm gesture (0.3 m/s at 60 Hz), a hold,
+    // the return, a hold, a fast 36cm flick (1.2 m/s), a hold, then release.
+    struct Waypoint {
+        int         tick;
+        glm::vec3   offset;
+        const char* phase; // reported when this waypoint is reached
+    };
+    static const Waypoint kPath[] = {
+        {0, glm::vec3(0.0f), "start"},
+        {60, glm::vec3(0.25f, 0.15f, 0.05f), "move-med"},
+        {120, glm::vec3(0.25f, 0.15f, 0.05f), "hold-1"},
+        {180, glm::vec3(0.0f), "return"},
+        {240, glm::vec3(0.0f), "hold-2"},
+        {270, glm::vec3(-0.30f, 0.20f, 0.0f), "move-fast"},
+        {330, glm::vec3(-0.30f, 0.20f, 0.0f), "hold-3"},
+    };
+    constexpr int kCount = static_cast<int>(sizeof(kPath) / sizeof(kPath[0]));
+    const int t = ++m_benchTick;
+    for (int i = 1; i < kCount; ++i) {
+        if (t == kPath[i].tick) {
+            perfReport(kPath[i].phase);
+        }
+        if (t <= kPath[i].tick) {
+            const float f = static_cast<float>(t - kPath[i - 1].tick) /
+                            static_cast<float>(kPath[i].tick - kPath[i - 1].tick);
+            m_ikLastTarget = m_benchStart + glm::mix(kPath[i - 1].offset, kPath[i].offset, f);
+            return;
+        }
+    }
+    // Past the last waypoint: release (mirrors mouseReleaseEvent's IK branch).
+    m_ikHasTarget = false;
+    m_ikDragging = false;
+    m_ikSettling = true;
+}
+
+void VulkanWindow::benchFinish() {
+    perfReport("settle");
+    std::fprintf(stderr, "[ikbench] done\n");
+    std::fflush(stderr);
+    m_benchActive = false;
+    std::_Exit(0); // diagnostic mode: no teardown
+}
+
 void VulkanWindow::commitPoseUndo() {
     if (m_renderer && m_renderer->capturePose() != m_preEditPose) {
         UndoEntry entry;
         entry.kind = UndoEntry::Kind::Pose;
         entry.pose = m_preEditPose;
+        entry.figure = m_renderer->activeFigureIndex();
         m_undoStack.push_back(std::move(entry));
         m_redoStack.clear();
     }
@@ -175,11 +364,18 @@ void VulkanWindow::initializeVulkan() {
                 requestUpdate();
             }
         }
+        if (!m_benchSpec.isEmpty()) {
+            std::fprintf(stderr, "[ikbench] drained %zu queued figure(s)\n", m_pendingFigures.size());
+            std::fflush(stderr);
+        }
         m_pendingFigures.clear();
         if (!m_pendingPose.isEmpty()) {
             m_renderer->loadPose(m_pendingPose.toStdString()); // onto the just-drained figure
             m_pendingPose.clear();
             requestUpdate();
+        }
+        if (!m_benchSpec.isEmpty()) {
+            QTimer::singleShot(1500, this, &VulkanWindow::startBench); // after the first frames
         }
     } catch (const VulkanError& e) {
         // Leave the surface intact (Qt owns it) but mark the device as failed so we
@@ -295,6 +491,11 @@ void VulkanWindow::releaseVulkan() {
     m_ikDragging = false;
     m_ikHasTarget = false;
     m_ikPoseChanged = false;
+    if (m_fallTimer) {
+        m_fallTimer->stop(); // the figure is going away with the renderer
+        m_fallHeight = 0.0f;
+        m_fallDropped = 0.0f;
+    }
     if (m_ikTimer) {
         m_ikTimer->stop();
     }
@@ -356,13 +557,43 @@ void VulkanWindow::resetView() {
 }
 
 void VulkanWindow::groundFigure() {
-    if (m_renderer && m_renderer->groundFigure()) {
-        requestUpdate(); // the figure moved — rendering is on demand
+    if (!m_renderer || m_ikDragging || m_fallTimer->isActive()) {
+        return; // no renderer yet, a drag owns the pose, or a fall is already in flight
     }
+    finishIkSettle(); // ground the LANDED pose, not a transient mid-settle frame
+    float lowestY = 0.0f;
+    if (!m_renderer->figureGroundGap(lowestY) || std::abs(lowestY) < 1e-4f) {
+        return; // nothing to ground, or already resting on the floor
+    }
+    if (lowestY < 0.0f) {
+        // Sunk into the floor: nothing falls upward — lift it out in one step.
+        m_renderer->translateFigureY(-lowestY);
+        requestUpdate();
+        return;
+    }
+    // Hovering: FALL. The timer applies the free-fall curve's increments (see the constructor).
+    m_fallHeight = lowestY;
+    m_fallDropped = 0.0f;
+    m_fallClock.start();
+    m_fallTimer->start();
+}
+
+void VulkanWindow::finishGroundFall() {
+    if (!m_fallTimer || !m_fallTimer->isActive()) {
+        return;
+    }
+    m_fallTimer->stop();
+    if (m_renderer && m_fallHeight > m_fallDropped) {
+        m_renderer->translateFigureY(-(m_fallHeight - m_fallDropped));
+        requestUpdate();
+    }
+    m_fallHeight = 0.0f;
+    m_fallDropped = 0.0f;
 }
 
 bool VulkanWindow::savePose(const QString& path) {
     finishIkSettle(); // serialize the LANDED pose, not a transient mid-settle frame
+    finishGroundFall();
     return m_renderer && m_renderer->savePose(path.toStdString());
 }
 
@@ -426,8 +657,19 @@ void VulkanWindow::renderFrame() {
     // drawFrame() returns true only when the swapchain was just rebuilt (or the frame skipped
     // mid-rebuild) and one follow-up frame is needed to reflect the new size.
     try {
+        const bool perfFrame = m_ikPerf && (m_ikDragging || m_ikSettling);
+        const qint64 f0 = perfFrame ? m_perfClock.nsecsElapsed() : 0;
+        if (perfFrame) {
+            if (m_perfLastFrameNs >= 0) {
+                m_perfFrameInterval.add(static_cast<double>(f0 - m_perfLastFrameNs) * 1e-6);
+            }
+            m_perfLastFrameNs = f0;
+        }
         if (m_renderer->drawFrame()) {
             requestUpdate();
+        }
+        if (perfFrame) {
+            m_perfDraw.add(static_cast<double>(m_perfClock.nsecsElapsed() - f0) * 1e-6);
         }
     } catch (const VulkanError& e) {
         // Runtime VK_CHECK failure (e.g. VK_ERROR_DEVICE_LOST after a driver reset/TDR): tear the
@@ -442,6 +684,7 @@ void VulkanWindow::renderFrame() {
 
 void VulkanWindow::mousePressEvent(QMouseEvent* event) {
     finishIkSettle(); // a new interaction must not overlap a still-animating release settle
+    finishGroundFall(); // nor a figure still falling (a drag captures the floor at its start)
     m_lastMousePos = event->position();
     m_activeDragButtons |= event->button(); // a drag with this button started in the viewport
 
@@ -530,17 +773,45 @@ void VulkanWindow::showObjectContextMenu(const QPointF& localPos, const QPoint& 
     if (!m_renderer) {
         return;
     }
-    const Ray ray = m_renderer->camera().screenPointToRay(
-        static_cast<float>(localPos.x()), static_cast<float>(localPos.y()),
-        static_cast<float>(width()), static_cast<float>(height()));
+    const float x = static_cast<float>(localPos.x());
+    const float y = static_cast<float>(localPos.y());
+    const float w = static_cast<float>(width());
+    const float h = static_cast<float>(height());
+    // A joint under the cursor gets the pin actions (selecting it, so the gizmo shows which
+    // joint the menu acts on); the model under the cursor gets Delete. Both can apply.
+    const int joint = (m_ikDragging || m_ikSettling) ? -1 : m_renderer->selectBoneAt(x, y, w, h);
+    const Ray ray = m_renderer->camera().screenPointToRay(x, y, w, h);
     const int picked = m_renderer->pickModel(ray);
-    if (picked < 0) {
+    if (joint < 0 && picked < 0) {
         return; // empty space — no menu (for now)
     }
 
     QMenu menu;
-    QAction* deleteAction = menu.addAction(QStringLiteral("Delete"));
-    if (menu.exec(globalPos) == deleteAction) {
+    QAction* pinAction = nullptr;
+    QAction* unpinAllAction = nullptr;
+    if (joint >= 0) {
+        pinAction = menu.addAction(m_renderer->selectedBonePinned()
+                                       ? QStringLiteral("Unpin Joint\tP")
+                                       : QStringLiteral("Pin Joint\tP"));
+        if (m_renderer->hasPinnedBones()) {
+            unpinAllAction = menu.addAction(QStringLiteral("Unpin All Joints"));
+        }
+        if (picked >= 0) {
+            menu.addSeparator();
+        }
+    }
+    QAction* deleteAction = picked >= 0 ? menu.addAction(QStringLiteral("Delete")) : nullptr;
+    QAction* chosen = menu.exec(globalPos);
+    if (chosen != nullptr && (chosen == pinAction || chosen == unpinAllAction)) {
+        // Pins ride in the pose snapshot, so a pin edit is an ordinary undoable pose edit.
+        m_preEditPose = m_renderer->capturePose();
+        if (chosen == pinAction) {
+            m_renderer->togglePinSelectedBone();
+        } else {
+            m_renderer->unpinAllBones();
+        }
+        commitPoseUndo();
+    } else if (chosen != nullptr && chosen == deleteAction) {
         if (m_ikDragging) {
             // Deleting the dragged figure mid-gesture (left button still held while the menu
             // opened): end the drag cleanly first - its settle/undo would otherwise retarget
@@ -551,8 +822,12 @@ void VulkanWindow::showObjectContextMenu(const QPointF& localPos, const QPoint& 
             m_ikTimer->stop();
         }
         m_renderer->deleteModel(static_cast<std::size_t>(picked));
-        requestUpdate();
+        // Model indices shift and the deleted figure's poses are meaningless: the pose
+        // history goes with it (lighting entries too — one chronological stack).
+        m_undoStack.clear();
+        m_redoStack.clear();
     }
+    requestUpdate(); // selection highlight / pin markers changed even if nothing was chosen
 }
 
 void VulkanWindow::mouseMoveEvent(QMouseEvent* event) {
@@ -644,6 +919,17 @@ void VulkanWindow::keyPressEvent(QKeyEvent* event) {
             return;
         }
     }
+    // P toggles the pin on the selected joint (the joint is then held in place through IK drags
+    // of other joints). Not mid-gesture: the rig captured its pins at drag start.
+    if (m_renderer && event->key() == Qt::Key_P && event->modifiers() == Qt::NoModifier &&
+        !m_ikDragging && !m_ikSettling && m_renderer->hasSelectedBone()) {
+        m_preEditPose = m_renderer->capturePose(); // a pin toggle is an undoable pose edit
+        m_renderer->togglePinSelectedBone();
+        commitPoseUndo();
+        requestUpdate();
+        event->accept();
+        return;
+    }
     QWindow::keyPressEvent(event);
 }
 
@@ -670,6 +956,8 @@ void VulkanWindow::undo() {
     UndoEntry redo;
     redo.kind = entry.kind;
     if (entry.kind == UndoEntry::Kind::Pose) {
+        m_renderer->setActiveFigure(entry.figure); // the snapshot belongs to that figure
+        redo.figure = entry.figure;
         redo.pose = m_renderer->capturePose(); // current pose becomes redoable
         m_renderer->applyPose(entry.pose);
         m_renderer->finalizePose(); // re-runs correctives, like any pose change
@@ -695,6 +983,8 @@ void VulkanWindow::redo() {
     UndoEntry undone;
     undone.kind = entry.kind;
     if (entry.kind == UndoEntry::Kind::Pose) {
+        m_renderer->setActiveFigure(entry.figure);
+        undone.figure = entry.figure;
         undone.pose = m_renderer->capturePose();
         m_renderer->applyPose(entry.pose);
         m_renderer->finalizePose();
