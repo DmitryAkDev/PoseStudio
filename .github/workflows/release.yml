@@ -26,7 +26,13 @@ permissions:
   contents: write
 
 env:
-  QT_VERSION: '6.11.1'
+  # 6.10.3, not 6.11.x (the dev machines' version): Qt changed the download-repo
+  # layout in 6.11 (toolchain-split dirs, e.g. qt6_6111_msvc2022_64/) and no
+  # aqtinstall release understands it yet — install-qt-action fails with
+  # "Failed to locate XML data for Qt version". Qt 6 is source-compatible across
+  # minors, so building against 6.10.3 is safe; bump this back to the dev
+  # version once aqtinstall supports the new layout.
+  QT_VERSION: '6.10.3'
   # The stock HDRI lighting environments (CC0, Poly Haven) are published once as
   # a "stock-content-*" release asset rather than committed to the repo (~50 MB
   # of binaries). To update the pack, upload a new stock-content-v2 release and
