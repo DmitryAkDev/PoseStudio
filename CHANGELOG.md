@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > public repository; this changelog, `CMakeLists.txt`, and `src/constants.h` are the
 > authoritative version record, and releases are tagged from 0.3.0 onward.
 
+## [0.3.9] - 2026-09-05
+### Added
+* **PoseStudio is now downloadable!** Every release from this one on ships a Windows installer (`PoseStudio-<version>-Windows-Setup.exe` — per-user, no administrator rights needed) and a portable no-install zip, built automatically and in public by GitHub Actions from a `v*` tag (`.github/workflows/release.yml` + `packaging/PoseStudio.iss`). The installer bundles the app, the Qt runtime, the compiled shaders, the Maquettes library, and places the 33 stock CC0 HDRI lighting environments (published as the `stock-content-v1` release asset, not in the repo) into `Documents\My PoseStudio Library\hdri` — never overwriting user files, never uninstalling user content.
+* **Installation guide** (`docs/INSTALL.md`) written for non-technical testers — download steps, the SmartScreen "More info → Run anyway" walkthrough (builds are unsigned for now), where files land, updating, uninstalling, troubleshooting — plus a maintainer release guide (`docs/RELEASING.md`) and a prominent README "Download & Try It" section.
+* **Usability feedback issue form** (`.github/ISSUE_TEMPLATE/usability_feedback.yml`) and contact links — gathering usability feedback is the point of shipping installers, and every release's notes link straight to it.
+
 ## [0.3.8] - 2026-09-04
 ### Added
 * **IK benchmark and timing diagnostics** (developer): `POSESTUDIO_IK_BENCH=<bone>` runs a scripted drag of that joint with no desktop input and prints per-phase tick/frame intervals and hand-to-cursor lag; `POSESTUDIO_IK_PERF=1` prints the same report once per second during a real drag.
