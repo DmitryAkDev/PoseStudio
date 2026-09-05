@@ -12,6 +12,20 @@ PoseStudio is an open-source project designed to support the full workflow of cr
 
 The goal is to reduce reliance on fragmented toolchains and provide a flexible, open ecosystem for 3D artists, content creators, and developers.
 
+## 📥 Download & Try It
+
+[![Download for Windows](https://img.shields.io/github/v/release/PoseStudio/PoseStudio?style=for-the-badge&label=%E2%AC%87%20Download%20for%20Windows&color=314D7A)](https://github.com/PoseStudio/PoseStudio/releases/latest)
+
+PoseStudio is in early development, and we'd love for you to **try it and tell us what you think**. No build tools needed:
+
+1. **[Download the latest release](https://github.com/PoseStudio/PoseStudio/releases/latest)** — grab `PoseStudio-<version>-Windows-Setup.exe` under *Assets*.
+2. **Run the installer.** If Windows shows a *"Windows protected your PC"* warning, click **More info → Run anyway** — that's expected for a young open-source project without a paid code-signing certificate; every build is compiled in public by [GitHub Actions](https://github.com/PoseStudio/PoseStudio/actions) straight from this repository.
+3. **Launch PoseStudio** from the Start Menu, import a figure, and start posing.
+
+Needs 64-bit Windows 10/11 and a Vulkan-capable GPU (virtually any graphics card from 2016 onward). A portable no-install zip is also available on the release page. **Full instructions and troubleshooting: [Installation Guide](docs/INSTALL.md)**. macOS and Linux builds are planned.
+
+Tried it? **[Tell us what was confusing or delightful](https://github.com/PoseStudio/PoseStudio/issues/new?template=usability_feedback.yml)** — usability feedback is exactly what this early release is for — or join the conversation on [Discord](https://discord.gg/SaKvt9aYCM).
+
 ## <img src="/docs/assets/icons/sponsor.png" width="28" alt="get involved"> Get Involved
 
 We are calling on anyone who can help with the project. Your support ensures that the future of character creation remains open, free, and constantly evolving. Let's build something extraordinary together! **<a href="https://discord.gg/SaKvt9aYCM">Join our Discord</a>**!

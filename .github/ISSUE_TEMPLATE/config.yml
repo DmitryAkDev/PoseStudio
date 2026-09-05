@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 💬 Discord community
+    url: https://discord.gg/SaKvt9aYCM
+    about: Chat with the community — quick questions, first impressions, and help getting started.
+  - name: 🗣️ GitHub Discussions
+    url: https://github.com/PoseStudio/PoseStudio/discussions
+    about: Feature requests, ideas, and open-ended conversation.
+  - name: 📖 Installation guide
+    url: https://github.com/PoseStudio/PoseStudio/blob/main/docs/INSTALL.md
+    about: Step-by-step install instructions and troubleshooting.

@@ -1,0 +1,49 @@
+name: 💬 Usability feedback
+description: Tried PoseStudio? Tell us what was confusing, surprising, or hard to do — nothing is too small.
+title: "[Feedback]: "
+labels: ["usability feedback"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for trying PoseStudio! 🎉 Honest first impressions are exactly what we're after —
+        especially the moments where you got stuck. "I couldn't figure out how to X" is gold.
+
+        (Found a crash or clearly broken behavior? A plain [bug report](https://github.com/PoseStudio/PoseStudio/issues/new) works too — either way we'll see it.)
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What did you try to do, and what happened?
+      description: Walk us through it in your own words. What did you expect instead?
+      placeholder: "I imported a figure and tried to move her arm, but I couldn't tell which part to click…"
+    validations:
+      required: true
+  - type: textarea
+    id: confusing
+    attributes:
+      label: What was the most confusing or frustrating part?
+      placeholder: "I didn't realize I had to Ctrl+drag for full-body movement — I only found it in the release notes."
+    validations:
+      required: false
+  - type: textarea
+    id: liked
+    attributes:
+      label: Anything you liked, or wished for?
+      placeholder: "The lighting picker is great. I wished I could undo a camera move."
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: PoseStudio version
+      description: Shown in Help → About, or the installer file name.
+      placeholder: "0.3.9"
+    validations:
+      required: false
+  - type: input
+    id: system
+    attributes:
+      label: Your system
+      placeholder: "Windows 11, NVIDIA RTX 3060"
+    validations:
+      required: false
