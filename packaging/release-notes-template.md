@@ -16,6 +16,18 @@ Full step-by-step instructions, including screenshots of the SmartScreen warning
 
 **System requirements:** 64-bit Windows 10 or 11, and a Vulkan-capable GPU (virtually any graphics card from 2016 onward) with reasonably current drivers.
 
+## 💡 Quick Tips — the stuff that isn't obvious
+
+- 🖱️ **Camera** — left-drag empty space to orbit, scroll to zoom, middle-drag to pan. The 🏠 button (top-right of the viewport) resets the view.
+- 🦴 **Posing** — just click directly on the figure's joints (elbow, knee, neck…). There's no visible skeleton by default, but every joint is clickable. A rotate gizmo appears — drag a ring to rotate that axis. The bright part of each ring shows the joint's real anatomical range.
+- 🧲 **Full-body IK — the magic one:** hold **Ctrl and drag** any joint. The whole body follows naturally: feet stay planted, balance is automatic. Keep dragging sideways and the figure *steps and walks* to follow. Pull a hand beyond reach and the figure lifts off and dangles. Drag the hip downward for a crouch.
+- 📌 **Pin joints** — select a joint and press **P** (or right-click → Pin Joint). Pinned joints stay exactly put while you drag everything else — plant a hand on a table and crouch under it. Pins save with poses.
+- 🎭 **Importing figures** — File → Import → .DUF, or double-click one in the Asset Manager. If it asks, point it at your content folder once — it's remembered.
+- ⬇️ **Ground button** — drops a floating figure onto the floor. In actual free fall.
+- 💾 **Poses** — File → Save Pose / Load Pose. **Ctrl+Z / Ctrl+Y** undo and redo — poses *and* lighting edits.
+- 🌅 **Lighting** — Environment tab (right side) → click the environment name for the thumbnail picker. Drop your own `.hdr`/`.exr` files into `Documents\My PoseStudio Library\hdri` — subfolders become categories. And any number field: drag left/right to scrub, click to type.
+- 🎨 **Shade modes** — the picker at the viewport's top-right: photoreal PBR, matcaps, toon, clay, and more. View → Show Skeleton overlays the bone cage.
+
 ## 💬 We want your feedback!
 
 This release exists so you can try PoseStudio and tell us what's confusing, broken, or missing:
