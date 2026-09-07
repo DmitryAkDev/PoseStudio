@@ -14,7 +14,7 @@ The goal is to reduce reliance on fragmented toolchains and provide a flexible, 
 
 ## 📥 Download & Try It
 
-[![Download for Windows](https://img.shields.io/github/v/release/PoseStudio/PoseStudio?style=for-the-badge&label=%E2%AC%87%20Download%20for%20Windows&color=314D7A)](https://github.com/PoseStudio/PoseStudio/releases/latest)
+[![Download for Windows](https://img.shields.io/github/v/release/PoseStudio/PoseStudio?style=for-the-badge&label=%E2%AC%87%20Download%20for%20Windows&color=314D7A)](https://github.com/PoseStudio/PoseStudio/releases/latest) [![Total Downloads](https://img.shields.io/github/downloads/PoseStudio/PoseStudio/total?style=for-the-badge&label=Downloads&color=2E7D4F)](https://github.com/PoseStudio/PoseStudio/releases)
 
 PoseStudio is in early development, and we'd love for you to **try it and tell us what you think**. No build tools needed:
 
