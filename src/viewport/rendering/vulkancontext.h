@@ -63,6 +63,10 @@ public:
     /// swapchain uses the plain single-sample path). Chosen once at device creation.
     VkSampleCountFlagBits sampleCount() const { return m_sampleCount; }
 
+    /// Whether the device rasterizes LINE polygon mode (the fillModeNonSolid feature, enabled at
+    /// device creation when present). False on an exotic device: no wireframe pipelines then.
+    bool supportsWireframe() const { return m_supportsWireframe; }
+
     /// Picks the first format the device supports for the depth/stencil attachment,
     /// preferring a pure 32-bit depth format. Throws if none are available.
     VkFormat findDepthFormat() const;
@@ -86,6 +90,7 @@ private:
     uint32_t         m_presentFamily  = 0;
     VmaAllocator     m_allocator      = VK_NULL_HANDLE;
     VkSampleCountFlagBits m_sampleCount = VK_SAMPLE_COUNT_1_BIT; // MSAA level (see sampleCount())
+    bool             m_supportsWireframe = false; // fillModeNonSolid enabled (see supportsWireframe())
 };
 
 } // namespace pose

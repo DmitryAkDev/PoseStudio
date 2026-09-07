@@ -2,14 +2,21 @@
 
 // Mesh fragment shader with a selectable *shade mode* (the viewport's shader picker). One über-shader
 // branches on cam.params.x — a per-frame uniform, so every fragment in a draw takes the same branch
-// (coherent, cheap). Modes:
+// (coherent, cheap). Modes (the picker's rows map onto these through scene/shademode.h — the
+// picker's own order is NOT this numbering; matcaps 3-4 currently have no picker row):
 //   0 Rendered        1 PBR            2 Matcap Studio   3 Matcap Skin
 //   4 Matcap Metal    5 Toon           6 Clay            7 Lighting Only
 //   8 Flat Shaded     9 Normals        10 Albedo (unlit) 11 UV Checker
+//   12 Ambient Occlusion (the baked vAo)   13 Silhouette (flat fill)
+//   14 Specular only (the PBR path's material specular — key GGX + environment + top coat —
+//      without diffuse or rim: the roughness and spec maps at work; HDR like PBR)
+//   15 Roughness map (the material's scalar roughness × its map, as grey: white = matte)
 // Shared across the shaded modes: a detail map (tangent-space normal = mode 1, grayscale bump = mode 2)
 // perturbs the normal via a screen-space cotangent frame (no vertex tangents); lighting is two-sided
 // (the normal faces the viewer regardless of winding); and alpha = the per-draw opacity, so the same
-// shader serves the opaque and the alpha-blended transparent pass.
+// shader serves the opaque and the alpha-blended transparent pass. Two further DRAW KINDS bypass
+// the modes entirely (pc.material3.z): the wireframe overlay's edges (a flat grey) and the
+// hidden-line surface fill (depth only; its pipeline masks the colour writes).
 
 layout(set = 0, binding = 0) uniform CameraUbo {
     mat4 viewProj;
@@ -27,7 +34,8 @@ layout(set = 0, binding = 0) uniform CameraUbo {
     vec4 sh[9];   // environment diffuse irradiance: 9 SH coefficients (rgb in .xyz)
     vec4 params2; // x = diffuseIntensity, y = keyIntensity, z = envRotation(rad), w = free
     vec4 params3; // x = subsurface, y = rimIntensity, z/w = backdrop mode/blur (unused here)
-    vec4 params4; // x/y = backdrop dials (unused here), z = shadow intensity (0..1), w reserved
+    vec4 params4; // x/y = backdrop dials (unused here), z = shadow intensity (0..1),
+                  // w = the wireframe overlay's linear grey (see shademode.h)
 } cam;
 
 layout(push_constant) uniform Push {
@@ -39,7 +47,8 @@ layout(push_constant) uniform Push {
     vec4 material2; // x = lobe1 rough, y = lobe2 rough, z = lobe ratio (1 = single-lobe),
                     // w = translucency weight
     vec4 material3; // x = top-coat weight (0 = none), y = top-coat roughness,
-                    // z = transparent-pass flag (alpha semantics: 0 = SSS mask, 1 = blend opacity),
+                    // z = draw kind (MeshDrawKind): 0 opaque (alpha = SSS mask), 1 transparent
+                    //     (alpha = blend opacity), 2 wireframe edges, 3 hidden-line depth fill,
                     // w = micro-detail packed as floor(tiles) + fract(weight) (0 = none)
 } pc;
 
@@ -63,6 +72,7 @@ layout(location = 1) in vec2 vUv;
 layout(location = 2) in vec3 vWorldPos;
 layout(location = 3) in float vAo; // baked ambient occlusion (1 = open; import-time hemisphere bake)
 layout(location = 4) in vec4 vTangent; // baked UV tangent + handedness (w = 0 -> none)
+layout(location = 5) in float vSelect; // skin weight on the SELECTED joint (+ twin): the highlight amount
 
 layout(location = 0) out vec4 outColor;
 // The HDR pass's second colour attachment: the PBR opaque pass's SPECULAR, kept out of the
@@ -219,8 +229,24 @@ vec3 matcapMetal(vec3 vn) {
     return c;
 }
 
-void main() {
+// The shading proper (main() below wraps it with the selection highlight). Every mode returns
+// from here with outColor (and, in the PBR opaque case, outSpec) written.
+void shade() {
     outSpec = vec4(0.0); // only the PBR opaque path routes specular here
+    // material3.z packs the DRAW KIND (its low 3 bits — the rest is the selected joint, read by
+    // the vertex stage). Kinds beyond the lit passes: the hidden-line DEPTH FILL (3) has every
+    // colour write masked in its pipeline — nothing to shade, so return before any texture
+    // fetch — and the WIREFRAME edges (2) are a flat grey from the UBO's wire level (the wire
+    // pipeline rasterizes each triangle as its edges; alpha 0 keeps the SSS mask untouched).
+    float drawKind = mod(pc.material3.z, 8.0);
+    if (drawKind > 2.5) {
+        outColor = vec4(0.0);
+        return;
+    }
+    if (drawKind > 1.5) {
+        outColor = vec4(vec3(cam.params4.w), 0.0);
+        return;
+    }
     int mode = int(cam.params.x + 0.5);
 
     vec3 n = normalize(vWorldNormal);
@@ -328,6 +354,19 @@ void main() {
         outColor = vec4(c, 1.0);
         return;
     }
+    if (mode == 12) {             // Ambient Occlusion: the import-time per-vertex bake, as grey
+        outColor = vec4(vec3(clamp(vAo, 0.0, 1.0)), alpha);
+        return;
+    }
+    if (mode == 13) {             // Silhouette: one flat light fill — pose readability, nothing else
+        outColor = vec4(vec3(0.8), alpha);
+        return;
+    }
+    if (mode == 15) {             // Roughness Map: the material's roughness as authored (scalar × map),
+                                  // WITHOUT the specular-AA widening the lit modes add — the data itself
+        outColor = vec4(vec3(clamp(pc.material.x * roughTexel, 0.0, 1.0)), alpha);
+        return;
+    }
 
     // --- Matcaps (view-space normal) ---
     if (mode >= 2 && mode <= 4) {
@@ -377,7 +416,9 @@ void main() {
     // The environment does the heavy lifting: SH-reconstructed diffuse irradiance gives the soft,
     // directional, colour-bleeding ambient a flat term never could, and one analytic key light adds
     // crisp form + a highlight on top. No fill/rim lights — the environment supplies wrap + rim.
-    if (mode == 1) {
+    // Mode 14 (the Roughness / Specular Map view) runs this same path and outputs only the
+    // material specular it accumulates (see the end of the branch).
+    if (mode == 1 || mode == 14) {
         // Live dials from the Environment panel (via the UBO).
         float exposure    = cam.params.y;
         float specScale   = cam.params.z;
@@ -580,6 +621,17 @@ void main() {
                        coatFade * tcWeight;
         }
 
+        // The Roughness / Specular Map view: everything the MATERIAL reflects — the key light's
+        // GGX lobes, the environment's split-sum specular, the top coat — and nothing else (no
+        // diffuse, and no rim, which is a light rather than a material property). Highlight
+        // breadth shows the roughness map, highlight strength the specular weight and its mask,
+        // exactly as the PBR mode will render them. Linear HDR like PBR, so the composite's
+        // ACES + bloom apply; alpha 0 = not skin for the SSS blur.
+        if (mode == 14) {
+            outColor = vec4(specSum * exposure, 0.0);
+            return;
+        }
+
         // Photographic back-rim: a cool edge where the surface grazes the view while facing the fixed
         // back light — the portrait rim that lifts the dark side off the background (what a studio
         // photographer adds precisely because the unlit side of a subject otherwise goes flat/dark).
@@ -597,7 +649,7 @@ void main() {
         // can't smear it (the blur's V pass adds it back); the transparent pass can't write
         // attachment 1 (masked) — its specular stays in-line, fine because its pixels aren't
         // blurred (SSS mask ≈ 0 under the clear shells).
-        if (pc.material3.z > 0.5) {
+        if (mod(pc.material3.z, 8.0) > 0.5) { // draw kind 1 = the transparent pass
             outColor = vec4(color + specSum, alpha);
         } else {
             outColor = vec4(color, sssLocal);
@@ -626,4 +678,23 @@ void main() {
     vec3 color = albedo * (lighting + cam.lightColor.rgb * sss) + specular
                  + cam.rimColor.rgb * rimEdge * 0.09;
     outColor = vec4(color, alpha);
+}
+
+// The SELECTED-JOINT highlight, over whatever shade() produced, in every shade mode (the wire
+// modes tint their wires): vSelect is the vertex's skin weight on the selected joint and its
+// twist twin, so exactly the flesh that joint drives tints toward the selection blue, fading
+// where the weights blend into the neighbouring bones — the "you grabbed THIS part" cue, with
+// no bones drawn. Luminance-matched: the surface keeps its shading (form, highlights) and only
+// its hue moves, with a floor so dark cavities still read as selected. Alpha is untouched (it
+// is the SSS mask / blend opacity), and the specular attachment stays clean.
+void main() {
+    shade();
+    if (vSelect > 0.001) {
+        const vec3  kSelectionAccent = vec3(0.1046, 0.2423, 0.6038); // linear #5b87cc (kSelectionAccentLinear)
+        const float kAccentLum = 0.239;  // its Rec.709 luminance
+        const float kStrength = 0.75;    // tint at full weight
+        float lum = max(dot(outColor.rgb, vec3(0.2126, 0.7152, 0.0722)), 0.08);
+        vec3 target = kSelectionAccent * (lum / kAccentLum) * 1.3;
+        outColor.rgb = mix(outColor.rgb, target, clamp(vSelect, 0.0, 1.0) * kStrength);
+    }
 }

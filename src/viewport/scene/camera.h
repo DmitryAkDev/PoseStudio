@@ -22,6 +22,13 @@ struct Ray {
     glm::vec3 direction;
 };
 
+/// The six axis-aligned views, in Blender's numpad convention: Front looks at the scene from +Z
+/// (the side a default-imported figure faces), Right from +X (screen-right in the front view, so
+/// it shows a figure's LEFT side, as in every DCC), Top from above with the front at the bottom
+/// of the screen; Back/Left/Bottom are the opposite sides (Bottom keeps the front at the bottom,
+/// mirroring X — the top view seen through the floor).
+enum class AxisView { Front, Back, Right, Left, Top, Bottom };
+
 /**
  * @class Camera
  * @brief Orbit-style viewport camera producing Vulkan-ready view/projection matrices.
@@ -43,6 +50,30 @@ public:
 
     /// Slide the target (and eye) within the view plane.
     void pan(float deltaX, float deltaY);
+
+    /// Snaps the orbit to an axis-aligned view, keeping the target and distance, and switches
+    /// the projection to ORTHOGRAPHIC — a true elevation/plan drawing with no vanishing lines
+    /// (the floor is edge-on in the side views), the way a DCC's fixed side cameras work.
+    void setAxisView(AxisView view);
+
+    /// Rotates the orbit exactly 180° about the world up axis — the view from the opposite side —
+    /// keeping the pitch, target, distance, and projection (an orthographic front becomes an
+    /// orthographic back).
+    void flip();
+
+    /// Re-aims at @p center and sets the distance so a sphere of @p radius fills the view (its
+    /// narrower dimension, with a small margin), keeping the orbit angles — "frame selected".
+    void frame(const glm::vec3& center, float radius);
+
+    /// Perspective (the default) or orthographic projection. The orthographic half-height is
+    /// distance · tan(fov/2), so the framing at the target plane is identical across a switch
+    /// and dolly still zooms. Any orbit() switches back to perspective ("auto perspective":
+    /// an axis view is a locked drawing only until the user turns it).
+    void setOrthographic(bool on);
+    bool orthographic() const { return m_orthographic; }
+
+    const glm::vec3& target() const { return m_target; }
+    float            pitch() const { return m_pitch; }
 
     glm::mat4 view() const;
     glm::mat4 viewProjection() const { return m_projection * view(); }
@@ -74,6 +105,7 @@ private:
     float m_aspect = 1.0f;
     float m_nearPlane = 0.05f;
     float m_farPlane = 1000.0f;
+    bool  m_orthographic = false; // see setOrthographic(); the projection depends on m_distance then
     glm::mat4 m_projection = glm::mat4(1.0f);
 };
 

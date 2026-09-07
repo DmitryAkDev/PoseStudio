@@ -205,7 +205,9 @@ add_executable(
     src/viewport/rendering/shadowmap.h
     src/viewport/rendering/hdrtarget.cpp  # offscreen HDR scene target (linear RGBA16F + MSAA)
     src/viewport/rendering/hdrtarget.h
-    src/viewport/rendering/postprocess.cpp # bloom chain + the tonemapping composite
+    src/viewport/rendering/outlinemask.cpp # selection-outline coverage mask (the selected model's silhouette)
+    src/viewport/rendering/outlinemask.h
+    src/viewport/rendering/postprocess.cpp # bloom chain + the tonemapping composite (+ the selection outline)
     src/viewport/rendering/postprocess.h
     src/viewport/rendering/vulkancommands.cpp
     src/viewport/rendering/vulkancommands.h
@@ -260,6 +262,7 @@ add_executable(
     src/viewport/scene/meshik.cpp   # Model's FBIK integration (drag/settle/extraction)
     src/viewport/scene/scene.cpp
     src/viewport/scene/scene.h
+    src/viewport/scene/shademode.h # the shader picker's mode table (names + how each mode draws)
 
     # Full-body IK (Qt-free: std + GLM). See the FBIK section in CLAUDE.md.
     src/viewport/scene/ik/ikmath.cpp          # shortest-arc / signed-angle / Euler decomposition
@@ -437,6 +440,7 @@ set(SHADER_SOURCES
     bloomblur.frag
     composite.frag
     sssblur.frag
+    outlinemask.frag
 )
 
 set(COMPILED_SPV_FILES "")

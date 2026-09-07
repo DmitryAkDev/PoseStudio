@@ -246,7 +246,7 @@ Mesh::Mesh(VulkanContext& context, const MeshData& data, VkDescriptorSetLayout m
 }
 
 void Mesh::record(VkCommandBuffer cmd, VkPipelineLayout layout, const glm::mat4& model,
-                  bool transparentPass) const {
+                  MeshDrawKind kind, int highlightJoint, int highlightTwin) const {
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 1, 1, &m_materialSet, 0,
                             nullptr); // set 1 = this mesh's diffuse texture
 
@@ -270,8 +270,13 @@ void Mesh::record(VkCommandBuffer cmd, VkPipelineLayout layout, const glm::mat4&
         (m_microNormalTexture && m_detailTiles >= 1.0f && m_detailWeight > 0.0f)
             ? std::floor(m_detailTiles) + std::min(m_detailWeight, 0.99f)
             : 0.0f;
+    // material3.z packs the draw kind with the selected joint + its highlight twin (see the
+    // declaration): kind + 8·(joint+1) + 8192·(twin+1), every field a small exact integer.
+    const int packedKind = static_cast<int>(kind) +
+                           8 * (std::clamp(highlightJoint, -1, 1022) + 1) +
+                           8192 * (std::clamp(highlightTwin, -1, 1022) + 1);
     push.material3 = glm::vec4(m_topCoatWeight, m_topCoatRoughness,
-                               transparentPass ? 1.0f : 0.0f, detailPacked);
+                               static_cast<float>(packedKind), detailPacked);
     vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                        sizeof(push), &push);
 
@@ -427,6 +432,27 @@ Model::Model(VulkanContext& context, const ModelData& data, VkDescriptorSetLayou
     m_boneTranslation.assign(m_bones.size(), glm::vec3(0.0f));
     m_boneWorldPos.assign(m_bones.size(), glm::vec3(0.0f));
 
+    // Highlight twins (see m_highlightTwin): a child whose two swing axes are LOCKED is a twist
+    // bone — pair it with its bend parent both ways. First twist child wins for the parent.
+    m_highlightTwin.assign(m_bones.size(), -1);
+    for (std::size_t i = 0; i < m_bones.size(); ++i) {
+        const GpuBone& b = m_bones[i];
+        if (b.parent < 0 || b.parent >= static_cast<int>(m_bones.size())) {
+            continue;
+        }
+        int lockedAxes = 0;
+        for (int a = 0; a < 3; ++a) {
+            if (b.rotLimited[a] && (b.rotMax[a] - b.rotMin[a]) < 2.0f) {
+                ++lockedAxes;
+            }
+        }
+        const auto parent = static_cast<std::size_t>(b.parent);
+        if (lockedAxes == 2 && m_highlightTwin[parent] < 0) {
+            m_highlightTwin[parent] = static_cast<int>(i);
+            m_highlightTwin[i] = b.parent;
+        }
+    }
+
     // Debug hook: POSESTUDIO_DUMP_SKELETON=<path> dumps the imported skeleton (one bone per
     // line) so the FBIK harness can run its drag-loop tests against REAL figure rigs instead of
     // synthetic approximations. No-op unless the environment variable is set.
@@ -452,7 +478,6 @@ Model::Model(VulkanContext& context, const ModelData& data, VkDescriptorSetLayou
             }
         }
     }
-    m_boneGizmoFrame.assign(m_bones.size(), glm::mat4(1.0f));
     m_poseGlobal.assign(m_bones.size(), glm::mat4(1.0f));
     m_jointCount = static_cast<uint32_t>(m_bones.empty() ? 1 : m_bones.size());
 
@@ -545,23 +570,7 @@ void Model::computeSkinMatrices() {
         dst[2 * i + 1] = 0.5f * glm::vec4(d.x, d.y, d.z, d.w);
         // The joint's world position (for the posing overlay / picking) = model · poseGlobal · origin.
         m_boneWorldPos[i] = glm::vec3(m_transform * poseGlobal[i][3]);
-        // Gizmo frame: the joint's rotation-channel axes = parentGlobal · localBind · orient (the frame
-        // R(euler) acts in, i.e. before this joint's own rotation). Its origin equals the joint origin.
-        const glm::mat4 parentGlobal =
-            (bone.parent >= 0) ? poseGlobal[bone.parent] : glm::mat4(1.0f);
-        m_boneGizmoFrame[i] = parentGlobal * bone.localBind * bone.orient;
     }
-}
-
-bool Model::selectedBoneFrame(glm::vec3& center, glm::mat3& axes) const {
-    if (m_selectedBone < 0 || m_selectedBone >= static_cast<int>(m_bones.size())) {
-        return false;
-    }
-    const glm::mat4 f = m_transform * m_boneGizmoFrame[static_cast<std::size_t>(m_selectedBone)];
-    center = glm::vec3(f[3]);
-    axes = glm::mat3(glm::normalize(glm::vec3(f[0])), glm::normalize(glm::vec3(f[1])),
-                     glm::normalize(glm::vec3(f[2])));
-    return true;
 }
 
 void Model::clampBoneEuler(int index) {
@@ -888,10 +897,11 @@ void Model::record(VkCommandBuffer cmd, VkPipelineLayout layout, bool transparen
     uploadJointsIfDirty(frameIndex);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 2, 1,
                             &m_jointSets[frameIndex], 0, nullptr);
+    const int twin = selectedHighlightTwin();
     if (!transparentPass) {
         for (const Mesh& mesh : m_meshes) {
             if (!mesh.isTransparent()) {
-                mesh.record(cmd, layout, m_transform, false);
+                mesh.record(cmd, layout, m_transform, MeshDrawKind::Opaque, m_selectedBone, twin);
             }
         }
         return;
@@ -911,7 +921,40 @@ void Model::record(VkCommandBuffer cmd, VkPipelineLayout layout, bool transparen
                   return a.first > b.first; // farthest first
               });
     for (const auto& [distSq, mesh] : order) {
-        mesh->record(cmd, layout, m_transform, true);
+        mesh->record(cmd, layout, m_transform, MeshDrawKind::Transparent, m_selectedBone, twin);
+    }
+}
+
+int Model::selectedHighlightTwin() const {
+    return (m_selectedBone >= 0 && m_selectedBone < static_cast<int>(m_highlightTwin.size()))
+               ? m_highlightTwin[static_cast<std::size_t>(m_selectedBone)]
+               : -1;
+}
+
+void Model::recordWire(VkCommandBuffer cmd, VkPipelineLayout layout, uint32_t frameIndex) {
+    if (m_meshes.empty()) {
+        return;
+    }
+    uploadJointsIfDirty(frameIndex);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 2, 1,
+                            &m_jointSets[frameIndex], 0, nullptr);
+    const int twin = selectedHighlightTwin();
+    for (const Mesh& mesh : m_meshes) { // every mesh: cards and shells are geometry too
+        mesh.record(cmd, layout, m_transform, MeshDrawKind::Wire, m_selectedBone, twin);
+    }
+}
+
+void Model::recordDepthFill(VkCommandBuffer cmd, VkPipelineLayout layout, uint32_t frameIndex) {
+    if (m_meshes.empty()) {
+        return;
+    }
+    uploadJointsIfDirty(frameIndex);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 2, 1,
+                            &m_jointSets[frameIndex], 0, nullptr);
+    for (const Mesh& mesh : m_meshes) {
+        if (!mesh.isTransparent()) {
+            mesh.record(cmd, layout, m_transform, MeshDrawKind::DepthOnly);
+        }
     }
 }
 
@@ -928,11 +971,32 @@ void Model::recordShadow(VkCommandBuffer cmd, VkPipelineLayout layout,
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1,
                             &m_jointSets[frameIndex], 0, nullptr);
     ShadowPushConstants push{};
-    push.lightViewProj = lightViewProj;
+    push.viewProj = lightViewProj;
     push.model = m_transform;
     vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), &push);
     for (const Mesh& mesh : m_meshes) {
         if (!mesh.isTransparent()) { // no alpha in this pass — cards/shells would cast solid shadows
+            mesh.recordDepth(cmd);
+        }
+    }
+}
+
+void Model::recordSilhouette(VkCommandBuffer cmd, VkPipelineLayout layout,
+                             const glm::mat4& viewProj, uint32_t frameIndex) {
+    if (m_meshes.empty()) {
+        return;
+    }
+    // Same shader + set layout as the shadow pass (shadow.vert; joint set at index 0), projected
+    // by the camera instead of the light — the outline traces the POSED silhouette.
+    uploadJointsIfDirty(frameIndex);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1,
+                            &m_jointSets[frameIndex], 0, nullptr);
+    ShadowPushConstants push{};
+    push.viewProj = viewProj;
+    push.model = m_transform;
+    vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), &push);
+    for (const Mesh& mesh : m_meshes) {
+        if (!mesh.hasOpacityMask()) { // a cutout card's real shape lives in a map this pass can't read
             mesh.recordDepth(cmd);
         }
     }
@@ -1060,7 +1124,7 @@ bool Model::dropToGround() {
 
 void Model::translateY(float dy) {
     m_transform = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, dy, 0.0f)) * m_transform;
-    computeSkinMatrices(); // refresh the transform-dependent bone world positions (picking/gizmo)
+    computeSkinMatrices(); // refresh the transform-dependent bone world positions (picking/markers)
 }
 
 bool Model::groundGap(float& lowestY) const {

@@ -166,6 +166,11 @@ void VulkanContext::createLogicalDevice() {
     VkPhysicalDeviceFeatures supported{};
     vkGetPhysicalDeviceFeatures(m_physicalDevice, &supported);
     features.independentBlend = supported.independentBlend;
+    // Wireframe rasterization (the wireframe shade modes' LINE polygon mode). Universal on
+    // desktop GPUs and MoltenVK; a device without it simply gets no wire pipelines (the wire
+    // modes then draw their surface fill alone — see Scene).
+    features.fillModeNonSolid = supported.fillModeNonSolid;
+    m_supportsWireframe = supported.fillModeNonSolid == VK_TRUE;
 
     // Start from the hard requirements, then append VK_KHR_portability_subset if the chosen
     // device exposes it (mandatory on MoltenVK — see the constant's note above).

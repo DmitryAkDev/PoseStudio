@@ -5,6 +5,7 @@
 
 #include "viewportwidget.h"
 
+#include "scene/shademode.h"
 #include "vulkanwindow.h"
 
 #include <QAction>
@@ -18,6 +19,8 @@
 #include <QLabel>
 #include <QMenu>
 #include <QMoveEvent>
+#include <QPainter>
+#include <QPainterPath>
 #include <QPoint>
 #include <QPushButton>
 #include <QResizeEvent>
@@ -37,6 +40,77 @@ namespace {
 // Bump here (and nowhere else) when the renderer starts relying on newer core features.
 constexpr uint32_t kVulkanApiVersion = VK_API_VERSION_1_1;
 } // namespace
+
+/// The strip's "rotating about an axis" badge, shown under the buttons for as long as X, Y, or Z
+/// is held with a joint selected — the wheel's meaning is modal, so the mode must be visible.
+/// A rotation-arrow glyph and the axis letter in the axis colour (X red, Y green, Z the accent
+/// blue — the DCC convention), on the same surface as the strip's buttons. Painted, not an icon
+/// file: the colour is the message and there are three of them.
+class AxisRotateBadge : public QWidget {
+public:
+    explicit AxisRotateBadge(QWidget* parent, int height) : QWidget(parent), m_height(height) {
+        setFixedSize(66, height);
+        setToolTip(tr("Roll the mouse wheel to rotate the selected joint about this axis"));
+    }
+    void setAxis(int axis) {
+        m_axis = axis;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+        p.setPen(QColor(0x55, 0x55, 0x55));
+        p.setBrush(QColor(0x25, 0x26, 0x27));
+        p.drawRoundedRect(r, 4.0, 4.0);
+        if (m_axis < 0 || m_axis > 2) {
+            return;
+        }
+        static const QColor kAxisColor[3] = {QColor(0xe0, 0x55, 0x55), QColor(0x5f, 0xc4, 0x5f),
+                                             QColor(0x5b, 0x87, 0xcc)};
+        static const char* const kAxisName[3] = {"X", "Y", "Z"};
+        const QColor c = kAxisColor[m_axis];
+
+        // Rotation glyph: a 270° arc (counter-clockwise from 45°) with an arrowhead on its end.
+        const qreal d = r.height() * 0.52;
+        const QRectF arc(r.left() + 9.0, r.center().y() - d * 0.5, d, d);
+        QPen pen(c, 2.0);
+        pen.setCapStyle(Qt::RoundCap);
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+        p.drawArc(arc, 45 * 16, 270 * 16);
+        const qreal endDeg = 45.0 + 270.0; // Qt angles: 0° = 3 o'clock, counter-clockwise
+        const qreal endRad = endDeg * 3.14159265 / 180.0;
+        const QPointF tip(arc.center().x() + std::cos(endRad) * d * 0.5,
+                          arc.center().y() - std::sin(endRad) * d * 0.5);
+        const QPointF tangent(-std::sin(endRad), -std::cos(endRad)); // direction of travel (screen)
+        const QPointF normal(-tangent.y(), tangent.x());
+        const QPointF base = tip - tangent * 5.0;
+        QPainterPath head;
+        head.moveTo(tip + tangent * 1.5);
+        head.lineTo(base + normal * 3.5);
+        head.lineTo(base - normal * 3.5);
+        head.closeSubpath();
+        p.setPen(Qt::NoPen);
+        p.setBrush(c);
+        p.drawPath(head);
+
+        // The axis letter.
+        QFont f = font();
+        f.setBold(true);
+        f.setPointSizeF(f.pointSizeF() + 1.0);
+        p.setFont(f);
+        p.setPen(c);
+        p.drawText(QRectF(arc.right() + 8.0, r.top(), r.right() - arc.right() - 8.0, r.height()),
+                   Qt::AlignVCenter | Qt::AlignLeft, QString::fromLatin1(kAxisName[m_axis]));
+    }
+
+private:
+    int m_axis = -1;
+    int m_height = 28;
+};
 
 ViewportWidget::ViewportWidget(QWidget* parent) : QWidget(parent) {
     auto* layout = new QVBoxLayout(this);
@@ -109,6 +183,12 @@ void ViewportWidget::setShadeMode(int mode) {
     }
 }
 
+void ViewportWidget::deleteSelectedObject() {
+    if (m_window) {
+        m_window->deleteSelectedObject();
+    }
+}
+
 void ViewportWidget::setShowSkeleton(bool on) {
     if (!m_window || m_window->showSkeleton() == on) {
         return;
@@ -125,6 +205,24 @@ bool ViewportWidget::showSkeleton() const {
 void ViewportWidget::resetView() {
     if (m_window) {
         m_window->resetView();
+    }
+}
+
+void ViewportWidget::setAxisView(AxisView view) {
+    if (m_window) {
+        m_window->setAxisView(view);
+    }
+}
+
+void ViewportWidget::flipView() {
+    if (m_window) {
+        m_window->flipView();
+    }
+}
+
+void ViewportWidget::frameSelected() {
+    if (m_window) {
+        m_window->frameSelected();
     }
 }
 
@@ -165,21 +263,13 @@ void ViewportWidget::registerLightingUndo(const LightingSettings& preEdit) {
 }
 
 QStringList ViewportWidget::shaderModeNames() {
-    // Order IS the shade-mode index the shader reads (cam.params.x); keep in sync with mesh.frag.
-    return {
-        QStringLiteral("Rendered"),               // 0
-        QStringLiteral("PBR (Physically-Based)"), // 1
-        QStringLiteral("Matcap: Studio"),         // 2
-        QStringLiteral("Matcap: Skin"),           // 3
-        QStringLiteral("Matcap: Metal"),          // 4
-        QStringLiteral("Toon / Cel"),             // 5
-        QStringLiteral("Clay"),                   // 6
-        QStringLiteral("Lighting Only"),          // 7
-        QStringLiteral("Flat Shaded"),            // 8
-        QStringLiteral("Normals"),                // 9
-        QStringLiteral("Albedo (Unlit)"),         // 10
-        QStringLiteral("UV Checker"),             // 11
-    };
+    // Picker order = the table's order (scene/shademode.h); the index handed to setShadeMode is
+    // a row of that table, and the row maps itself onto mesh.frag's mode + the draw variants.
+    QStringList names;
+    for (const ShadeMode& mode : kShadeModes) {
+        names << QString::fromUtf8(mode.name);
+    }
+    return names;
 }
 
 void ViewportWidget::createShaderOverlay() {
@@ -199,35 +289,47 @@ void ViewportWidget::createShaderOverlay() {
     m_overlay->setAttribute(Qt::WA_TranslucentBackground, true);
     m_overlay->setAttribute(Qt::WA_ShowWithoutActivating, true);
 
-    auto* lay = new QHBoxLayout(m_overlay);
+    // Two rows: the control strip, and under it (right-aligned, usually empty) the transient
+    // axis-rotate badge. Hidden widgets take no space, so the strip is one row until a key is held.
+    auto* column = new QVBoxLayout(m_overlay);
+    column->setContentsMargins(0, 0, 0, 0);
+    column->setSpacing(6);
+    auto* lay = new QHBoxLayout();
     lay->setContentsMargins(0, 0, 0, 0);
     lay->setSpacing(6);
+    column->addLayout(lay);
 
     // The selector is a push-button that opens a *real QMenu*, rather than a QComboBox. This is the one
     // way to get the picker's dropdown to look and behave EXACTLY like the File/Edit/Help menus — colours,
     // hover, spacing, and top-down drop — because it *is* a QMenu and so inherits the global QMenu QSS
     // (see _menumanager.qss). A styled QComboBox popup renders its own item states inconsistently.
+    // The pickers' field style (the closed selector): the menu-bar surface + hover; the QMenu each
+    // opens is themed globally. text-align:left so the label sits left of the drop arrow, like a
+    // combo field. No cursor override on the overlay controls: Windows apps keep the standard
+    // arrow over buttons (the hand cursor reads as a hyperlink there).
+    const auto pickerStyle = [](const QString& objectName, int minWidthPx) {
+        return QStringLiteral(
+                   "#%1 {"
+                   "  background-color: #252627;"
+                   "  color: #e8e8ea;"
+                   "  border: 1px solid #555555;"
+                   "  border-radius: 4px;"
+                   "  padding: 5px 10px;"
+                   "  min-width: %2px;"
+                   "  font-size: 12px;"
+                   "  text-align: left;"
+                   "}"
+                   "#%1:hover { background-color: #314D7A; color: #ffffff; }"
+                   "#%1::menu-indicator { subcontrol-position: right center;"
+                   "  subcontrol-origin: padding; right: 8px; }")
+            .arg(objectName)
+            .arg(minWidthPx);
+    };
+
     m_shaderButton = new QPushButton(m_overlay);
     m_shaderButton->setObjectName(QStringLiteral("ShaderModeButton"));
     m_shaderButton->setToolTip(tr("Viewport shading mode"));
-    // No cursor override on the overlay controls: Windows apps keep the standard arrow over buttons
-    // (the hand cursor reads as a hyperlink there), so these follow the platform convention.
-    // The button (the closed selector) matches the menu-bar surface + hover; the QMenu it opens is themed
-    // globally. text-align:left so the mode name sits left of the drop arrow, like a combo field.
-    m_shaderButton->setStyleSheet(QStringLiteral(
-        "#ShaderModeButton {"
-        "  background-color: #252627;"
-        "  color: #e8e8ea;"
-        "  border: 1px solid #555555;"
-        "  border-radius: 4px;"
-        "  padding: 5px 10px;"
-        "  min-width: 168px;"
-        "  font-size: 12px;"
-        "  text-align: left;"
-        "}"
-        "#ShaderModeButton:hover { background-color: #314D7A; color: #ffffff; }"
-        "#ShaderModeButton::menu-indicator { subcontrol-position: right center;"
-        "  subcontrol-origin: padding; right: 8px; }"));
+    m_shaderButton->setStyleSheet(pickerStyle(QStringLiteral("ShaderModeButton"), 168));
 
     auto* menu = new QMenu(m_shaderButton);
     auto* group = new QActionGroup(menu);
@@ -237,8 +339,8 @@ void ViewportWidget::createShaderOverlay() {
     // indent from a couple of spaces to keep the mode name off the left border (the menu items, which
     // honour padding normally, stay unindented).
     const auto fieldLabel = [](const QString& name) { return QStringLiteral("  ") + name; };
-    // PBR/IBL is the default shade mode (index 1) — see mesh.frag and Scene's m_shadeMode.
-    constexpr int kDefaultShadeMode = 1;
+    // The default (PBR) and the group separators come from the table too (kDefaultShadeMode,
+    // ShadeMode::separatorAfter), so the picker is a pure rendering of scene/shademode.h.
     for (int i = 0; i < names.size(); ++i) {
         QAction* action = menu->addAction(names.at(i));
         action->setCheckable(true);
@@ -248,10 +350,81 @@ void ViewportWidget::createShaderOverlay() {
             setShadeMode(i);
             m_shaderButton->setText(fieldLabel(name));
         });
+        if (kShadeModes[i].separatorAfter) {
+            menu->addSeparator();
+        }
     }
     m_shaderButton->setMenu(menu); // QPushButton drops the menu straight down from the button
     m_shaderButton->setText(fieldLabel(names.at(kDefaultShadeMode)));
     lay->addWidget(m_shaderButton);
+
+    // The VIEW picker: the named camera views (the same ones the 1/3/7/5 keys reach), grouped by
+    // axis, plus Home. Its label READS the current view — "Perspective" once the user orbits
+    // away from a named one — following the window's viewPresetChanged, so the keys, the View
+    // menu, and this picker all agree on where the camera is.
+    m_viewButton = new QPushButton(m_overlay);
+    m_viewButton->setObjectName(QStringLiteral("ViewPresetButton"));
+    m_viewButton->setToolTip(tr("Camera view"));
+    m_viewButton->setStyleSheet(pickerStyle(QStringLiteral("ViewPresetButton"), 132));
+    auto* viewMenu = new QMenu(m_viewButton);
+    // The global QMenu::item padding is tight on the right (built for the long menu-bar
+    // entries); these short labels need breathing room so the dropdown doesn't read as a
+    // sliver, and the menu is at least as wide as its field, like a combo's popup.
+    viewMenu->setStyleSheet(QStringLiteral("QMenu::item { padding: 6px 28px 6px 6px; }"));
+    struct ViewEntry {
+        const char* label;
+        ViewPreset  preset;
+        bool        separatorAfter;
+    };
+    const ViewEntry viewEntries[] = {
+        {"Home View",   ViewPreset::Home,   true},
+        {"Top View",    ViewPreset::Top,    false},
+        {"Bottom View", ViewPreset::Bottom, true},
+        {"Front View",  ViewPreset::Front,  false},
+        {"Back View",   ViewPreset::Back,   true},
+        {"Left View",   ViewPreset::Left,   false},
+        {"Right View",  ViewPreset::Right,  false},
+    };
+    for (const ViewEntry& entry : viewEntries) {
+        QAction* action = viewMenu->addAction(QString::fromUtf8(entry.label));
+        const ViewPreset preset = entry.preset;
+        connect(action, &QAction::triggered, this, [this, preset] {
+            switch (preset) {
+            case ViewPreset::Top:    setAxisView(AxisView::Top);    break;
+            case ViewPreset::Bottom: setAxisView(AxisView::Bottom); break;
+            case ViewPreset::Front:  setAxisView(AxisView::Front);  break;
+            case ViewPreset::Back:   setAxisView(AxisView::Back);   break;
+            case ViewPreset::Left:   setAxisView(AxisView::Left);   break;
+            case ViewPreset::Right:  setAxisView(AxisView::Right);  break;
+            case ViewPreset::Home:
+            case ViewPreset::Free:   resetView();                   break;
+            }
+        });
+        if (entry.separatorAfter) {
+            viewMenu->addSeparator();
+        }
+    }
+    m_viewButton->setMenu(viewMenu);
+    const auto viewLabel = [fieldLabel](ViewPreset preset) {
+        switch (preset) {
+        case ViewPreset::Top:    return fieldLabel(tr("Top View"));
+        case ViewPreset::Bottom: return fieldLabel(tr("Bottom View"));
+        case ViewPreset::Front:  return fieldLabel(tr("Front View"));
+        case ViewPreset::Back:   return fieldLabel(tr("Back View"));
+        case ViewPreset::Left:   return fieldLabel(tr("Left View"));
+        case ViewPreset::Right:  return fieldLabel(tr("Right View"));
+        case ViewPreset::Home:   return fieldLabel(tr("Home View"));
+        case ViewPreset::Free:   break;
+        }
+        return fieldLabel(tr("Perspective View"));
+    };
+    m_viewButton->setText(viewLabel(m_window ? m_window->currentView() : ViewPreset::Home));
+    viewMenu->setMinimumWidth(m_viewButton->sizeHint().width());
+    if (m_window) {
+        connect(m_window, &VulkanWindow::viewPresetChanged, this,
+                [this, viewLabel](ViewPreset preset) { m_viewButton->setText(viewLabel(preset)); });
+    }
+    lay->addWidget(m_viewButton);
 
     // "Home": snap the camera back to the default perspective framing. Same surface/hover as the
     // shader field so the two read as one control strip; squared off to the field's own height.
@@ -295,7 +468,7 @@ void ViewportWidget::createShaderOverlay() {
 
     // "Skeleton": toggle the skeleton overlay (the joint→parent bone lines drawn over the figure).
     // A persistent on/off view control (unlike the one-shot Home/Ground), so it's checkable and
-    // shows its state. Off by default — the rotate gizmo is the posing affordance — but joints stay
+    // shows its state. Off by default — joints are grabbed directly on the figure — but joints stay
     // clickable either way. Also reachable from the View menu; the two stay in sync via the
     // skeletonVisibilityChanged signal.
     m_skeletonButton = new QPushButton(m_overlay);
@@ -322,6 +495,23 @@ void ViewportWidget::createShaderOverlay() {
         setShowSkeleton(on);
     });
     lay->addWidget(m_skeletonButton);
+
+    // The axis-rotate badge, under the strip's right end (below the Skeleton button): visible
+    // only while X/Y/Z is held with a joint selected (VulkanWindow::axisRotateKeyChanged).
+    m_axisBadge = new AxisRotateBadge(m_overlay, fieldHeight);
+    m_axisBadge->hide();
+    auto* badgeRow = new QHBoxLayout();
+    badgeRow->setContentsMargins(0, 0, 0, 0);
+    badgeRow->addStretch(1);
+    badgeRow->addWidget(m_axisBadge);
+    column->addLayout(badgeRow);
+    if (m_window) {
+        connect(m_window, &VulkanWindow::axisRotateKeyChanged, this, [this](int axis) {
+            m_axisBadge->setAxis(axis);
+            m_axisBadge->setVisible(axis >= 0);
+            syncOverlayPosition(); // the strip grew or shrank by a row
+        });
+    }
     // Keep the button's checked state in sync when the View menu (or anything else) toggles the
     // overlay: the signal is the single source of truth, and blockSignals keeps the round-trip to
     // one hop (no re-entrant toggled → setShowSkeleton → signal loop).

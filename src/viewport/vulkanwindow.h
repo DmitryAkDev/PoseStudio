@@ -16,7 +16,9 @@
 #ifndef VULKANWINDOW_H
 #define VULKANWINDOW_H
 
+#include "scene/camera.h"           // AxisView (the view hotkeys)
 #include "scene/lightingsettings.h" // stored by value; applied to the renderer once it exists
+#include "scene/shademode.h"        // kDefaultShadeMode
 
 #include <QWindow>
 
@@ -42,6 +44,11 @@ namespace pose {
 
 class VulkanContext;
 class VulkanRenderer;
+
+/// The named views the viewport's View picker lists and reports: the six axis views, Home (the
+/// default perspective framing), and Free — the user orbited away from any named view (shown as
+/// "Perspective"). Flip swaps Front/Back and Left/Right; frame-selected and zoom keep the view.
+enum class ViewPreset { Free, Top, Bottom, Front, Back, Left, Right, Home };
 
 /**
  * @class VulkanWindow
@@ -75,12 +82,17 @@ public:
     bool savePose(const QString& path);
     bool loadPose(const QString& path);
 
-    /// Sets the viewport shade mode (index into the shader picker's mode list; see mesh.frag).
+    /// Sets the viewport shade mode (an index into the picker's table, scene/shademode.h).
     /// Remembered and applied once the renderer exists if it isn't built yet.
     void setShadeMode(int mode);
 
+    /// Deletes the SELECTED object (the outlined one) — the Delete key and Edit → Delete. No-op
+    /// without a selection or before the renderer exists; a drag in flight is ended first, and
+    /// the undo history is cleared (model indices shift; the deleted figure's poses are moot).
+    void deleteSelectedObject();
+
     /// Toggles the skeleton overlay (the joint→parent bone lines drawn over the figure). Off by
-    /// default — the rotate gizmo is the posing affordance — but joints stay clickable either way.
+    /// default — joints are grabbed directly on the figure — but they stay grabbable either way.
     /// Remembered and applied once the renderer exists if it isn't built yet.
     void setShowSkeleton(bool on);
     bool showSkeleton() const;
@@ -88,6 +100,17 @@ public:
     /// Restores the camera's default framing (the viewport's Home button). No-op before the
     /// renderer exists — the camera is created with that framing, so there'd be nothing to undo.
     void resetView();
+
+    /// Camera hotkeys in Blender's numpad convention (View menu + the keys in keyPressEvent):
+    /// snap to an axis-aligned view, flip to the opposite side (180° about the up axis), or
+    /// frame the selected object (everything, with no selection). No-ops before the renderer
+    /// exists.
+    void setAxisView(AxisView view);
+    void flipView();
+    void frameSelected();
+
+    /// Which named view the camera is in (see ViewPreset) — the View picker's label.
+    ViewPreset currentView() const { return m_viewPreset; }
 
     /// Drops the posable figure onto the ground plane (the overlay's ground button): translates it
     /// so the current pose's lowest point rests at y = 0. A figure ABOVE the floor FALLS there —
@@ -121,6 +144,13 @@ signals:
     /// Emitted when undo/redo restores a lighting state. The settings are already applied to the
     /// renderer; the Environment panel listens (via ViewportWidget) to sync its widgets.
     void lightingRestored(const LightingSettings& settings);
+    /// Emitted whenever the camera enters or leaves a named view (an axis view, Home, a flip, or
+    /// an orbit drag away from one) — the View picker's button follows it.
+    void viewPresetChanged(ViewPreset view);
+    /// Emitted when an axis-rotate key hold begins (@p axis 0/1/2 = X/Y/Z: while held, the mouse
+    /// wheel rotates the selected joint about that channel) and when it ends (-1). The viewport
+    /// strip shows an axis badge for the duration.
+    void axisRotateKeyChanged(int axis);
 
 protected:
     void exposeEvent(QExposeEvent* event) override;
@@ -132,6 +162,8 @@ protected:
     void mouseMoveEvent(QMouseEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
+    void keyReleaseEvent(QKeyEvent* event) override;
+    void focusOutEvent(QFocusEvent* event) override;
 
 private:
     using PoseSnapshot = std::vector<std::pair<std::string, glm::vec3>>;
@@ -164,6 +196,26 @@ private:
     /// object context menu at @p globalPos (currently just "Delete"). No-op on empty space.
     void showObjectContextMenu(const QPointF& localPos, const QPoint& globalPos);
 
+    /// A left CLICK (press + release without dragging) at @p localPos: selects the model under
+    /// the cursor — the one the viewport outlines — or clears the selection on empty space.
+    void selectModelAtClick(const QPointF& localPos);
+
+    /// Removes model @p index from the scene (the context menu's Delete and deleteSelectedObject
+    /// share it): ends a drag or settle in flight first, then clears the undo history.
+    void deleteModel(int index);
+
+    /// Records the named view the camera is now in and emits viewPresetChanged if it changed.
+    void noteView(ViewPreset view);
+    ViewPreset m_viewPreset = ViewPreset::Home; // the camera starts at its default framing
+
+    // Hold-and-scroll joint rotation: while X, Y, or Z is held with a joint selected, the mouse
+    // wheel rotates that joint about the matching Euler channel (its own oriented frame, limits
+    // enforced) instead of zooming. One hold = one undo entry (the pose is snapshotted at the
+    // press, correctives + the commit run at the release); a focus loss ends the hold too.
+    void beginAxisRotate(int axis);
+    void endAxisRotate();
+    int  m_axisRotateKey = -1; // 0/1/2 while X/Y/Z is held, else -1
+
     QVulkanInstance* m_instance = nullptr; // borrowed
     uint32_t         m_apiVersion = 0;
     QString          m_shaderDir;
@@ -176,7 +228,7 @@ private:
     std::vector<QString> m_pendingModels;  // OBJ imports requested before the renderer existed
     std::vector<QString> m_pendingFigures; // figure imports requested before the renderer existed
     QString              m_pendingPose;    // pose file to apply once the queued figure is loaded
-    int                  m_shadeMode = 1;  // viewport shade mode (1 = PBR/IBL); applied to the renderer once it exists
+    int                  m_shadeMode = kDefaultShadeMode; // picker-table index; applied to the renderer once it exists
     bool                 m_showSkeleton = false; // skeleton overlay on/off; applied to the renderer once it exists
     QString              m_environmentPath;         // chosen HDRI (empty = the default at init); applied once the renderer exists
     quint64              m_environmentRequestId = 0; // ++ per HDRI request; a slower earlier bake with a stale id is discarded
@@ -187,17 +239,23 @@ private:
     // this rather than QMouseEvent::buttons() so a modal dialog (e.g. the Import file picker)
     // can't leak a button-held move to us as it closes and snap the camera.
     Qt::MouseButtons m_activeDragButtons = Qt::NoButton;
-    // True when the current left-drag began on a figure joint, so it rotates that joint instead of
-    // orbiting the camera (posing). Set on press (near a joint), cleared on release.
+    // True when the current CTRL+left-drag began on a figure joint: it FK-rotates that one joint
+    // (horizontal = its Y channel, vertical = X) instead of orbiting the camera. Set on press
+    // (near a joint, Ctrl held), cleared on release.
     bool             m_posingBone = false;
-    // Which rotate-gizmo ring the current left-drag grabbed (0=X,1=Y,2=Z), or -1 if not a gizmo drag.
-    int              m_gizmoAxis = -1;
-    // True while a Ctrl+left-drag is full-body-IK-dragging the grabbed joint: the joint follows
+    // A left press that hit no joint — the orbit gesture — may still turn out to be a CLICK:
+    // released within the platform's drag distance of the press, it selects the model under the
+    // cursor (box-level pick) or, on empty space, clears the selection. The selected model is
+    // the one the viewport outlines.
+    bool             m_leftClickCandidate = false;
+    QPointF          m_leftPressPos;
+    // True while a PLAIN left-drag is full-body-IK-dragging the grabbed joint: the joint follows
     // the cursor in a camera-parallel plane through its grab point (m_ikPlanePoint, world space),
-    // the body following via the FBIK solve (feet pinned, auto-balanced). Plain drags stay FK.
-    // The solve is rate-limited per call (it can only move the pose so far per event), so while
-    // the button is held m_ikTimer keeps re-issuing the LAST target — catch-up continues and
-    // settles even when the mouse stops moving (mouse-move events stop with it).
+    // the body following via the FBIK solve (feet pinned, auto-balanced). This is THE posing
+    // gesture; Ctrl+drag is the single-joint FK rotate. The solve is rate-limited per call (it
+    // can only move the pose so far per event), so while the button is held m_ikTimer keeps
+    // re-issuing the LAST target — catch-up continues and settles even when the mouse stops
+    // moving (mouse-move events stop with it).
     bool             m_ikDragging = false;
     // True between IK-drag mouse RELEASE and the end of the ANIMATED release settle: the timer
     // keeps ticking, each tick relaxing the body one capped round onto its ground pins (the old

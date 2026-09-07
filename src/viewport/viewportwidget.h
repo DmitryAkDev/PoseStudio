@@ -12,6 +12,8 @@
 #ifndef VIEWPORTWIDGET_H
 #define VIEWPORTWIDGET_H
 
+#include "scene/camera.h" // AxisView (the View menu's camera entries)
+
 #include <QWidget>
 #include <QStringList>
 
@@ -26,6 +28,7 @@ class QMoveEvent;
 
 namespace pose {
 
+class AxisRotateBadge;
 class VulkanWindow;
 struct LightingSettings;
 
@@ -55,19 +58,30 @@ public:
     bool savePose(const QString& path);
     bool loadPose(const QString& path);
 
-    /// Sets the viewport shade mode by index (see shaderModeNames()). No-op if the viewport degraded.
+    /// Sets the viewport shade mode by index into the picker's table (scene/shademode.h — the
+    /// order shaderModeNames() lists). No-op if the viewport degraded.
     void setShadeMode(int mode);
+
+    /// Deletes the selected (outlined) object — Edit → Delete; the viewport's own Delete key
+    /// handling reaches the same place. No-op without a selection or if the viewport degraded.
+    void deleteSelectedObject();
 
     /// Returns the camera to the default perspective framing (the overlay's Home button).
     /// No-op if the viewport degraded.
     void resetView();
+
+    /// Camera views in Blender's numpad convention — View menu entries; the viewport handles the
+    /// keys itself (1/3/7 + Ctrl, 9, "."). No-ops if the viewport degraded.
+    void setAxisView(AxisView view);
+    void flipView();
+    void frameSelected();
 
     /// Drops the posable figure onto the ground plane (the overlay's ground button): moves it so
     /// the current pose's lowest point rests at y = 0. No-op if the viewport degraded.
     void groundFigure();
 
     /// Toggles the skeleton overlay (the joint→parent bone lines drawn over the figure). Off by
-    /// default — the rotate gizmo is the posing affordance — but joints stay clickable either way.
+    /// default — joints are grabbed directly on the figure — but joints stay clickable either way.
     /// Driven by the overlay's Skeleton button and the View menu (kept in sync via the
     /// skeletonVisibilityChanged signal). No-op if the viewport degraded.
     void setShowSkeleton(bool on);
@@ -88,8 +102,8 @@ public:
     /// stack (see VulkanWindow::registerLightingUndo). No-op if the viewport degraded.
     void registerLightingUndo(const LightingSettings& preEdit);
 
-    /// The user-facing shade-mode names, in the shader's mode order (index == shade mode). The single
-    /// source of truth the floating shader dropdown is populated from.
+    /// The user-facing shade-mode names in picker order — the names of scene/shademode.h's table,
+    /// which is the single source of truth (each row also says how the scene draws in that mode).
     static QStringList shaderModeNames();
 
 signals:
@@ -111,7 +125,7 @@ protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
-    void createShaderOverlay();   // builds the floating top-right shader dropdown + home button
+    void createShaderOverlay();   // builds the floating top-right strip: shader + view pickers, buttons
     void syncOverlayPosition();   // glues it to the viewport's top-right corner (global coords)
 
     std::unique_ptr<QVulkanInstance> m_instance;           // owns the VkInstance
@@ -119,9 +133,11 @@ private:
     QWidget*                         m_container = nullptr; // the createWindowContainer wrapper
     QWidget*                         m_overlay = nullptr;   // top-level frameless host for the dropdown
     QPushButton*                     m_shaderButton = nullptr;   // opens the shader-mode QMenu
+    QPushButton*                     m_viewButton = nullptr;     // opens the named-view QMenu; reads the current view
     QPushButton*                     m_homeButton = nullptr;     // resets the camera to default framing
     QPushButton*                     m_groundButton = nullptr;   // drops the figure onto the floor plane
     QPushButton*                     m_skeletonButton = nullptr; // toggles the skeleton overlay (View)
+    AxisRotateBadge*                 m_axisBadge = nullptr;      // "rotating about X/Y/Z" badge under the strip
     QWidget*                         m_filteredWindow = nullptr; // top-level we filter for move/resize
 };
 

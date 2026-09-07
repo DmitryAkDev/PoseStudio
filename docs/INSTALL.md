@@ -54,9 +54,9 @@ At the end, leave **Launch PoseStudio** checked and click **Finish**.
 
 You should see the PoseStudio window: an asset panel on the left, a 3D viewport with a floor grid in the middle, and properties tabs on the right. Some things to try:
 
-- **Orbit the camera** — left-drag in the viewport; scroll to zoom; middle-drag to pan.
-- **Import a figure or model** — File → Import, or double-click an asset in the Asset Manager.
-- **Pose a figure** — click any joint and drag the rotate gizmo rings; **Ctrl+drag** a hand or foot to move the whole body with full-body IK.
+- **Orbit the camera** — left-drag in the viewport; scroll to zoom; middle-drag to pan. Blender-style view keys: **1** / **3** / **7** for the front / right / top view (**Ctrl** for the opposite side; these are flat orthographic views — orbit to return to perspective), **9** flips the view, **5** is the Home view, **.** frames the selected object.
+- **Import a figure or model** — File → Import, or double-click an asset in the Asset Manager. The selected object wears a blue outline; click another object to select it, or empty space to clear the selection.
+- **Pose a figure** — grab any joint on the figure (a hand, a foot, the head…) and drag: the whole body follows with full-body IK. **Ctrl+drag** rotates just that one joint, or hold **X**, **Y**, or **Z** and roll the mouse wheel to dial it about that axis.
 - **Change the lighting** — open the **Environment** tab (right side) and pick a different HDRI environment from the thumbnail picker. The stock set of 33 lighting environments was installed for you.
 
 ### Where things end up

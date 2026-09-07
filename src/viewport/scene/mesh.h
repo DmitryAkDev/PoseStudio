@@ -58,10 +58,18 @@ struct MeshPushConstants {
                          //     at the 128-byte push limit, so the pair shares one float (0 = none)
 };
 
-/// Push-constant block for the depth-only shadow pass. Must stay byte-identical to shadow.vert's
-/// `push_constant` block (two mat4s = 128 bytes, the guaranteed push-constant minimum).
+/// What a Mesh::record draw is for — pushed as mesh.frag's material3.z. Opaque/Transparent select
+/// the alpha semantics (SSS mask vs blend opacity) in the lit passes; Wire is the wireframe
+/// overlay (every edge in a flat grey from the UBO's wire level, through the LINE-polygon-mode
+/// pipeline); DepthOnly is the hidden-line surface fill (its pipeline masks every colour write,
+/// so the shader returns at once — the draw exists to lay down depth).
+enum class MeshDrawKind { Opaque = 0, Transparent = 1, Wire = 2, DepthOnly = 3 };
+
+/// Push-constant block for the position-only projected passes — the depth-only shadow pass and
+/// the selection-outline mask pass, which share shadow.vert. Must stay byte-identical to that
+/// shader's `push_constant` block (two mat4s = 128 bytes, the guaranteed push-constant minimum).
 struct ShadowPushConstants {
-    glm::mat4 lightViewProj;
+    glm::mat4 viewProj; // the fitted light matrix (shadow) or the camera's (outline mask)
     glm::mat4 model;
 };
 
@@ -90,10 +98,16 @@ public:
     Mesh& operator=(Mesh&&) noexcept = default;
 
     /// Binds set 1 (this mesh's texture), pushes (model, baseColor, material), binds buffers, and
-    /// draws. The caller has already bound the mesh pipeline and the per-frame camera set (set 0).
-    /// @p transparentPass tells the shader which alpha semantics apply (blend alpha vs SSS mask).
+    /// draws. The caller has already bound the matching pipeline and the per-frame camera set
+    /// (set 0). @p kind tells the shader what the draw is (alpha semantics / wire / depth fill);
+    /// @p highlightJoint / @p highlightTwin (-1 = none) are the SELECTED joint and its twist
+    /// partner — the vertex stage sums the vertex's skin weights on them into the highlight
+    /// amount the fragment tints in the selection colour (the "you grabbed this part" cue).
+    /// All three ride in material3.z, packed as kind + 8·(joint+1) + 8192·(twin+1) (3 + 10 + 10
+    /// bits, exact in a float): the push block sits at the 128-byte limit, so the three small
+    /// integers share one float.
     void record(VkCommandBuffer cmd, VkPipelineLayout layout, const glm::mat4& model,
-                bool transparentPass) const;
+                MeshDrawKind kind, int highlightJoint = -1, int highlightTwin = -1) const;
 
     /// Depth-only draw for the shadow pass: just buffers + drawIndexed — no material set, no push
     /// (the Model pushes the light matrices once for all its meshes).
@@ -109,6 +123,10 @@ public:
     /// opacity mask baked into the diffuse alpha makes a mesh transparent even at scalar opacity 1
     /// (a lash/brow card's shape exists only in the mask).
     bool isTransparent() const { return m_opacity < 0.999f || m_hasOpacityMask; }
+    /// True if the mesh's shape is (partly) defined by an opacity mask in its diffuse alpha — a
+    /// lash/brow card, an older figure's eye-shell fade. Material-less passes can't honour the
+    /// mask, so they skip such meshes (their solid card geometry is not the shape the user sees).
+    bool hasOpacityMask() const { return m_hasOpacityMask; }
 
     /// Bind-pose centroid (local space) — the transparent pass's back-to-front sort key.
     const glm::vec3& centroid() const { return m_centroid; }
@@ -167,11 +185,30 @@ public:
     void record(VkCommandBuffer cmd, VkPipelineLayout layout, bool transparentPass,
                 const glm::vec3& cameraPos, uint32_t frameIndex);
 
+    /// Records EVERY mesh as wireframe edges (the caller has bound the wire pipeline): the
+    /// wireframe shade modes' edge overlay, or their whole drawing when there is no surface.
+    void recordWire(VkCommandBuffer cmd, VkPipelineLayout layout, uint32_t frameIndex);
+
+    /// Records the OPAQUE meshes as a depth-only surface fill (the caller has bound the
+    /// hidden-line pipeline, whose colour writes are masked): the surface occludes what lies
+    /// behind it — the grid, the far side's wires — while showing the viewport's clear colour.
+    /// Transparent meshes are left out so an eye's iris wires stay visible through its shells.
+    void recordDepthFill(VkCommandBuffer cmd, VkPipelineLayout layout, uint32_t frameIndex);
+
     /// Records the model's opaque meshes into the depth-only shadow pass (the caller has bound the
     /// shadow pipeline and begun its render pass). Transparent meshes (clear eye shells, cutout
     /// lash/brow cards) are skipped — the pass has no alpha, so they'd cast solid-card shadows.
     void recordShadow(VkCommandBuffer cmd, VkPipelineLayout layout,
                       const glm::mat4& lightViewProj, uint32_t frameIndex);
+
+    /// Records the model's silhouette into the selection-outline mask pass (the caller has
+    /// bound the mask pipeline and begun its render pass): every mesh, skinned and projected by
+    /// the camera's @p viewProj, except opacity-masked cards (lashes/brows), whose solid card
+    /// geometry would put rectangular bumps on the outline — the shape the user sees exists only
+    /// in a texture this material-less pass doesn't sample. Translucent shells (a cornea) ARE
+    /// drawn: a selected translucent object still has a silhouette.
+    void recordSilhouette(VkCommandBuffer cmd, VkPipelineLayout layout, const glm::mat4& viewProj,
+                          uint32_t frameIndex);
 
     /// The model's world-space AABB (local bounds through the model transform). Returns false when
     /// the model has no geometry bounds. Used to fit the key light's shadow frustum.
@@ -245,26 +282,8 @@ public:
     /// The rig's CONTACT pins (ground-detected, not user pins) while an IK drag is active — for
     /// the overlay's "which feet are planted" markers. Empty outside a drag.
     std::vector<int> activeContactPins() const;
-    /// The balance support polygon of the live IK drag as WORLD-space points on the floor
-    /// (y = 0), closed by the caller; empty outside a drag. For the overlay.
-    std::vector<glm::vec3> activeSupportHull() const;
     /// The accumulated pose rotation of bone @p i (Euler degrees, its rotation order).
     const glm::vec3& boneEuler(std::size_t i) const { return m_boneEuler[i]; }
-    /// The authored range of bone @p i's Euler channel @p axis (degrees); false when the
-    /// channel is unconstrained. A range under 2° is a locked channel. For the gizmo's arcs.
-    bool boneRotationRange(std::size_t i, int axis, float& minDeg, float& maxDeg) const {
-        if (i >= m_bones.size() || axis < 0 || axis > 2 || !m_bones[i].rotLimited[axis]) {
-            return false;
-        }
-        minDeg = m_bones[i].rotMin[axis];
-        maxDeg = m_bones[i].rotMax[axis];
-        return true;
-    }
-
-    /// World-space origin + rotation frame of the selected joint, for the rotate gizmo. Returns false
-    /// if no joint is selected. @p axes receives the joint's three local rotation-channel axes (the
-    /// axes its Euler pose rotates about, X/Y/Z as columns), normalized.
-    bool selectedBoneFrame(glm::vec3& center, glm::mat3& axes) const;
 
     /// Captures the current pose as (bone name, Euler degrees) for each non-rest joint (for saving).
     std::vector<std::pair<std::string, glm::vec3>> capturePose() const;
@@ -303,6 +322,9 @@ private:
     /// the world-space bone positions, and writes the matrices to the joint storage buffer. Assumes
     /// bones are ordered parent-before-child (figure skeletons are). No skeleton => one identity.
     void computeSkinMatrices();
+
+    /// The selected joint's highlight twin (m_highlightTwin), or -1 without a selection / twin.
+    int selectedHighlightTwin() const;
 
     /// Re-poses bone @p index from its accumulated Euler (m_boneEuler) in its oriented frame, then
     /// recomputes the skin matrices. Shared by setBoneRotation() and nudgeSelectedBone().
@@ -413,7 +435,12 @@ private:
     std::unordered_map<std::string, int> m_boneIndex; // bone name -> index into m_bones
     std::vector<std::string>             m_boneNames;  // parallel to m_bones (for the posing UI)
     std::vector<glm::vec3>               m_boneWorldPos; // current world position per bone (overlay/pick)
-    std::vector<glm::mat4>               m_boneGizmoFrame; // per bone: parentGlobal·localBind·orient (gizmo axes)
+    // Per bone: its highlight TWIN (-1 if none). Figures split each limb segment into a bend
+    // bone and a TWIST child whose two swing axes are locked (range under 2°) — the mid-limb
+    // bone that spreads axial twist across the skin. The selection highlight covers the pair
+    // (bend -> its twist child, twist -> its bend parent), so grabbing the upper-arm joint lights
+    // the whole upper arm rather than the half the bend bone's own weights cover.
+    std::vector<int>                     m_highlightTwin;
     std::vector<glm::mat4>               m_poseGlobal;  // scratch for computeSkinMatrices (it runs per drag-move; no per-call allocation)
     std::vector<glm::vec3>               m_boneEuler;  // accumulated pose rotation per bone (degrees)
     // Pose translation per bone (parent-frame offset added to poseLocal). Rotations alone can't

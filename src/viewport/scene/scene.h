@@ -13,6 +13,7 @@
 
 #include "environment.h"
 #include "lightingsettings.h"
+#include "shademode.h"
 #include "vulkanbuffer.h"
 
 #include <glm/glm.hpp>
@@ -31,6 +32,7 @@ class VulkanTexture;
 class Camera;
 class Model;
 class IblMaps;
+class OutlineMask;
 class ShadowMap;
 struct ModelData;
 struct Ray;
@@ -41,19 +43,36 @@ struct Ray;
  */
 class Scene {
 public:
-    Scene(VulkanContext& context, VkRenderPass renderPass, const std::vector<char>& vertSpirv,
-          const std::vector<char>& fragSpirv, const std::vector<char>& skeletonVertSpirv,
-          const std::vector<char>& skeletonFragSpirv, const std::vector<char>& shadowVertSpirv,
-          const std::vector<char>& shadowFragSpirv, const std::vector<char>& backgroundVertSpirv,
-          const std::vector<char>& backgroundFragSpirv);
+    /// @param outlineMaskPass The selection-outline mask's render pass (OutlineMask; the renderer
+    ///                        owns the screen-sized target) — the silhouette pipeline builds
+    ///                        against it, reusing shadow.vert with @p outlineMaskFragSpirv.
+    Scene(VulkanContext& context, VkRenderPass renderPass, VkRenderPass outlineMaskPass,
+          const std::vector<char>& vertSpirv, const std::vector<char>& fragSpirv,
+          const std::vector<char>& skeletonVertSpirv, const std::vector<char>& skeletonFragSpirv,
+          const std::vector<char>& shadowVertSpirv, const std::vector<char>& shadowFragSpirv,
+          const std::vector<char>& backgroundVertSpirv,
+          const std::vector<char>& backgroundFragSpirv,
+          const std::vector<char>& outlineMaskFragSpirv);
     ~Scene();
 
     Scene(const Scene&) = delete;
     Scene& operator=(const Scene&) = delete;
 
-    /// Uploads CPU geometry to the GPU and adds it to the scene. Call from the GUI thread between
-    /// frames (the upload blocks briefly on its own one-time submit; it touches no in-flight state).
+    /// Uploads CPU geometry to the GPU and adds it to the scene, and SELECTS it (a freshly
+    /// imported object is the one the user is about to work with, and the outline shows the
+    /// import landed). Call from the GUI thread between frames (the upload blocks briefly on its
+    /// own one-time submit; it touches no in-flight state).
     void addModel(const ModelData& data);
+
+    // --- Object selection (the outlined model) ---
+    /// The selected model's index, or -1 when nothing is selected. The selection is what the
+    /// viewport outlines; clicking a figure's joint selects that figure (setActiveFigure), a
+    /// plain click on a model's box selects it, a click on empty space clears it.
+    int selectedModelIndex() const;
+    /// Selects model @p index (-1 or out of range = clear). Selecting a figure also makes it the
+    /// active (posing-target) figure; the previously selected figure's joint selection is
+    /// cleared, so nothing posing-related lingers on an unselected model.
+    void setSelectedModel(int index);
 
     /// Number of models currently in the scene.
     std::size_t modelCount() const { return m_models.size(); }
@@ -72,6 +91,11 @@ public:
     /// Returns the index of the nearest model whose bounding box @p ray hits, or -1 if none.
     int pickModel(const Ray& ray) const;
 
+    /// The world AABB to frame for "frame selected": the selected model's, else the union of
+    /// every model's (a posed figure's bounds follow its joints — see Model::worldBounds).
+    /// Returns false with nothing to frame.
+    bool framingBounds(glm::vec3& outMin, glm::vec3& outMax) const;
+
     /// Removes the model at @p index (no-op if out of range). The caller MUST have ensured the GPU
     /// is idle first (the model's buffers/descriptors may be referenced by in-flight frames) —
     /// VulkanRenderer::deleteModel() does this.
@@ -82,6 +106,13 @@ public:
     /// around the scene + its floor projections, which record() then feeds to the shaders via the
     /// UBO. Skipped (leaving the map fully lit) while the scene has no casters.
     void recordShadowPass(VkCommandBuffer cmd, uint32_t frameIndex);
+
+    /// Records the selection-outline mask pass — the selected model's silhouette, skinned and
+    /// camera-projected, into @p mask (its own render pass, begun and ended here). Call before
+    /// the main render pass, like recordShadowPass. Returns false, recording nothing, when no
+    /// model is selected (the composite then draws no outline).
+    bool recordOutlinePass(VkCommandBuffer cmd, const Camera& camera, uint32_t frameIndex,
+                           const OutlineMask& mask);
 
     /// Updates this frame's camera UBO, binds the pipeline + camera set, and records every model.
     /// The caller has begun the render pass and set the dynamic viewport/scissor.
@@ -97,22 +128,31 @@ public:
     // --- Posing UI ---
     /// Whether the scene holds a posable figure (a model with a skeleton).
     bool hasPosableFigure() const;
-    /// The ACTIVE figure — the one every posing call (selection, gizmo, IK, pins, pose
+    /// The ACTIVE figure — the one every posing call (selection, IK, FK, pins, pose
     /// snapshot, ground) addresses: the figure whose joint was last clicked (selectBoneAt
     /// searches every figure's joints), else the first figure in the scene. -1 without one.
     int  activeFigureIndex() const;
-    /// Makes model @p index the active figure (no-op unless it is a figure). Undo/redo restores
-    /// the figure a pose snapshot was taken from through this before applying it.
+    /// Makes model @p index the active figure (no-op unless it is a figure) — and the SELECTED
+    /// model, so the outline follows the posing target. Undo/redo restores the figure a pose
+    /// snapshot was taken from through this before applying it.
     void setActiveFigure(int index);
-    /// Show/hide the skeleton overlay (drawn over the figure so joints are visible + clickable).
+    /// Show/hide the skeleton overlay (drawn over the figure so the joints — always grabbable,
+    /// drawn or not — can be seen).
     void setShowSkeleton(bool on) { m_showSkeleton = on; }
     bool showSkeleton() const { return m_showSkeleton; }
 
     // --- Shading ---
-    /// Selects the viewport shade mode (index into the shader's mode table; see mesh.frag). Written
-    /// into the per-frame camera UBO, so the whole scene re-shades on the next frame — no pipeline swap.
+    /// Selects the viewport shade mode: an index into the picker's table (scene/shademode.h),
+    /// whose row says which mesh.frag mode shades the surface (written into the per-frame camera
+    /// UBO — no pipeline swap for that) and whether record() draws the surface at all, a
+    /// hidden-line depth fill, and/or a wireframe overlay.
     void setShadeMode(int mode) { m_shadeMode = mode; }
     int  shadeMode() const { return m_shadeMode; }
+    /// The current mode's table row, and whether it is in the PBR family (PBR Shaded and its
+    /// specular-only view) — the modes that render linear HDR through the image-based path, so
+    /// the HDR post chain (SSS, bloom, ACES) and the HDRI backdrop run only for them.
+    const ShadeMode& shadeModeSpec() const { return shadeModeAt(m_shadeMode); }
+    bool             isPbr() const { return fragModeIsHdr(shadeModeSpec().fragMode); }
     /// Selects the figure joint nearest the pixel (@p px, @p py) in a @p vpW × @p vpH viewport (only
     /// if within a small radius). Returns the selected bone index, or -1 if none is selected.
     int selectBoneAt(float px, float py, float vpW, float vpH, const Camera& camera);
@@ -157,15 +197,6 @@ public:
     /// Translates the posable figure along world Y (the animated ground drop's per-frame step).
     void translateFigureY(float dy);
 
-    // --- Rotate gizmo (three axis rings on the selected joint) ---
-    /// Returns which gizmo ring (0=X,1=Y,2=Z) the pixel (@p px,@p py) is over, or -1. Only valid when
-    /// a joint is selected (the rings are drawn around it).
-    int gizmoAxisAt(float px, float py, float vpW, float vpH, const Camera& camera) const;
-    /// Rotates the selected joint about gizmo axis @p axis by the screen-angle the cursor swept around
-    /// the joint from (@p prevX,@p prevY) to (@p curX,@p curY). Accumulates (call per mouse-move).
-    void rotateGizmo(int axis, float prevX, float prevY, float curX, float curY, float vpW, float vpH,
-                     const Camera& camera);
-
     // --- Pose snapshot (for undo/redo) ---
     std::vector<std::pair<std::string, glm::vec3>> capturePose() const;
     void applyPose(const std::vector<std::pair<std::string, glm::vec3>>& pose);
@@ -185,12 +216,15 @@ private:
     std::unique_ptr<VulkanPipeline> m_transparentPipeline; // alpha-blended pass (depth write off)
     std::unique_ptr<VulkanPipeline> m_skeletonPipeline;    // line overlay for the posing skeleton
     std::unique_ptr<VulkanPipeline> m_backgroundPipeline;  // HDRI backdrop (PBR mode; drawn first)
+    std::unique_ptr<VulkanPipeline> m_outlinePipeline;     // selected model -> the outline mask (its own pass)
+    std::unique_ptr<VulkanPipeline> m_wirePipeline;        // wireframe modes: triangle EDGES (null: device can't)
+    std::unique_ptr<VulkanPipeline> m_hiddenLinePipeline;  // hidden-line modes: depth-only surface fill
     // Host-mapped line vertices (pos+color), one buffer per frame-in-flight: record() rewrites the
     // overlay every frame, so a single shared buffer would be CPU-written while the previous
     // frame's GPU read of it is still in flight.
     std::vector<VulkanBuffer>       m_skeletonVertexBuffers;
     bool                            m_showSkeleton = false;
-    int                             m_shadeMode = 1;        // viewport shade mode (see mesh.frag); 1 = PBR/IBL
+    int                             m_shadeMode = kDefaultShadeMode; // picker-table index (shademode.h)
 
     // Lighting environment: the baked diffuse-irradiance SH (feeds the per-frame camera UBO so the PBR
     // mode is image-based-lit) and the environment-independent split-sum BRDF LUT (integrated once,
@@ -237,6 +271,7 @@ private:
 
     std::vector<std::unique_ptr<Model>> m_models;
     int m_activeFigure = -1; ///< See activeFigureIndex(): the posing target among the figures.
+    int m_selectedModel = -1; ///< See selectedModelIndex(): the outlined model (-1 = none).
 };
 
 } // namespace pose

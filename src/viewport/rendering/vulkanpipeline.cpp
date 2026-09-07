@@ -88,7 +88,7 @@ VulkanPipeline::VulkanPipeline(VulkanContext& context, VkRenderPass renderPass,
 
     VkPipelineRasterizationStateCreateInfo raster{};
     raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    raster.polygonMode = VK_POLYGON_MODE_FILL;
+    raster.polygonMode = config.polygonMode; // FILL, or LINE for the wireframe shade modes
     raster.cullMode = config.cullMode; // default NONE; mesh/grid both opt out of culling
     raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     raster.lineWidth = config.lineWidth;
@@ -112,9 +112,11 @@ VulkanPipeline::VulkanPipeline(VulkanContext& context, VkRenderPass renderPass,
     depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
 
     VkPipelineColorBlendAttachmentState blendAttachment{};
-    blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                                     VK_COLOR_COMPONENT_B_BIT |
-                                     (config.colorWriteAlpha ? VK_COLOR_COMPONENT_A_BIT : 0u);
+    blendAttachment.colorWriteMask =
+        (config.colorWriteRgb
+             ? (VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT)
+             : 0u) |
+        (config.colorWriteAlpha ? VK_COLOR_COMPONENT_A_BIT : 0u);
     blendAttachment.blendEnable = config.blendEnable ? VK_TRUE : VK_FALSE;
     // Standard straight-alpha blending: out = src.rgb*src.a + dst.rgb*(1-src.a).
     blendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;

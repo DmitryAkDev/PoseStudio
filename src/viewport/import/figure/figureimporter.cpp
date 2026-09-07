@@ -378,7 +378,7 @@ glm::mat3 orientationAxes(const glm::vec3& degrees) {
 // rotation-channel axis most aligned with the bone's length (its twist axis) and lock the other two to
 // zero. Detection is by the "twist" name convention (stable across figure generations) plus a child
 // bone to define the length direction; a bone missing either is left untouched. The runtime's existing
-// clampBoneEuler() then enforces the lock across every posing path (gizmo, drag, loaded pose).
+// clampBoneEuler() then enforces the lock across every posing path (FK drag, IK, loaded pose).
 void lockTwistBoneBendAxes(std::vector<FigureBone>& bones) {
     std::vector<int> firstChild(bones.size(), -1);
     for (int i = 0; i < static_cast<int>(bones.size()); ++i) {

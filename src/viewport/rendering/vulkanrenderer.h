@@ -29,6 +29,7 @@ namespace pose {
 class VulkanContext;
 class VulkanSwapchain;
 class HdrTarget;
+class OutlineMask;
 class PostProcess;
 class Grid;
 class Scene;
@@ -76,8 +77,24 @@ public:
     /// buffers/descriptors aren't freed while an in-flight frame still references them.
     void deleteModel(std::size_t index);
 
+    // --- Object selection (the outlined model; forwarded to the Scene) ---
+    /// The selected model's index, or -1 when nothing is selected.
+    int  selectedModelIndex() const;
+    /// Selects model @p index (-1 clears). The selection is outlined in the viewport; selecting
+    /// a figure also makes it the active (posing-target) figure.
+    void setSelectedModel(int index);
+    /// Scale for screen-space UI sizes rendered by the engine (the selection outline's width):
+    /// the window's device pixel ratio, so a 2px outline stays 2 LOGICAL pixels on a HiDPI
+    /// display. Defaults to 1.
+    void setUiScale(float scale) { m_uiScale = scale; }
+
     /// Exposed so the window's input handlers can drive the view (orbit/pan/dolly).
     Camera& camera() { return m_camera; }
+
+    /// "Frame selected": aims the camera at the selected model (every model, with no selection)
+    /// and backs off so its bounds fill the view, keeping the orbit angles. False with nothing
+    /// to frame (the camera is left alone).
+    bool frameSelected();
 
     /// Uploads a CPU-baked lighting environment (SH + prefiltered specular; see bakeEnvironment) and
     /// swaps it in. The bake is done off the render thread by the Qt layer — keeping both the CPU work
@@ -130,10 +147,6 @@ public:
     bool figureGroundGap(float& lowestY) const; // the figure's lowest world height (see Scene)
     void translateFigureY(float dy);            // the animated drop's per-frame step
 
-    // --- Rotate gizmo (forwarded to the Scene; use the renderer's own camera) ---
-    int  gizmoAxisAt(float px, float py, float vpW, float vpH) const;
-    void rotateGizmo(int axis, float prevX, float prevY, float curX, float curY, float vpW, float vpH);
-
     // --- Pose snapshot (for undo/redo) ---
     std::vector<std::pair<std::string, glm::vec3>> capturePose() const;
     void applyPose(const std::vector<std::pair<std::string, glm::vec3>>& pose);
@@ -158,9 +171,11 @@ private:
 
     std::unique_ptr<VulkanSwapchain> m_swapchain;
     std::unique_ptr<HdrTarget>       m_hdrTarget;   // offscreen HDR scene target (see hdrtarget.h)
-    std::unique_ptr<PostProcess>     m_postProcess; // bloom + the tonemapping composite
+    std::unique_ptr<OutlineMask>     m_outlineMask; // the selected model's silhouette coverage (see outlinemask.h)
+    std::unique_ptr<PostProcess>     m_postProcess; // bloom + the tonemapping composite (+ the outline)
     std::unique_ptr<Scene>           m_scene; // imported meshes (opaque)
     std::unique_ptr<Grid>            m_grid;  // floor grid overlay
+    float                            m_uiScale = 1.0f; // see setUiScale
 
     VkCommandPool                m_commandPool = VK_NULL_HANDLE;
     std::vector<VkCommandBuffer> m_commandBuffers;            // one per frame-in-flight

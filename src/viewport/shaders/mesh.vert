@@ -22,6 +22,8 @@ layout(push_constant) uniform Push {
     mat4 model;
     vec4 baseColor; // rgb tint, a = opacity
     vec4 material;  // x = roughness, y = normalMode
+    vec4 material2; // (fragment-side material params)
+    vec4 material3; // z packs the draw kind with the SELECTED joint + its twist twin (Mesh::record)
 } pc;
 
 // Per-model skinning dual quaternions (from the rigid poseGlobal * inverseBind per joint).
@@ -51,6 +53,7 @@ layout(location = 1) out vec2 vUv;
 layout(location = 2) out vec3 vWorldPos;
 layout(location = 3) out float vAo;
 layout(location = 4) out vec4 vTangent; // world-space tangent, w = handedness (0 = absent)
+layout(location = 5) out float vSelect; // this vertex's skin weight on the SELECTED joint (+ twin)
 
 void main() {
     // Blend the influencing joints' dual quaternions by weight, sign-aligning each against the
@@ -85,5 +88,22 @@ void main() {
     vWorldPos = worldPos.xyz;
     vAo = inAo;
     vTangent = vec4(mat3(pc.model) * quatRotate(rAcc, inTangent.xyz), inTangent.w);
+
+    // Selection highlight amount: the skin weight this vertex puts on the selected joint and its
+    // twist twin — the flesh that joint moves, fading out where the weights blend into the
+    // neighbouring bones. material3.z packs kind + 8·(joint+1) + 8192·(twin+1) (exact below
+    // 2^24); -1 (no selection, or a static mesh, which has nothing to select) yields 0 everywhere.
+    int packed = int(pc.material3.z + 0.5);
+    int selJoint = ((packed >> 3) & 1023) - 1;
+    int selTwin = (packed >> 13) - 1;
+    float sel = 0.0;
+    if (selJoint >= 0) {
+        ivec4 j = ivec4(inJoints);
+        sel += (j.x == selJoint || j.x == selTwin) ? inWeights.x : 0.0;
+        sel += (j.y == selJoint || j.y == selTwin) ? inWeights.y : 0.0;
+        sel += (j.z == selJoint || j.z == selTwin) ? inWeights.z : 0.0;
+        sel += (j.w == selJoint || j.w == selTwin) ? inWeights.w : 0.0;
+    }
+    vSelect = sel;
     gl_Position = cam.viewProj * worldPos;
 }

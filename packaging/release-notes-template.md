@@ -18,15 +18,15 @@ Full step-by-step instructions, including screenshots of the SmartScreen warning
 
 ## 💡 Quick Tips — the stuff that isn't obvious
 
-- 🖱️ **Camera** — left-drag empty space to orbit, scroll to zoom, middle-drag to pan. The 🏠 button (top-right of the viewport) resets the view.
-- 🦴 **Posing** — just click directly on the figure's joints (elbow, knee, neck…). There's no visible skeleton by default, but every joint is clickable. A rotate gizmo appears — drag a ring to rotate that axis. The bright part of each ring shows the joint's real anatomical range.
-- 🧲 **Full-body IK — the magic one:** hold **Ctrl and drag** any joint. The whole body follows naturally: feet stay planted, balance is automatic. Keep dragging sideways and the figure *steps and walks* to follow. Pull a hand beyond reach and the figure lifts off and dangles. Drag the hip downward for a crouch.
+- 🖱️ **Camera** — left-drag empty space to orbit, scroll to zoom, middle-drag to pan. The 🏠 button (top-right of the viewport) resets the view. Blender-style view keys: **1** / **3** / **7** for the front / right / top view (**Ctrl** for the opposite side; these are flat orthographic views — orbit to return to perspective), **9** flips the view, **5** is the Home view, **.** frames the selected object.
+- 🔵 **Selection** — the selected object wears a blue outline. Click an object (or one of a figure's joints) to select it; click empty space to clear the selection. Orbiting never changes it. **Delete** removes the selected object.
+- 🦴 **Posing — the magic one:** just grab the figure's joints directly (hand, elbow, knee, head…) and drag. There's no visible skeleton by default, but every joint is grabbable — the part you grab lights up blue — and the whole body follows naturally: feet stay planted, balance is automatic. Keep dragging sideways and the figure *steps and walks* to follow. Pull a hand beyond reach and the figure lifts off and dangles. Drag the hip downward for a crouch. **Ctrl+drag** rotates just that one joint, or hold **X**, **Y**, or **Z** and roll the mouse wheel to dial it about that axis (a badge shows the axis while you hold).
 - 📌 **Pin joints** — select a joint and press **P** (or right-click → Pin Joint). Pinned joints stay exactly put while you drag everything else — plant a hand on a table and crouch under it. Pins save with poses.
 - 🎭 **Importing figures** — File → Import → .DUF, or double-click one in the Asset Manager. If it asks, point it at your content folder once — it's remembered.
 - ⬇️ **Ground button** — drops a floating figure onto the floor. In actual free fall.
 - 💾 **Poses** — File → Save Pose / Load Pose. **Ctrl+Z / Ctrl+Y** undo and redo — poses *and* lighting edits.
 - 🌅 **Lighting** — Environment tab (right side) → click the environment name for the thumbnail picker. Drop your own `.hdr`/`.exr` files into `Documents\My PoseStudio Library\hdri` — subfolders become categories. And any number field: drag left/right to scrub, click to type.
-- 🎨 **Shade modes** — the picker at the viewport's top-right: photoreal PBR, matcaps, toon, clay, and more. View → Show Skeleton overlays the bone cage.
+- 🎨 **Shade modes** — the picker at the viewport's top-right: photoreal PBR, textured, cartoon, matcap, clay, lighting-only, silhouette, wireframes (including a hidden-line one), and data views for albedo, ambient occlusion, roughness, specular, normals, and UVs. View → Show Skeleton overlays the bone cage.
 
 ## 💬 We want your feedback!
 

@@ -57,8 +57,9 @@
 }
 
 #AssetManagerSearchSeparator {
-    color: #343536;
-    background-color: #343536;
+    /* The app-wide separator grey (Constants::COLOR_SEPARATOR). */
+    color: #6a6b6e;
+    background-color: #6a6b6e;
     max-height: 1px;
     border: none;
 }
@@ -90,8 +91,9 @@
 }
 
 QTreeView#AssetManagerTree {
-    /* Inject our custom color into the C++ delegate! */
-    qproperty-separatorColor: #343536; 
+    /* Inject our custom color into the C++ delegate! The app-wide separator grey
+       (Constants::COLOR_SEPARATOR, QMenu::separator in _menumanager.qss). */
+    qproperty-separatorColor: #6a6b6e;
 }
 
 /* =========================================================================
@@ -194,11 +196,7 @@ QMenu#AssetManagerContextMenu::icon {
     padding-left: 12px; 
 }
 
-QMenu#AssetManagerContextMenu::separator {
-    height: 1px;
-    background: #4a4b4c;
-    margin: 5px 10px 5px 10px;
-}
+/* Separators: the global QMenu::separator rule (_menumanager.qss) — one colour app-wide. */
 
 QMenu#AssetManagerContextMenu::item:disabled {
     color: #666666; /* Muted, greyed-out text */

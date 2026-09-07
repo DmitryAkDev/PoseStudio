@@ -5,6 +5,7 @@
 
 #include "environmentpanel.h"
 
+#include "constants.h"
 #include "dragnumberbox.h"
 #include "librarypaths.h"
 #include "viewportwidget.h"
@@ -106,7 +107,7 @@ public:
         painter->drawText(QRect(r.x(), textTop, r.width(), fm.height()),
                           Qt::AlignLeft | Qt::AlignVCenter, opt.text);
         const int ruleY = textTop + fm.height() + kHeadingRuleGap;
-        painter->setPen(QColor(0x4a, 0x4b, 0x4d)); // the app's border/hairline grey
+        painter->setPen(QColor(QLatin1String(Constants::COLOR_SEPARATOR))); // the app-wide divider grey
         painter->drawLine(r.left(), ruleY, r.right(), ruleY);
         painter->restore();
     }

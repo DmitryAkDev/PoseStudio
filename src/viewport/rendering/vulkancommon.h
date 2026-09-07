@@ -25,6 +25,13 @@ namespace pose {
 /// overlap without the input latency of triple-buffering the command stream.
 inline constexpr int kMaxFramesInFlight = 2;
 
+/// The viewport's selection accent: the app's QSS accent blue #5b87cc (hover borders, the
+/// DragNumberBox glyphs), sRGB-decoded to LINEAR — the swapchain's sRGB store re-encodes it
+/// exactly. The one colour for everything the engine draws as "selected" (today the selection
+/// outline in PostProcess). The darker selection FILL blue (#314D7A) is deliberately not used
+/// here: against the viewport grey it doesn't read as a line.
+inline constexpr float kSelectionAccentLinear[3] = {0.1046f, 0.2423f, 0.6038f};
+
 /// Maps a VkResult to its enum name for diagnostics. Only the codes this app can
 /// realistically hit are spelled out; anything else falls back to the raw integer.
 inline std::string vkResultString(VkResult result) {

@@ -19,10 +19,12 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QFutureWatcher>
+#include <QGuiApplication>
 #include <QMenu>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QResizeEvent>
+#include <QStyleHints>
 #include <QTimer>
 #include <QVulkanInstance>
 #include <QWheelEvent>
@@ -340,6 +342,7 @@ void VulkanWindow::initializeVulkan() {
         m_renderer->setShadeMode(m_shadeMode); // apply a mode chosen before first expose
         m_renderer->setShowSkeleton(m_showSkeleton); // apply a skeleton toggle chosen before first expose
         m_renderer->setLightingSettings(m_lighting); // apply any dials set before first expose
+        m_renderer->setUiScale(static_cast<float>(devicePixelRatio())); // outline width in logical px
 
         // Image-based lighting: bake a real HDR panorama over the renderer's built-in procedural studio
         // (the environment the user picked before first expose, else the default). The bake runs off the
@@ -361,7 +364,7 @@ void VulkanWindow::initializeVulkan() {
         for (const QString& pending : m_pendingFigures) {
             if (FigureImportService::importInto(*m_renderer, pending, /*showProgress=*/false)) {
                 // The skeleton overlay stays hidden; a click on a joint still selects it (picking is
-                // independent of the overlay) and brings up the rotate gizmo.
+                // independent of the overlay).
                 requestUpdate();
             }
         }
@@ -492,6 +495,11 @@ void VulkanWindow::releaseVulkan() {
     m_ikDragging = false;
     m_ikHasTarget = false;
     m_ikPoseChanged = false;
+    m_leftClickCandidate = false;
+    if (m_axisRotateKey >= 0) {
+        m_axisRotateKey = -1; // the joint it rotated is going away with the renderer
+        emit axisRotateKeyChanged(-1);
+    }
     if (m_fallTimer) {
         m_fallTimer->stop(); // the figure is going away with the renderer
         m_fallHeight = 0.0f;
@@ -533,7 +541,7 @@ void VulkanWindow::importFigure(const QString& path) {
         return;
     }
     if (FigureImportService::importInto(*m_renderer, path, /*showProgress=*/true)) {
-        // The skeleton overlay stays hidden; a click on a joint still selects it and shows the gizmo.
+        // The skeleton overlay stays hidden; a drag on a joint still grabs it (full-body IK).
         requestUpdate();
     }
 }
@@ -561,10 +569,57 @@ void VulkanWindow::setShowSkeleton(bool on) {
 
 bool VulkanWindow::showSkeleton() const { return m_showSkeleton; }
 
+void VulkanWindow::noteView(ViewPreset view) {
+    if (m_viewPreset != view) {
+        m_viewPreset = view;
+        emit viewPresetChanged(view);
+    }
+}
+
 void VulkanWindow::resetView() {
     if (m_renderer) {
         m_renderer->camera().reset();
+        noteView(ViewPreset::Home);
         requestUpdate(); // rendering is on demand — nothing redraws unless we ask
+    }
+}
+
+void VulkanWindow::setAxisView(AxisView view) {
+    if (m_renderer) {
+        m_renderer->camera().setAxisView(view);
+        switch (view) {
+        case AxisView::Front:  noteView(ViewPreset::Front);  break;
+        case AxisView::Back:   noteView(ViewPreset::Back);   break;
+        case AxisView::Right:  noteView(ViewPreset::Right);  break;
+        case AxisView::Left:   noteView(ViewPreset::Left);   break;
+        case AxisView::Top:    noteView(ViewPreset::Top);    break;
+        case AxisView::Bottom: noteView(ViewPreset::Bottom); break;
+        }
+        requestUpdate();
+    }
+}
+
+void VulkanWindow::flipView() {
+    if (m_renderer) {
+        m_renderer->camera().flip();
+        // The opposite side of a named side view is its counterpart; a flipped top view is still
+        // the top (turned), anything else is no longer a named view.
+        switch (m_viewPreset) {
+        case ViewPreset::Front: noteView(ViewPreset::Back);  break;
+        case ViewPreset::Back:  noteView(ViewPreset::Front); break;
+        case ViewPreset::Left:  noteView(ViewPreset::Right); break;
+        case ViewPreset::Right: noteView(ViewPreset::Left);  break;
+        case ViewPreset::Top:
+        case ViewPreset::Bottom: break;
+        default: noteView(ViewPreset::Free); break;
+        }
+        requestUpdate();
+    }
+}
+
+void VulkanWindow::frameSelected() {
+    if (m_renderer && m_renderer->frameSelected()) {
+        requestUpdate();
     }
 }
 
@@ -627,6 +682,7 @@ void VulkanWindow::exposeEvent(QExposeEvent*) {
         initializeVulkan();
         if (m_renderer) {
             m_renderer->notifyResize(pixelExtent());
+            m_renderer->setUiScale(static_cast<float>(devicePixelRatio())); // may change with the screen
             requestUpdate();
         }
     }
@@ -635,6 +691,7 @@ void VulkanWindow::exposeEvent(QExposeEvent*) {
 void VulkanWindow::resizeEvent(QResizeEvent*) {
     if (m_renderer) {
         m_renderer->notifyResize(pixelExtent());
+        m_renderer->setUiScale(static_cast<float>(devicePixelRatio()));
         requestUpdate();
     }
 }
@@ -700,14 +757,18 @@ void VulkanWindow::mousePressEvent(QMouseEvent* event) {
     m_lastMousePos = event->position();
     m_activeDragButtons |= event->button(); // a drag with this button started in the viewport
 
-    // Left-press priority: (0) Ctrl held + a joint -> full-body-IK drag of that joint; (1) a gizmo
-    // ring of the selected joint -> axis-constrained rotate; (2) a joint -> select it + free-rotate
-    // this drag (FK); (3) empty space -> orbit the camera.
+    // Left-press priority: (0) a joint -> select it + full-body-IK drag of it (the body follows:
+    // feet pinned, auto-balanced) — THE posing gesture, no modifier; (1) Ctrl + a joint -> select
+    // it + FK-rotate that ONE joint this drag; (2) empty space -> orbit the camera — or, if
+    // released without dragging, a CLICK that selects the model under the cursor / clears the
+    // selection (see the release).
     if (event->button() == Qt::LeftButton && m_renderer) {
         const float x = static_cast<float>(event->position().x());
         const float y = static_cast<float>(event->position().y());
         const float w = static_cast<float>(width());
         const float h = static_cast<float>(height());
+        m_leftClickCandidate = false;
+        m_leftPressPos = event->position();
         if (m_ikDragging) {
             // A stale drag whose release never reached this window (a modal/shortcut swallowed
             // the mouse-up - the m_activeDragButtons event-leak class): close it out, or the
@@ -717,40 +778,50 @@ void VulkanWindow::mousePressEvent(QMouseEvent* event) {
             m_ikHasTarget = false;
             m_ikTimer->stop();
         }
-        if (event->modifiers().testFlag(Qt::ControlModifier)) {
-            // FBIK: grab the joint under the cursor and drag it through a camera-parallel plane
-            // anchored at its current position; the body follows (feet pinned, auto-balanced).
-            m_gizmoAxis = -1;
+        const bool onJoint = m_renderer->selectBoneAt(x, y, w, h) >= 0;
+        if (onJoint && !event->modifiers().testFlag(Qt::ControlModifier)) {
+            // FBIK: drag the grabbed joint through a camera-parallel plane anchored at its
+            // current position; the whole body follows.
             m_posingBone = false;
-            m_ikDragging = m_renderer->selectBoneAt(x, y, w, h) >= 0 &&
-                           m_renderer->beginBoneIkDrag() &&
+            m_ikDragging = m_renderer->beginBoneIkDrag() &&
                            m_renderer->selectedBoneWorldPosition(m_ikPlanePoint);
             if (m_ikDragging) {
                 m_ikHasTarget = false;
                 m_ikPoseChanged = false;
                 m_ikTimer->start();
             }
+        } else if (onJoint) {
+            m_posingBone = true; // Ctrl: FK — rotate just this joint by the mouse deltas
         } else {
-            m_gizmoAxis = m_renderer->hasSelectedBone() ? m_renderer->gizmoAxisAt(x, y, w, h) : -1;
-            if (m_gizmoAxis >= 0) {
-                m_posingBone = false;
-            } else {
-                m_posingBone = (m_renderer->selectBoneAt(x, y, w, h) >= 0);
-            }
+            m_leftClickCandidate = true; // the orbit gesture, until it moves
         }
-        if (m_gizmoAxis >= 0 || m_posingBone || m_ikDragging) {
+        if (m_posingBone || m_ikDragging) {
             m_preEditPose = m_renderer->capturePose(); // snapshot for undo (committed on release)
         }
-        requestUpdate(); // reflect the new selection highlight / gizmo
+        requestUpdate(); // reflect the new selection (outline / skeleton highlight)
+    }
+}
+
+void VulkanWindow::selectModelAtClick(const QPointF& localPos) {
+    // Box-level pick (Model::intersectRay): the nearest model whose bounds the cursor's ray
+    // enters, else -1 = clear the selection. Selecting a figure also makes it the posing target;
+    // deselecting drops its joint selection with it (Scene::setSelectedModel).
+    const Ray ray = m_renderer->camera().screenPointToRay(
+        static_cast<float>(localPos.x()), static_cast<float>(localPos.y()),
+        static_cast<float>(width()), static_cast<float>(height()));
+    const int picked = m_renderer->pickModel(ray);
+    if (picked != m_renderer->selectedModelIndex()) {
+        m_renderer->setSelectedModel(picked);
+        requestUpdate(); // the outline moved / went away
     }
 }
 
 void VulkanWindow::mouseReleaseEvent(QMouseEvent* event) {
     m_activeDragButtons &= ~event->button();
     if (event->button() == Qt::LeftButton) {
-        if ((m_posingBone || m_gizmoAxis >= 0 || m_ikDragging) && m_renderer) {
+        if ((m_posingBone || m_ikDragging) && m_renderer) {
             if (m_ikDragging && !m_ikPoseChanged) {
-                // Ctrl+CLICK: the joint was selected but no solve ever moved the pose — end the
+                // A CLICK on a joint: it was selected but no solve ever moved the pose — end the
                 // drag with no settle and no undo (the settle would still walk a hovering
                 // figure onto its ground-healed pins, turning a mere selection into an edit).
                 m_renderer->endBoneIkDrag();
@@ -763,15 +834,25 @@ void VulkanWindow::mouseReleaseEvent(QMouseEvent* event) {
                 m_ikHasTarget = false;
                 m_ikSettling = true;
             } else {
-                // FK/gizmo edit settled: apply the pose correctives (deferred during the drag
-                // because they re-upload geometry) and commit an undo entry if the pose changed.
+                // FK edit settled: apply the pose correctives (deferred during the drag because
+                // they re-upload geometry) and commit an undo entry if the pose changed.
                 m_renderer->finalizePose();
                 commitPoseUndo();
             }
             requestUpdate();
+        } else if (m_leftClickCandidate && m_renderer) {
+            // The orbit gesture that never moved: a CLICK. Within the platform's drag distance
+            // it selects what's under the cursor (or clears the selection on empty space); a
+            // real orbit — however short — leaves the selection alone, so orbiting around a
+            // figure can't deselect it.
+            const bool moved = (event->position() - m_leftPressPos).manhattanLength() >=
+                               QGuiApplication::styleHints()->startDragDistance();
+            if (!moved) {
+                selectModelAtClick(event->position());
+            }
         }
+        m_leftClickCandidate = false;
         m_posingBone = false;
-        m_gizmoAxis = -1;
         m_ikDragging = false;
     }
     // Right-click (on release, the desktop convention) opens the object context menu. The right
@@ -789,7 +870,7 @@ void VulkanWindow::showObjectContextMenu(const QPointF& localPos, const QPoint& 
     const float y = static_cast<float>(localPos.y());
     const float w = static_cast<float>(width());
     const float h = static_cast<float>(height());
-    // A joint under the cursor gets the pin actions (selecting it, so the gizmo shows which
+    // A joint under the cursor gets the pin actions (selecting it, so the skeleton overlay — when shown — highlights which
     // joint the menu acts on); the model under the cursor gets Delete. Both can apply.
     const int joint = (m_ikDragging || m_ikSettling) ? -1 : m_renderer->selectBoneAt(x, y, w, h);
     const Ray ray = m_renderer->camera().screenPointToRay(x, y, w, h);
@@ -824,22 +905,38 @@ void VulkanWindow::showObjectContextMenu(const QPointF& localPos, const QPoint& 
         }
         commitPoseUndo();
     } else if (chosen != nullptr && chosen == deleteAction) {
-        if (m_ikDragging) {
-            // Deleting the dragged figure mid-gesture (left button still held while the menu
-            // opened): end the drag cleanly first - its settle/undo would otherwise retarget
-            // to whatever figure remains.
-            m_renderer->endBoneIkDrag();
-            m_ikDragging = false;
-            m_ikHasTarget = false;
-            m_ikTimer->stop();
-        }
-        m_renderer->deleteModel(static_cast<std::size_t>(picked));
-        // Model indices shift and the deleted figure's poses are meaningless: the pose
-        // history goes with it (lighting entries too — one chronological stack).
-        m_undoStack.clear();
-        m_redoStack.clear();
+        deleteModel(picked);
     }
     requestUpdate(); // selection highlight / pin markers changed even if nothing was chosen
+}
+
+void VulkanWindow::deleteSelectedObject() {
+    if (m_renderer) {
+        deleteModel(m_renderer->selectedModelIndex());
+    }
+}
+
+void VulkanWindow::deleteModel(int index) {
+    if (!m_renderer || index < 0) {
+        return;
+    }
+    if (m_ikDragging) {
+        // Deleting the dragged figure mid-gesture (left button still held while the context menu
+        // opened): end the drag cleanly first - its settle/undo would otherwise retarget to
+        // whatever figure remains.
+        m_renderer->endBoneIkDrag();
+        m_ikDragging = false;
+        m_ikHasTarget = false;
+        m_ikTimer->stop();
+    }
+    finishIkSettle();   // a release settle still animating must not keep ticking past the delete
+    finishGroundFall(); // nor a fall
+    m_renderer->deleteModel(static_cast<std::size_t>(index));
+    // Model indices shift and the deleted figure's poses are meaningless: the pose history goes
+    // with it (lighting entries too — one chronological stack).
+    m_undoStack.clear();
+    m_redoStack.clear();
+    requestUpdate();
 }
 
 void VulkanWindow::mouseMoveEvent(QMouseEvent* event) {
@@ -879,14 +976,9 @@ void VulkanWindow::mouseMoveEvent(QMouseEvent* event) {
                 // tuned in per-tick units) ran several times faster than designed.
             }
         }
-    } else if ((active & Qt::LeftButton) && m_gizmoAxis >= 0) {
-        // Gizmo: rotate the selected joint about the grabbed ring's axis by the swept screen angle.
-        m_renderer->rotateGizmo(m_gizmoAxis, static_cast<float>(prev.x()), static_cast<float>(prev.y()),
-                                static_cast<float>(event->position().x()),
-                                static_cast<float>(event->position().y()), static_cast<float>(width()),
-                                static_cast<float>(height()));
     } else if ((active & Qt::LeftButton) && m_posingBone) {
-        // Free posing: drag rotates the selected joint — horizontal about its Y axis, vertical about X.
+        // Ctrl+drag, FK: rotate the selected joint alone — horizontal about its Y axis, vertical
+        // about X.
         constexpr float kDegPerPixel = 0.4f;
         m_renderer->nudgeSelectedBone(glm::vec3(static_cast<float>(delta.y()) * kDegPerPixel,
                                                 static_cast<float>(delta.x()) * kDegPerPixel, 0.0f));
@@ -894,6 +986,9 @@ void VulkanWindow::mouseMoveEvent(QMouseEvent* event) {
         // Drag right -> orbit right; drag up -> tilt up. Negated to feel like grabbing the scene.
         camera.orbit(-static_cast<float>(delta.x()) * kOrbitRadiansPerPixel,
                      -static_cast<float>(delta.y()) * kOrbitRadiansPerPixel);
+        if (!delta.isNull()) {
+            noteView(ViewPreset::Free); // orbited away from whatever named view this was
+        }
     } else if (active & Qt::MiddleButton) {
         camera.pan(static_cast<float>(delta.x()) * kPanPerPixel,
                    static_cast<float>(delta.y()) * kPanPerPixel);
@@ -911,8 +1006,59 @@ void VulkanWindow::wheelEvent(QWheelEvent* event) {
         return;
     }
     const float steps = static_cast<float>(event->angleDelta().y()) / 120.0f;
+    if (m_axisRotateKey >= 0) {
+        // X/Y/Z held: the wheel rotates the selected joint about that channel, a fixed angle
+        // per notch (trackpads deliver fractional notches and get proportionally finer steps).
+        // Limits clamp inside nudgeSelectedBone; correctives wait for the key release.
+        constexpr float kDegreesPerWheelNotch = 5.0f;
+        glm::vec3 delta(0.0f);
+        delta[m_axisRotateKey] = steps * kDegreesPerWheelNotch;
+        m_renderer->nudgeSelectedBone(delta);
+        requestUpdate();
+        return;
+    }
     m_renderer->camera().dolly(steps * kDollyPerWheelStep);
     requestUpdate();
+}
+
+void VulkanWindow::beginAxisRotate(int axis) {
+    if (!m_renderer || axis < 0 || axis > 2 || m_axisRotateKey == axis) {
+        return;
+    }
+    endAxisRotate(); // a different axis key while one is held: close that edit, open a new one
+    m_preEditPose = m_renderer->capturePose(); // one undo entry per hold
+    m_axisRotateKey = axis;
+    emit axisRotateKeyChanged(axis);
+}
+
+void VulkanWindow::endAxisRotate() {
+    if (m_axisRotateKey < 0) {
+        return;
+    }
+    m_axisRotateKey = -1;
+    if (m_renderer) {
+        m_renderer->finalizePose(); // correctives, deferred through the hold like a drag
+        commitPoseUndo();           // no-op if the wheel never moved
+        requestUpdate();
+    }
+    emit axisRotateKeyChanged(-1);
+}
+
+void VulkanWindow::keyReleaseEvent(QKeyEvent* event) {
+    if (!event->isAutoRepeat() && m_axisRotateKey >= 0 &&
+        ((event->key() == Qt::Key_X && m_axisRotateKey == 0) ||
+         (event->key() == Qt::Key_Y && m_axisRotateKey == 1) ||
+         (event->key() == Qt::Key_Z && m_axisRotateKey == 2))) {
+        endAxisRotate();
+        event->accept();
+        return;
+    }
+    QWindow::keyReleaseEvent(event);
+}
+
+void VulkanWindow::focusOutEvent(QFocusEvent* event) {
+    endAxisRotate(); // the release will never reach us; don't leave the wheel in rotate mode
+    QWindow::focusOutEvent(event);
 }
 
 void VulkanWindow::keyPressEvent(QKeyEvent* event) {
@@ -930,6 +1076,72 @@ void VulkanWindow::keyPressEvent(QKeyEvent* event) {
             event->accept();
             return;
         }
+    }
+    // X / Y / Z held with a joint selected: the mouse wheel rotates that joint about the channel
+    // for as long as the key is down (see beginAxisRotate); the strip shows the axis badge. The
+    // key's auto-repeats are swallowed so a long hold doesn't re-open the edit; no modifiers
+    // (Ctrl+Z is undo, and Ctrl+X/Y/Z stay free).
+    if (m_renderer && event->modifiers() == Qt::NoModifier &&
+        (event->key() == Qt::Key_X || event->key() == Qt::Key_Y || event->key() == Qt::Key_Z)) {
+        if (!event->isAutoRepeat() && !m_ikDragging && !m_posingBone && !m_ikSettling &&
+            m_renderer->hasSelectedBone()) {
+            beginAxisRotate(event->key() == Qt::Key_X ? 0 : event->key() == Qt::Key_Y ? 1 : 2);
+        }
+        event->accept();
+        return;
+    }
+    // Camera views, Blender's numpad convention — on the numpad AND the number row (Blender's
+    // "emulate numpad"): 1/3/7 = front/right/top, Ctrl = the opposite side, 9 = flip 180°,
+    // 5 = the Home view, "." = frame selected. The View menu's QAction shortcuts carry these APP-WIDE; this is the
+    // in-viewport fallback (like Ctrl+Z) for a platform that hands the native window the key
+    // before the shortcut map sees it. Not while a button drag owns the camera or the pose.
+    if (m_renderer && !m_ikDragging && !m_posingBone &&
+        !(m_activeDragButtons & (Qt::LeftButton | Qt::MiddleButton))) {
+        const Qt::KeyboardModifiers mods = event->modifiers() & ~Qt::KeypadModifier;
+        const bool plain = mods == Qt::NoModifier;
+        const bool ctrl = mods == Qt::ControlModifier;
+        // With NumLock OFF the pad sends its navigation keys instead of digits: fold those back
+        // onto the digits so the pad works either way (the keypad modifier tells them apart from
+        // the real End/Home/PageUp/PageDown/Delete keys).
+        int key = event->key();
+        if (event->modifiers().testFlag(Qt::KeypadModifier)) {
+            switch (key) {
+            case Qt::Key_End:      key = Qt::Key_1; break;
+            case Qt::Key_PageDown: key = Qt::Key_3; break;
+            case Qt::Key_Home:     key = Qt::Key_7; break;
+            case Qt::Key_PageUp:   key = Qt::Key_9; break;
+            case Qt::Key_Clear:    key = Qt::Key_5; break; // numpad 5 with NumLock off
+            case Qt::Key_Delete:                    // the pad's "." with NumLock off
+            case Qt::Key_Comma:    key = Qt::Key_Period; break; // decimal-comma layouts
+            default: break;
+            }
+        }
+        if (plain || ctrl) {
+            bool handled = true;
+            switch (key) {
+            case Qt::Key_1: setAxisView(ctrl ? AxisView::Back : AxisView::Front); break;
+            case Qt::Key_3: setAxisView(ctrl ? AxisView::Left : AxisView::Right); break;
+            case Qt::Key_7: setAxisView(ctrl ? AxisView::Bottom : AxisView::Top); break;
+            case Qt::Key_9:      if (plain) flipView(); else handled = false; break;
+            case Qt::Key_5:      if (plain) resetView(); else handled = false; break; // = the Home button
+            case Qt::Key_Period: if (plain) frameSelected(); else handled = false; break;
+            default: handled = false; break;
+            }
+            if (handled) {
+                event->accept();
+                return;
+            }
+        }
+    }
+    // Delete — or Backspace, the key labelled Delete on Mac keyboards — removes the SELECTED
+    // object, like the context menu's Delete. Handled here (viewport focus) rather than as a
+    // window-level shortcut, which would hijack Delete from the Asset Manager's tree and grid.
+    // Not mid-gesture: a drag owns the figure until it's released.
+    if (m_renderer && (event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace) &&
+        event->modifiers() == Qt::NoModifier && !m_ikDragging && !m_posingBone) {
+        deleteSelectedObject();
+        event->accept();
+        return;
     }
     // P toggles the pin on the selected joint (the joint is then held in place through IK drags
     // of other joints). Not mid-gesture: the rig captured its pins at drag start.
@@ -954,7 +1166,7 @@ void VulkanWindow::registerLightingUndo(const LightingSettings& preEdit) {
 }
 
 void VulkanWindow::undo() {
-    if (m_ikDragging || m_posingBone || m_gizmoAxis >= 0) {
+    if (m_ikDragging || m_posingBone) {
         return; // mid-gesture (Ctrl+Z with the button held): the drag owns the pose right now —
                 // an IK drag in particular solves against pins captured at drag start, and
                 // re-posing underneath it would leave the solve fighting a stale stance.
@@ -983,7 +1195,7 @@ void VulkanWindow::undo() {
 }
 
 void VulkanWindow::redo() {
-    if (m_ikDragging || m_posingBone || m_gizmoAxis >= 0) {
+    if (m_ikDragging || m_posingBone) {
         return; // mid-gesture: see undo()
     }
     finishIkSettle();

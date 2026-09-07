@@ -1,14 +1,17 @@
 #version 450
 
-// Depth-only vertex shader for the key light's shadow map. Same DUAL-QUATERNION skinning as
-// mesh.vert (so a posed figure casts its posed shadow — the two MUST match or the figure
-// self-shadows against a differently-deformed caster), but transformed by the light's ortho
-// view-projection instead of the camera's. In the shadow pipeline the joint storage buffer is
-// bound at SET 0 (the pipeline's only set — same set object the main pass binds at set 2; the
-// layouts match). Normal/UV attributes exist in the vertex layout but are simply not consumed.
+// Position-only vertex shader for the projected passes that need no materials: the key light's
+// shadow map (paired with shadow.frag, transformed by the light's ortho view-projection) and
+// the selection-outline mask (paired with outlinemask.frag, transformed by the CAMERA's
+// view-projection). Same DUAL-QUATERNION skinning as mesh.vert (so a posed figure casts its
+// posed shadow and outlines its posed silhouette — the blends MUST match or the figure
+// self-shadows against a differently-deformed caster). In both pipelines the joint storage
+// buffer is bound at SET 0 (the pipeline's only set — same set object the main pass binds at
+// set 2; the layouts match). Normal/UV attributes exist in the vertex layout but are simply not
+// consumed.
 
 layout(push_constant) uniform Push {
-    mat4 lightViewProj; // key light's ortho view-projection (fitted by Scene::recordShadowPass)
+    mat4 viewProj; // the pass's projection: the fitted light matrix (shadow) or the camera's (outline)
     mat4 model;
 } pc;
 
@@ -46,5 +49,5 @@ void main() {
     dAcc *= invLen;
     vec3 skinnedPos = quatRotate(rAcc, inPos) +
                       2.0 * (rAcc.w * dAcc.xyz - dAcc.w * rAcc.xyz + cross(rAcc.xyz, dAcc.xyz));
-    gl_Position = pc.lightViewProj * pc.model * vec4(skinnedPos, 1.0);
+    gl_Position = pc.viewProj * pc.model * vec4(skinnedPos, 1.0);
 }

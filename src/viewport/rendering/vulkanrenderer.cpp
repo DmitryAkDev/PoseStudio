@@ -6,6 +6,7 @@
 #include "vulkanrenderer.h"
 
 #include "hdrtarget.h"
+#include "outlinemask.h"
 #include "postprocess.h"
 #include "vulkancontext.h"
 #include "vulkanswapchain.h"
@@ -13,6 +14,7 @@
 #include "grid.h"
 #include "scene.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <fstream>
@@ -29,13 +31,18 @@ VulkanRenderer::VulkanRenderer(VulkanContext& context, VkExtent2D initialExtent,
     // swapchain pass); scene pipelines are built against ITS render pass. The swapchain pass then
     // only ever runs the tonemapping composite.
     m_hdrTarget = std::make_unique<HdrTarget>(m_context, m_swapchain->extent());
+    // The selection-outline mask is screen-sized too; the Scene's silhouette pipeline builds
+    // against its pass, so it exists before the Scene.
+    m_outlineMask = std::make_unique<OutlineMask>(m_context, m_swapchain->extent());
 
     m_scene = std::make_unique<Scene>(m_context, m_hdrTarget->renderPass(),
+                                      m_outlineMask->renderPass(),
                                       loadSpirv("mesh.vert.spv"), loadSpirv("mesh.frag.spv"),
                                       loadSpirv("skeleton.vert.spv"), loadSpirv("skeleton.frag.spv"),
                                       loadSpirv("shadow.vert.spv"), loadSpirv("shadow.frag.spv"),
                                       loadSpirv("background.vert.spv"),
-                                      loadSpirv("background.frag.spv"));
+                                      loadSpirv("background.frag.spv"),
+                                      loadSpirv("outlinemask.frag.spv"));
 
     // The grid samples the scene's shadow map (ground/contact shadow) through the scene-wide
     // set 3, so its pipeline is built against that layout — Scene must exist first.
@@ -45,7 +52,7 @@ VulkanRenderer::VulkanRenderer(VulkanContext& context, VkExtent2D initialExtent,
 
     m_postProcess = std::make_unique<PostProcess>(
         m_context, m_swapchain->renderPass(), m_hdrTarget->resolveInfo(),
-        m_hdrTarget->specResolveInfo(), m_swapchain->extent(),
+        m_hdrTarget->specResolveInfo(), m_outlineMask->descriptorInfo(), m_swapchain->extent(),
         loadSpirv("fullscreen.vert.spv"), loadSpirv("bloombright.frag.spv"),
         loadSpirv("bloomblur.frag.spv"), loadSpirv("composite.frag.spv"),
         loadSpirv("sssblur.frag.spv"));
@@ -69,6 +76,7 @@ VulkanRenderer::~VulkanRenderer() {
     m_postProcess.reset();
     m_grid.reset();
     m_scene.reset();
+    m_outlineMask.reset();
     m_hdrTarget.reset();
     m_swapchain.reset();
 }
@@ -96,6 +104,30 @@ void VulkanRenderer::deleteModel(std::size_t index) {
     // flight; wait for the device to finish before the scene frees them.
     vkDeviceWaitIdle(m_context.device());
     m_scene->removeModel(index);
+}
+
+bool VulkanRenderer::frameSelected() {
+    glm::vec3 mn;
+    glm::vec3 mx;
+    if (!m_scene || !m_scene->framingBounds(mn, mx)) {
+        return false;
+    }
+    // The box's bounding sphere: fits from every orbit angle, so the frame never clips a corner
+    // as the user orbits on from it.
+    const glm::vec3 center = 0.5f * (mn + mx);
+    const float radius = std::max(0.5f * glm::length(mx - mn), 0.05f);
+    m_camera.frame(center, radius);
+    return true;
+}
+
+int VulkanRenderer::selectedModelIndex() const {
+    return m_scene ? m_scene->selectedModelIndex() : -1;
+}
+
+void VulkanRenderer::setSelectedModel(int index) {
+    if (m_scene) {
+        m_scene->setSelectedModel(index);
+    }
 }
 
 bool VulkanRenderer::hasPosableFigure() const { return m_scene && m_scene->hasPosableFigure(); }
@@ -203,17 +235,6 @@ bool VulkanRenderer::figureGroundGap(float& lowestY) const {
 void VulkanRenderer::translateFigureY(float dy) {
     if (m_scene) {
         m_scene->translateFigureY(dy);
-    }
-}
-
-int VulkanRenderer::gizmoAxisAt(float px, float py, float vpW, float vpH) const {
-    return m_scene ? m_scene->gizmoAxisAt(px, py, vpW, vpH, m_camera) : -1;
-}
-
-void VulkanRenderer::rotateGizmo(int axis, float prevX, float prevY, float curX, float curY,
-                                 float vpW, float vpH) {
-    if (m_scene) {
-        m_scene->rotateGizmo(axis, prevX, prevY, curX, curY, vpW, vpH, m_camera);
     }
 }
 
@@ -326,9 +347,12 @@ void VulkanRenderer::recreateSwapchain() {
     }
 
     const VkExtent2D extent = m_swapchain->extent();
-    // The offscreen HDR target + bloom targets track the swapchain size (the device is idle here).
+    // The offscreen HDR target, the outline mask, and the bloom targets track the swapchain size
+    // (the device is idle here).
     m_hdrTarget->resize(extent);
-    m_postProcess->resize(extent, m_hdrTarget->resolveInfo(), m_hdrTarget->specResolveInfo());
+    m_outlineMask->resize(extent);
+    m_postProcess->resize(extent, m_hdrTarget->resolveInfo(), m_hdrTarget->specResolveInfo(),
+                          m_outlineMask->descriptorInfo());
     m_camera.setViewportSize(static_cast<float>(extent.width), static_cast<float>(extent.height));
     m_framebufferResized = false;
 }
@@ -407,6 +431,10 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageInde
     // Scene::record() writes into the camera UBO.
     m_scene->recordShadowPass(cmd, m_currentFrame);
 
+    // Selection-outline mask (its own small pass, skipped when nothing is selected): the
+    // composite dilates it into the outline, so it too must precede the swapchain pass.
+    const bool outlined = m_scene->recordOutlinePass(cmd, m_camera, m_currentFrame, *m_outlineMask);
+
     const VkExtent2D extent = m_swapchain->extent();
 
     VkViewport viewport{};
@@ -454,7 +482,7 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageInde
     vkCmdEndRenderPass(cmd);
 
     // --- SSSSS then bloom (PBR mode only — the stylized modes author display-ready values). ----
-    const bool pbr = m_scene->shadeMode() == 1;
+    const bool pbr = m_scene->isPbr();
     if (pbr) {
         m_postProcess->recordSss(cmd);   // diffuses skin in place (HDR alpha = the SSS mask)
         m_postProcess->recordBloom(cmd); // then blooms the diffused image
@@ -471,7 +499,11 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageInde
     vkCmdBeginRenderPass(cmd, &presentPass, VK_SUBPASS_CONTENTS_INLINE);
     vkCmdSetViewport(cmd, 0, 1, &viewport);
     vkCmdSetScissor(cmd, 0, 1, &scissor);
-    m_postProcess->recordComposite(cmd, pbr && m_scene->lightingSettings().tonemap, pbr);
+    // The outline's width is 2 logical pixels — Blender's default outline weight — scaled to
+    // physical pixels by the window's device pixel ratio.
+    constexpr float kOutlineWidthLogicalPx = 2.0f;
+    m_postProcess->recordComposite(cmd, pbr && m_scene->lightingSettings().tonemap, pbr,
+                                   outlined ? kOutlineWidthLogicalPx * m_uiScale : 0.0f);
     vkCmdEndRenderPass(cmd);
 
     VK_CHECK(vkEndCommandBuffer(cmd));

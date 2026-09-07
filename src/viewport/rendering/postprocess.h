@@ -17,6 +17,8 @@
 #ifndef POSTPROCESS_H
 #define POSTPROCESS_H
 
+#include "vulkancommon.h" // kSelectionAccentLinear
+
 #include <vk_mem_alloc.h>
 #include <vulkan/vulkan.h>
 
@@ -35,9 +37,12 @@ public:
     /// @param hdrSpecResolve      The HDR target's resolved SPECULAR descriptor — sampled by the
     ///                            SSS V-pass, which adds it back after diffusing (the blur must
     ///                            never smear glints; smeared specular reads as wet skin).
+    /// @param outlineMask         The selection-outline coverage mask (OutlineMask) the composite
+    ///                            dilates into the outline (re-fed on resize).
     PostProcess(VulkanContext& context, VkRenderPass swapchainRenderPass,
                 const VkDescriptorImageInfo& hdrResolve,
-                const VkDescriptorImageInfo& hdrSpecResolve, VkExtent2D extent,
+                const VkDescriptorImageInfo& hdrSpecResolve,
+                const VkDescriptorImageInfo& outlineMask, VkExtent2D extent,
                 const std::vector<char>& fullscreenVertSpirv,
                 const std::vector<char>& brightFragSpirv, const std::vector<char>& blurFragSpirv,
                 const std::vector<char>& compositeFragSpirv,
@@ -48,9 +53,10 @@ public:
     PostProcess& operator=(const PostProcess&) = delete;
 
     /// Rebuilds the half-res bloom targets + all descriptor sets for a new size / recreated HDR
-    /// target. Caller must have made the device idle.
+    /// target and outline mask. Caller must have made the device idle.
     void resize(VkExtent2D extent, const VkDescriptorImageInfo& hdrResolve,
-                const VkDescriptorImageInfo& hdrSpecResolve);
+                const VkDescriptorImageInfo& hdrSpecResolve,
+                const VkDescriptorImageInfo& outlineMask);
 
     /// Records the screen-space subsurface scattering blur: two full-res masked passes, HDR
     /// resolve -> scratch -> back into the HDR resolve (so everything downstream — bloom, the
@@ -63,8 +69,14 @@ public:
 
     /// Records the fullscreen composite draw. The caller has begun the swapchain render pass and
     /// set the full-extent viewport/scissor. @p tonemap applies ACES (PBR + dial on); @p bloom
-    /// adds the bloom target (PBR only — must match whether recordBloom ran this frame).
-    void recordComposite(VkCommandBuffer cmd, bool tonemap, bool bloom);
+    /// adds the bloom target (PBR only — must match whether recordBloom ran this frame);
+    /// @p outlineWidthPx > 0 paints the selection outline that wide (physical pixels) around
+    /// the coverage in the outline mask — pass 0 whenever the mask pass didn't run this frame
+    /// (the mask's contents are then stale).
+    void recordComposite(VkCommandBuffer cmd, bool tonemap, bool bloom, float outlineWidthPx);
+
+    /// The selection outline's colour, LINEAR rgb. Defaults to the app's accent blue.
+    void setOutlineColor(float r, float g, float b) { m_outlineColor[0] = r; m_outlineColor[1] = g; m_outlineColor[2] = b; }
 
 private:
     struct BloomTarget {
@@ -77,7 +89,8 @@ private:
     void createTargets();
     void destroyTargets();
     void updateDescriptors(const VkDescriptorImageInfo& hdrResolve,
-                           const VkDescriptorImageInfo& hdrSpecResolve);
+                           const VkDescriptorImageInfo& hdrSpecResolve,
+                           const VkDescriptorImageInfo& outlineMask);
     void runFullscreenPass(VkCommandBuffer cmd, VkFramebuffer framebuffer, VkExtent2D extent,
                            const VulkanPipeline& pipeline, VkDescriptorSet set,
                            const float params[4]);
@@ -98,15 +111,22 @@ private:
     BloomTarget   m_sssScratch;               // full resolution
     VkFramebuffer m_sssResolveFb = VK_NULL_HANDLE; // targets the HDR resolve view
 
-    // One two-sampler set layout serves every pass (unused second binding = the same image twice).
+    // One three-sampler set layout serves every pass (a pass's unused bindings = its binding-0
+    // image again, so every declared binding is valid).
     VkDescriptorSetLayout m_setLayout = VK_NULL_HANDLE;
     VkDescriptorPool      m_pool = VK_NULL_HANDLE;
     VkDescriptorSet       m_brightSet = VK_NULL_HANDLE;    // 0 = HDR resolve
     VkDescriptorSet       m_blurHSet = VK_NULL_HANDLE;     // 0 = bloom A
     VkDescriptorSet       m_blurVSet = VK_NULL_HANDLE;     // 0 = bloom B
-    VkDescriptorSet       m_compositeSet = VK_NULL_HANDLE; // 0 = HDR resolve, 1 = bloom A
+    VkDescriptorSet       m_compositeSet = VK_NULL_HANDLE; // 0 = HDR resolve, 1 = bloom A, 2 = outline mask
     VkDescriptorSet       m_sssHSet = VK_NULL_HANDLE;      // 0 = HDR resolve
-    VkDescriptorSet       m_sssVSet = VK_NULL_HANDLE;      // 0 = SSS scratch
+    VkDescriptorSet       m_sssVSet = VK_NULL_HANDLE;      // 0 = SSS scratch, 1 = spec resolve
+
+    // Selection-outline colour (linear rgb), pushed to the composite. Default: the app's accent
+    // blue (kSelectionAccentLinear) — the composite paints it after tonemapping and the sRGB
+    // swapchain re-encodes it exactly.
+    float m_outlineColor[3] = {kSelectionAccentLinear[0], kSelectionAccentLinear[1],
+                               kSelectionAccentLinear[2]};
 
     std::unique_ptr<VulkanPipeline> m_brightPipeline; // bloom pass
     std::unique_ptr<VulkanPipeline> m_blurPipeline;   // bloom pass (direction via push constant)

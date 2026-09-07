@@ -10,6 +10,7 @@
 #include "iblmaps.h"
 #include "mesh.h"
 #include "modeldata.h"
+#include "outlinemask.h"
 #include "shadowmap.h"
 #include "vertex.h"
 #include "vulkancommon.h"
@@ -20,6 +21,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp> // lookAt / ortho for the shadow frustum
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -52,7 +54,8 @@ struct CameraUbo {
     glm::vec4 sh[9];       // environment diffuse irradiance: 9 SH coefficients (rgb in .xyz)
     glm::vec4 params2;     // x = diffuseIntensity, y = keyIntensity, z = envRotation(rad), w = tonemap(0/1)
     glm::vec4 params3;     // x = subsurface, y = rimIntensity, z = backdropMode, w = backdropBlur
-    glm::vec4 params4;     // x = backdropBrightness, y = domeRadius, z = shadowIntensity, w reserved
+    glm::vec4 params4;     // x = backdropBrightness, y = domeRadius, z = shadowIntensity,
+                           // w = the wireframe overlay's linear grey (ShadeMode::wireLevel)
 };
 
 
@@ -61,37 +64,23 @@ struct LineVertex {
     glm::vec3 pos;
     glm::vec3 color;
 };
-constexpr uint32_t kMaxSkeletonVerts = 8192; // 2 per bone segment + gizmo rings; far above any figure's
+constexpr uint32_t kMaxSkeletonVerts = 8192; // 2 per bone segment + pin markers; far above any figure's
 
-constexpr int   kGizmoRingSegments = 48;    // line segments per gizmo ring
-constexpr float kGizmoPickTolerancePx = 12.0f;
-
-// Screen-roughly-constant gizmo ring radius: a small fraction of the distance to the camera (so it
-// stays a consistent on-screen size as you dolly in/out) — sized to sit around a joint, grabbable.
-float gizmoRadius(const glm::vec3& center, const Camera& camera) {
+// Screen-roughly-constant overlay marker radius: a small fraction of the distance to the camera,
+// so a joint marker keeps a consistent on-screen size as you dolly in/out.
+float markerRadius(const glm::vec3& center, const Camera& camera) {
     return 0.048f * glm::length(center - camera.position());
-}
-
-// Projects a world point to pixel coordinates matching the mouse convention (viewProj carries
-// Vulkan's Y flip, same as selectBoneAt). Returns false if behind the camera.
-bool projectToPixels(const glm::mat4& viewProj, const glm::vec3& world, float vpW, float vpH,
-                     glm::vec2& outPx) {
-    const glm::vec4 clip = viewProj * glm::vec4(world, 1.0f);
-    if (clip.w <= 1e-4f) {
-        return false;
-    }
-    const glm::vec3 ndc = glm::vec3(clip) / clip.w;
-    outPx = glm::vec2((ndc.x * 0.5f + 0.5f) * vpW, (ndc.y * 0.5f + 0.5f) * vpH);
-    return true;
 }
 
 } // namespace
 
-Scene::Scene(VulkanContext& context, VkRenderPass renderPass, const std::vector<char>& vertSpirv,
-             const std::vector<char>& fragSpirv, const std::vector<char>& skeletonVertSpirv,
-             const std::vector<char>& skeletonFragSpirv, const std::vector<char>& shadowVertSpirv,
-             const std::vector<char>& shadowFragSpirv, const std::vector<char>& backgroundVertSpirv,
-             const std::vector<char>& backgroundFragSpirv)
+Scene::Scene(VulkanContext& context, VkRenderPass renderPass, VkRenderPass outlineMaskPass,
+             const std::vector<char>& vertSpirv, const std::vector<char>& fragSpirv,
+             const std::vector<char>& skeletonVertSpirv, const std::vector<char>& skeletonFragSpirv,
+             const std::vector<char>& shadowVertSpirv, const std::vector<char>& shadowFragSpirv,
+             const std::vector<char>& backgroundVertSpirv,
+             const std::vector<char>& backgroundFragSpirv,
+             const std::vector<char>& outlineMaskFragSpirv)
     : m_context(context) {
     // The shadow map must exist before createDescriptorResources() — it writes the map into the
     // scene-wide set 3 (binding 2) right after allocating that set.
@@ -150,6 +139,38 @@ Scene::Scene(VulkanContext& context, VkRenderPass renderPass, const std::vector<
         std::make_unique<VulkanPipeline>(m_context, renderPass, vertSpirv, fragSpirv, config);
     config.colorWriteAlpha = true;
 
+    // Wireframe (the wireframe shade modes): the same shaders and layout rasterized as triangle
+    // EDGES (LINE polygon mode), depth-tested and written, pulled a hair toward the camera by a
+    // negative depth bias so a surface's own edges win over its coplanar fill in the overlay
+    // modes. Alpha and the specular attachment are masked — a wire is neither skin nor a glint.
+    // Skipped on a device without fillModeNonSolid; the wire modes then show their surface alone.
+    if (m_context.supportsWireframe()) {
+        PipelineConfig wireConfig = config; // vertex layout, set layouts, push block as the mesh pass
+        wireConfig.blendEnable = false;
+        wireConfig.depthTestEnable = true;
+        wireConfig.depthWriteEnable = true;
+        wireConfig.colorWriteAlpha = false;
+        wireConfig.writeColorAttachment1 = false;
+        wireConfig.polygonMode = VK_POLYGON_MODE_LINE;
+        wireConfig.depthBiasConstant = -1.0f;
+        wireConfig.depthBiasSlope = -1.0f;
+        m_wirePipeline =
+            std::make_unique<VulkanPipeline>(m_context, renderPass, vertSpirv, fragSpirv, wireConfig);
+    }
+
+    // Hidden-line surface fill: depth test + write with EVERY colour write masked, so the
+    // surface occludes the grid and the wires behind it while the framebuffer keeps the viewport's
+    // clear colour — the classic hidden-line drawing once the wire pass draws over it.
+    PipelineConfig depthFillConfig = config;
+    depthFillConfig.blendEnable = false;
+    depthFillConfig.depthTestEnable = true;
+    depthFillConfig.depthWriteEnable = true;
+    depthFillConfig.colorWriteRgb = false;
+    depthFillConfig.colorWriteAlpha = false;
+    depthFillConfig.writeColorAttachment1 = false;
+    m_hiddenLinePipeline = std::make_unique<VulkanPipeline>(m_context, renderPass, vertSpirv,
+                                                            fragSpirv, depthFillConfig);
+
     // Depth-only shadow pipeline: same skinned vertex layout, rendered into the shadow map's own
     // single-sample pass with a static depth bias (acne) and no colour attachment. Its only
     // descriptor set is the joint-matrix layout (bound at index 0 — see Model::recordShadow).
@@ -167,6 +188,23 @@ Scene::Scene(VulkanContext& context, VkRenderPass renderPass, const std::vector<
     m_shadowPipeline = std::make_unique<VulkanPipeline>(m_context, m_shadowMap->renderPass(),
                                                         shadowVertSpirv, shadowFragSpirv,
                                                         shadowConfig);
+
+    // Selection-outline mask: the shadow pass's skinned position-only vertex shader again, now
+    // projected by the camera into the OutlineMask's coverage pass (its MSAA count matches the
+    // context's, so the silhouette edge resolves to fractional coverage), writing constant 1.0.
+    // No depth attachment in that pass — the mask is the object's whole projected silhouette.
+    PipelineConfig outlineConfig;
+    outlineConfig.pushConstantSize = sizeof(ShadowPushConstants);
+    outlineConfig.pushConstantStages = VK_SHADER_STAGE_VERTEX_BIT;
+    outlineConfig.depthTestEnable = false;
+    outlineConfig.depthWriteEnable = false;
+    outlineConfig.blendEnable = false;
+    outlineConfig.cullMode = VK_CULL_MODE_NONE;
+    outlineConfig.vertexBindings.assign(1, binding);
+    outlineConfig.vertexAttributes.assign(attrs.begin(), attrs.end());
+    outlineConfig.descriptorSetLayouts = {m_jointSetLayout};
+    m_outlinePipeline = std::make_unique<VulkanPipeline>(m_context, outlineMaskPass, shadowVertSpirv,
+                                                         outlineMaskFragSpirv, outlineConfig);
 
     // HDRI backdrop: a fullscreen triangle sampling the environment cube along the eye ray, drawn
     // FIRST in the main pass with depth test/write off so everything else renders over it. Its own
@@ -229,6 +267,9 @@ Scene::~Scene() {
     m_transparentPipeline.reset();
     m_skeletonPipeline.reset();
     m_backgroundPipeline.reset();
+    m_outlinePipeline.reset();
+    m_wirePipeline.reset();
+    m_hiddenLinePipeline.reset();
     m_shadowPipeline.reset();
     m_shadowMap.reset();
     m_fallbackTexture.reset();
@@ -430,6 +471,32 @@ void Scene::applyBakedEnvironment(const BakedEnvironment& baked) {
 void Scene::addModel(const ModelData& data) {
     m_models.push_back(std::make_unique<Model>(m_context, data, m_materialSetLayout, m_jointSetLayout,
                                                *m_fallbackTexture, *m_fallbackNormal));
+    setSelectedModel(static_cast<int>(m_models.size()) - 1); // the new arrival is the selection
+}
+
+int Scene::selectedModelIndex() const {
+    return (m_selectedModel >= 0 && static_cast<std::size_t>(m_selectedModel) < m_models.size())
+               ? m_selectedModel
+               : -1;
+}
+
+void Scene::setSelectedModel(int index) {
+    if (index < 0 || static_cast<std::size_t>(index) >= m_models.size()) {
+        index = -1;
+    }
+    const int previous = selectedModelIndex();
+    if (index == previous) {
+        return;
+    }
+    // The outgoing selection's joint selection goes away — a joint
+    // selection on a model that isn't the selection would contradict the outline.
+    if (previous >= 0 && m_models[static_cast<std::size_t>(previous)]->hasSkeleton()) {
+        m_models[static_cast<std::size_t>(previous)]->setSelectedBone(-1);
+    }
+    m_selectedModel = index;
+    if (index >= 0 && m_models[static_cast<std::size_t>(index)]->hasSkeleton()) {
+        m_activeFigure = index; // the selected figure is the posing target
+    }
 }
 
 int Scene::pickModel(const Ray& ray) const {
@@ -445,15 +512,41 @@ int Scene::pickModel(const Ray& ray) const {
     return best;
 }
 
+bool Scene::framingBounds(glm::vec3& outMin, glm::vec3& outMax) const {
+    const int selected = selectedModelIndex();
+    if (selected >= 0) {
+        return m_models[static_cast<std::size_t>(selected)]->worldBounds(outMin, outMax);
+    }
+    bool any = false;
+    outMin = glm::vec3(std::numeric_limits<float>::max());
+    outMax = glm::vec3(std::numeric_limits<float>::lowest());
+    for (const std::unique_ptr<Model>& model : m_models) {
+        glm::vec3 a;
+        glm::vec3 b;
+        if (model->worldBounds(a, b)) {
+            outMin = glm::min(outMin, a);
+            outMax = glm::max(outMax, b);
+            any = true;
+        }
+    }
+    return any;
+}
+
 void Scene::removeModel(std::size_t index) {
     if (index < m_models.size()) {
         m_models.erase(m_models.begin() + static_cast<std::ptrdiff_t>(index));
         // Keep the active figure pointing at the same model (indices above shift down); the
-        // deleted figure itself falls back to the first remaining one.
+        // deleted figure itself falls back to the first remaining one. The selection likewise
+        // follows its model, and a deleted selection leaves nothing selected.
         if (m_activeFigure == static_cast<int>(index)) {
             m_activeFigure = -1;
         } else if (m_activeFigure > static_cast<int>(index)) {
             --m_activeFigure;
+        }
+        if (m_selectedModel == static_cast<int>(index)) {
+            m_selectedModel = -1;
+        } else if (m_selectedModel > static_cast<int>(index)) {
+            --m_selectedModel;
         }
     }
 }
@@ -468,7 +561,7 @@ glm::vec3 Scene::keyLightDir() const {
     // (mesh.frag), so the world direction matching a fixed environment-space direction is
     // rotateY(dir, -rot) with the same rotation convention, replicated here. The analytic modes
     // keep the dial as a plain world-space direction (their rig ignores the environment).
-    if (m_shadeMode == 1) {
+    if (isPbr()) {
         const float a = -glm::radians(m_lighting.environmentRotationDeg);
         const float c = std::cos(a);
         const float s = std::sin(a);
@@ -562,6 +655,44 @@ void Scene::recordShadowPass(VkCommandBuffer cmd, uint32_t frameIndex) {
     vkCmdEndRenderPass(cmd);
 }
 
+bool Scene::recordOutlinePass(VkCommandBuffer cmd, const Camera& camera, uint32_t frameIndex,
+                              const OutlineMask& mask) {
+    const int selected = selectedModelIndex();
+    if (selected < 0) {
+        return false; // nothing selected: skip the pass; the composite draws no outline
+    }
+    // Clear to 0 ("not the selected object"); with MSAA the second slot is the resolve target,
+    // whose load is DONT_CARE (the clear value is simply unused).
+    std::array<VkClearValue, 2> clears{};
+    clears[0].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+    clears[1].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+    const VkExtent2D extent = mask.extent();
+    VkRenderPassBeginInfo rp{};
+    rp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    rp.renderPass = mask.renderPass();
+    rp.framebuffer = mask.framebuffer();
+    rp.renderArea.extent = extent;
+    rp.clearValueCount = mask.attachmentCount();
+    rp.pClearValues = clears.data();
+    vkCmdBeginRenderPass(cmd, &rp, VK_SUBPASS_CONTENTS_INLINE);
+
+    VkViewport viewport{};
+    viewport.width = static_cast<float>(extent.width);
+    viewport.height = static_cast<float>(extent.height);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    VkRect2D scissor{};
+    scissor.extent = extent;
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_outlinePipeline->handle());
+    m_models[static_cast<std::size_t>(selected)]->recordSilhouette(
+        cmd, m_outlinePipeline->layout(), camera.viewProjection(), frameIndex);
+    vkCmdEndRenderPass(cmd);
+    return true;
+}
+
 void Scene::record(VkCommandBuffer cmd, const Camera& camera, uint32_t frameIndex) {
     // Update this frame's camera + lighting UBO. The default (PBR) mode is image-based-lit — its diffuse
     // comes from the environment's SH irradiance (filled in below) and its specular from the prefiltered-
@@ -585,7 +716,10 @@ void Scene::record(VkCommandBuffer cmd, const Camera& camera, uint32_t frameInde
     ubo.rimDir = glm::vec4(glm::normalize(glm::vec3(-0.15f, 0.55f, -0.9f)), 0.0f);   // back: behind + above
     ubo.rimColor = glm::vec4(1.2f, 1.28f, 1.45f, 0.0f);                               // cool, localised to edges
     ubo.ambient = glm::vec4(0.10f, 0.11f, 0.13f, 0.0f);
-    ubo.params = glm::vec4(static_cast<float>(m_shadeMode), m_lighting.exposure,
+    const ShadeMode& spec = shadeModeSpec();
+    // params.x is mesh.frag's mode for the SURFACE (the picker row's fragMode — the picker index
+    // itself never reaches the shader); a row without a shaded surface pushes 0, unread.
+    ubo.params = glm::vec4(static_cast<float>(std::max(spec.fragMode, 0)), m_lighting.exposure,
                            m_lighting.specularIntensity, m_lighting.ambientFill);
     // params2.w is free: the tonemap flag rides composite.frag's push constant now (tonemapping
     // moved to the composite pass so bloom sees real radiance) — no scene shader reads it.
@@ -594,7 +728,7 @@ void Scene::record(VkCommandBuffer cmd, const Camera& camera, uint32_t frameInde
     ubo.params3 = glm::vec4(m_lighting.subsurface, m_lighting.rimIntensity,
                             static_cast<float>(m_lighting.backdropMode), m_lighting.backdropBlur);
     ubo.params4 = glm::vec4(m_lighting.backdropBrightness, m_lighting.domeRadius,
-                            m_lighting.shadowIntensity, 0.0f);
+                            m_lighting.shadowIntensity, spec.wireLevel);
     // Environment diffuse irradiance (SH). The PBR mode reconstructs per-normal ambient from these
     // instead of the flat `ambient` constant, so shadow sides pick up the environment's colour.
     for (int i = 0; i < 9; ++i) {
@@ -607,7 +741,7 @@ void Scene::record(VkCommandBuffer cmd, const Camera& camera, uint32_t frameInde
     // pipeline, so everything after simply draws over it. Runs even with no models — an empty
     // PBR viewport still shows the environment. Backdrop mode 0 ("Off", an Environment-panel
     // dial) skips it, leaving the flat viewport grey.
-    if (m_shadeMode == 1 && m_lighting.backdropMode != 0) {
+    if (isPbr() && m_lighting.backdropMode != 0) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_backgroundPipeline->handle());
         const VkDescriptorSet bgSets[2] = {m_cameraSets[frameIndex], m_iblSet};
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -619,36 +753,71 @@ void Scene::record(VkCommandBuffer cmd, const Camera& camera, uint32_t frameInde
         return; // nothing else to draw; the grid still renders on its own
     }
 
-    // Opaque pass: bind the camera set (set 0) once — it stays bound for the transparent pass too,
-    // since both pipelines share the same layout.
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline->handle());
+    // Every mesh pipeline shares one layout: the camera set (0) and the scene-global IBL/shadow set
+    // (3) are bound once here and stay bound through the surface and wire passes below; set 1
+    // (material) is bound per mesh and set 2 (joints) per model.
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline->layout(), 0, 1,
                             &m_cameraSets[frameIndex], 0, nullptr);
-    // Set 3 (IBL maps) is scene-global — bind once; it stays bound for the transparent pass too, since
-    // both pipelines share the layout (like the camera set).
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline->layout(), 3, 1, &m_iblSet,
                             0, nullptr);
-    for (const std::unique_ptr<Model>& model : m_models) {
-        model->record(cmd, m_pipeline->layout(), /*transparentPass=*/false, camera.position(),
-                      frameIndex);
+
+    // --- The surface: the lit passes, a hidden-line depth fill, or nothing (see ShadeMode). ---
+    if (spec.fill == FillKind::Shaded) {
+        // Opaque pass first.
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline->handle());
+        for (const std::unique_ptr<Model>& model : m_models) {
+            model->record(cmd, m_pipeline->layout(), /*transparentPass=*/false, camera.position(),
+                          frameIndex);
+        }
+        // Transparent pass: alpha-blended, depth-write off, drawn after all opaque geometry so it
+        // blends over what's behind it (e.g. the eye's moisture/cornea over the iris); each model
+        // sorts its transparent meshes back-to-front from the camera.
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_transparentPipeline->handle());
+        for (const std::unique_ptr<Model>& model : m_models) {
+            model->record(cmd, m_transparentPipeline->layout(), /*transparentPass=*/true,
+                          camera.position(), frameIndex);
+        }
+    } else if (spec.fill == FillKind::HiddenLine) {
+        // Depth only (colour writes masked): the surface hides what's behind it and shows the
+        // viewport's clear colour; the wire pass then draws only the edges facing the camera.
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_hiddenLinePipeline->handle());
+        for (const std::unique_ptr<Model>& model : m_models) {
+            model->recordDepthFill(cmd, m_hiddenLinePipeline->layout(), frameIndex);
+        }
     }
 
-    // Transparent pass: alpha-blended, depth-write off, drawn after all opaque geometry so it blends
-    // over what's behind it (e.g. the eye's moisture/cornea over the iris); each model sorts its
-    // transparent meshes back-to-front from the camera.
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_transparentPipeline->handle());
-    for (const std::unique_ptr<Model>& model : m_models) {
-        model->record(cmd, m_transparentPipeline->layout(), /*transparentPass=*/true,
-                      camera.position(), frameIndex);
+    // --- Wireframe: every mesh's triangle edges, over the surface or on their own. ---
+    if (spec.wireframe && m_wirePipeline) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_wirePipeline->handle());
+        for (const std::unique_ptr<Model>& model : m_models) {
+            model->recordWire(cmd, m_wirePipeline->layout(), frameIndex);
+        }
     }
 
-    // Posing overlay: the rotate gizmo for the selected joint, and (only when enabled) the skeleton
-    // line list. The skeleton is hidden by default — the gizmo is the visual affordance — but joints
-    // stay clickable regardless, because picking (selectBoneAt) is independent of what's drawn here.
+    // --- Line overlays, all through one host-mapped line buffer + one draw at the end. ---
+    VulkanBuffer& lineBuffer = m_skeletonVertexBuffers[frameIndex];
+    auto* verts = static_cast<LineVertex*>(lineBuffer.mappedData());
+    uint32_t count = 0;
+
+    // Orthographic side views (the Front/Back/Left/Right hotkeys) see the floor plane exactly
+    // edge-on, where the grid shader's ray/plane intersection has nothing to hit — so draw the
+    // floor as the one line it is from there: the y = 0 trace of the view plane through the
+    // target, along the camera's right vector, in the grid's own line grey. Pure elevation
+    // drawings get their ground line, as in any DCC's fixed side camera.
+    if (camera.orthographic() && std::abs(camera.pitch()) < 1e-3f && count + 2 <= kMaxSkeletonVerts) {
+        const glm::mat4 view = camera.view();
+        const glm::vec3 right(view[0][0], view[1][0], view[2][0]); // world-space screen right
+        const glm::vec3 base(camera.target().x, 0.0f, camera.target().z);
+        constexpr float kFloorLineHalfLength = 200.0f;
+        const glm::vec3 floorLineGrey(0.30f); // the grid's major-line brightness (grid.frag)
+        verts[count++] = {base - right * kFloorLineHalfLength, floorLineGrey};
+        verts[count++] = {base + right * kFloorLineHalfLength, floorLineGrey};
+    }
+
+    // Posing overlay: (only when enabled) the skeleton line list, plus the pin markers. The
+    // skeleton is hidden by default — joints are grabbed directly on the figure — but they stay
+    // pickable regardless, because picking (selectBoneAt) is independent of what's drawn here.
     if (Model* fig = figureModel(); fig && fig->boneCount() > 0) {
-        VulkanBuffer& skeletonBuffer = m_skeletonVertexBuffers[frameIndex];
-        auto* verts = static_cast<LineVertex*>(skeletonBuffer.mappedData());
-        uint32_t count = 0;
         const int selected = fig->selectedBone();
 
         // Skeleton as line segments (joint -> parent); the selected joint's segments are highlighted.
@@ -667,82 +836,10 @@ void Scene::record(VkCommandBuffer cmd, const Camera& camera, uint32_t frameInde
             }
         }
 
-        // Rotate gizmo: three axis rings around the selected joint (X=red, Y=green, Z=blue), in the
-        // joint's own rotation frame so each ring visibly rotates the joint about one Euler channel.
-        glm::vec3 center;
-        glm::mat3 axes;
-        if (selected >= 0 && fig->selectedBoneFrame(center, axes)) {
-            const float radius = gizmoRadius(center, camera);
-            const glm::vec3 axisColor[3] = {
-                glm::vec3(1.0f, 0.35f, 0.35f), glm::vec3(0.4f, 1.0f, 0.4f), glm::vec3(0.45f, 0.55f, 1.0f)};
-            constexpr float kTwoPi = 6.2831853f;
-            constexpr float kPi = 3.14159265f;
-            // Each ring shows the channel's AUTHORED RANGE as the bright arc (theta = 0 is the
-            // rest direction; a positive Euler angle sweeps toward the next axis, the right-hand
-            // rule the ring drag itself uses), the forbidden remainder dimmed; a LOCKED channel
-            // (range under 2°: a knee's sideways axes, a twist bone's swings) draws entirely
-            // grey; and a radial tick marks the channel's CURRENT angle. The rings sit in the
-            // oriented rest frame, so arcs on the second and third channels of the rotation
-            // order are approximate under large first-channel rotations — the same
-            // approximation the ring drag makes.
-            const glm::vec3 euler = fig->boneEuler(static_cast<std::size_t>(selected));
-            for (int a = 0; a < 3 && count + 2 * kGizmoRingSegments + 2 <= kMaxSkeletonVerts; ++a) {
-                const glm::vec3 u = axes[(a + 1) % 3];
-                const glm::vec3 v = axes[(a + 2) % 3];
-                float minDeg = -180.0f;
-                float maxDeg = 180.0f;
-                const bool limited =
-                    fig->boneRotationRange(static_cast<std::size_t>(selected), a, minDeg, maxDeg);
-                const bool locked = limited && (maxDeg - minDeg) < 2.0f;
-                const glm::vec3 dim = axisColor[a] * 0.28f;
-                const glm::vec3 grey(0.45f, 0.45f, 0.45f);
-                const float rMin = glm::radians(minDeg);
-                const float rMax = glm::radians(maxDeg);
-                glm::vec3 prev = center + radius * u; // theta = 0
-                for (int s = 1; s <= kGizmoRingSegments; ++s) {
-                    const float t = kTwoPi * static_cast<float>(s) / static_cast<float>(kGizmoRingSegments);
-                    const glm::vec3 p = center + radius * (std::cos(t) * u + std::sin(t) * v);
-                    // Signed mid-angle in (-pi, pi], compared against the range.
-                    const float tMid = t - 0.5f * kTwoPi / static_cast<float>(kGizmoRingSegments);
-                    const float signedMid = tMid > kPi ? tMid - kTwoPi : tMid;
-                    const bool inRange = !limited || (signedMid >= rMin && signedMid <= rMax);
-                    const glm::vec3 col = locked ? grey : (inRange ? axisColor[a] : dim);
-                    verts[count++] = {prev, col};
-                    verts[count++] = {p, col};
-                    prev = p;
-                }
-                if (!locked) {
-                    // Current-angle tick: a short radial line across the ring.
-                    const float tc = glm::radians(euler[a]);
-                    const glm::vec3 dir = std::cos(tc) * u + std::sin(tc) * v;
-                    const glm::vec3 tickColor(1.0f, 1.0f, 1.0f);
-                    verts[count++] = {center + radius * 0.82f * dir, tickColor};
-                    verts[count++] = {center + radius * 1.18f * dir, tickColor};
-                }
-            }
-        }
-
-        // Balance support polygon: the convex hull of the planted contacts, drawn on the floor
-        // while an IK drag is live — the region the centre of mass must stay over, and the
-        // stance a step re-plants around. A touch above the floor so the grid's lines don't
-        // fight it.
-        {
-            const std::vector<glm::vec3> hull = fig->activeSupportHull();
-            const glm::vec3 hullColor(0.2f, 0.62f, 0.68f);
-            if (hull.size() >= 2 && count + 2 * hull.size() <= kMaxSkeletonVerts) {
-                for (std::size_t h = 0; h < hull.size(); ++h) {
-                    const glm::vec3 a = hull[h] + glm::vec3(0.0f, 0.003f, 0.0f);
-                    const glm::vec3 b = hull[(h + 1) % hull.size()] + glm::vec3(0.0f, 0.003f, 0.0f);
-                    verts[count++] = {a, hullColor};
-                    verts[count++] = {b, hullColor};
-                }
-            }
-        }
-
         // Pin markers: a small wireframe octahedron on every USER-pinned joint (orange, always
         // shown — the pin persists across drags), and a smaller cyan one on each ground-contact
         // pin while an IK drag is live, so it's visible which feet the solve is holding planted.
-        // Screen-constant sizing via the gizmo's radius rule. 12 edges = 24 line vertices each.
+        // Screen-constant sizing (markerRadius). 12 edges = 24 line vertices each.
         const auto emitPinMarker = [&](const glm::vec3& c, float r, const glm::vec3& col) {
             if (count + 24 > kMaxSkeletonVerts) {
                 return;
@@ -765,7 +862,7 @@ void Scene::record(VkCommandBuffer cmd, const Camera& camera, uint32_t frameInde
         for (const int node : fig->activeContactPins()) {
             if (node >= 0 && static_cast<std::size_t>(node) < fig->boneCount()) {
                 const glm::vec3 c = fig->boneWorldPosition(static_cast<std::size_t>(node));
-                emitPinMarker(c, 0.3f * gizmoRadius(c, camera), contactPinColor);
+                emitPinMarker(c, 0.3f * markerRadius(c, camera), contactPinColor);
             }
         }
         for (const std::unique_ptr<Model>& anyFig : m_models) {
@@ -775,21 +872,21 @@ void Scene::record(VkCommandBuffer cmd, const Camera& camera, uint32_t frameInde
             for (std::size_t i = 0; i < anyFig->boneCount(); ++i) {
                 if (anyFig->isBonePinned(i)) {
                     const glm::vec3 c = anyFig->boneWorldPosition(i);
-                    emitPinMarker(c, 0.45f * gizmoRadius(c, camera), userPinColor);
+                    emitPinMarker(c, 0.45f * markerRadius(c, camera), userPinColor);
                 }
             }
         }
 
-        if (count > 0) {
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_skeletonPipeline->handle());
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    m_skeletonPipeline->layout(), 0, 1, &m_cameraSets[frameIndex], 0,
-                                    nullptr);
-            const VkBuffer vb = skeletonBuffer.handle();
-            const VkDeviceSize offset = 0;
-            vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &offset);
-            vkCmdDraw(cmd, count, 1, 0, 0);
-        }
+    }
+
+    if (count > 0) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_skeletonPipeline->handle());
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_skeletonPipeline->layout(),
+                                0, 1, &m_cameraSets[frameIndex], 0, nullptr);
+        const VkBuffer vb = lineBuffer.handle();
+        const VkDeviceSize offset = 0;
+        vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &offset);
+        vkCmdDraw(cmd, count, 1, 0, 0);
     }
 }
 
@@ -815,6 +912,7 @@ void Scene::setActiveFigure(int index) {
     if (index >= 0 && static_cast<std::size_t>(index) < m_models.size() &&
         m_models[static_cast<std::size_t>(index)]->hasSkeleton()) {
         m_activeFigure = index;
+        setSelectedModel(index); // the posing target is the selection (and the outline)
     }
 }
 
@@ -831,48 +929,96 @@ int Scene::selectBoneByName(const std::string& name) {
 }
 
 int Scene::selectBoneAt(float px, float py, float vpW, float vpH, const Camera& camera) {
-    // Every figure's joints compete: the nearest projected joint of ANY figure wins, and its
-    // figure becomes the active one (the posing target). Without this a second figure in the
-    // scene could never be posed — every call went to the first skeleton.
+    // Every figure's joints compete: the nearest of ANY figure wins, and its figure becomes the
+    // active one (the posing target). Without this a second figure in the scene could never be
+    // posed — every call went to the first skeleton.
+    //
+    // Picking is by BONE, not just by joint origin: a bone's body is the segment from its joint
+    // to each child joint, and a click anywhere along it selects that bone — so clicking the
+    // middle of a thigh grabs the thigh, where joint-origin picking alone (the thigh's joints
+    // sit at the hip and the knee, farther than any sane radius from a mid-thigh click) fell
+    // through to a plain model click. A click right ON a joint (kJointSnapPx) still snaps to
+    // that joint, so the knee picks the shin bone whose origin it is rather than the thigh
+    // segment ending there. A root's own segment is skipped: a figure node sits at the origin
+    // with the hip a metre above, and that virtual bone runs straight between the legs.
     const glm::mat4 viewProj = camera.viewProjection();
-    int bestModel = -1;
-    int best = -1;
-    float bestDist = 1e9f;
+    const glm::vec2 click(px, py);
+    const auto distToSegment = [](const glm::vec2& p, const glm::vec2& a, const glm::vec2& b) {
+        const glm::vec2 ab = b - a;
+        const float len2 = glm::dot(ab, ab);
+        const float t = (len2 > 1e-6f) ? glm::clamp(glm::dot(p - a, ab) / len2, 0.0f, 1.0f) : 0.0f;
+        return glm::length(p - (a + ab * t));
+    };
+    int   jointModel = -1, joint = -1; float jointDist = 1e9f; // nearest joint ORIGIN
+    int   segModel = -1,   seg = -1;   float segDist = 1e9f;   // nearest bone SEGMENT (its owner)
+    std::vector<glm::vec2> screen;
+    std::vector<char>      visible;
     for (std::size_t m = 0; m < m_models.size(); ++m) {
         const Model* fig = m_models[m].get();
         if (!fig->hasSkeleton()) {
             continue;
         }
-        for (std::size_t i = 0; i < fig->boneCount(); ++i) {
+        const std::size_t n = fig->boneCount();
+        screen.assign(n, glm::vec2(0.0f));
+        visible.assign(n, 0);
+        for (std::size_t i = 0; i < n; ++i) {
             const glm::vec4 clip = viewProj * glm::vec4(fig->boneWorldPosition(i), 1.0f);
             if (clip.w <= 1e-4f) {
                 continue; // behind the camera
             }
             const glm::vec3 ndc = glm::vec3(clip) / clip.w;
-            const float sx = (ndc.x * 0.5f + 0.5f) * vpW;
-            const float sy = (ndc.y * 0.5f + 0.5f) * vpH; // viewProj already carries Vulkan's Y flip
-            const float dist = glm::length(glm::vec2(sx - px, sy - py));
-            if (dist < bestDist) {
-                bestDist = dist;
-                best = static_cast<int>(i);
-                bestModel = static_cast<int>(m);
+            // viewProj already carries Vulkan's Y flip, so this matches the mouse convention.
+            screen[i] = glm::vec2((ndc.x * 0.5f + 0.5f) * vpW, (ndc.y * 0.5f + 0.5f) * vpH);
+            visible[i] = 1;
+            const float dist = glm::length(screen[i] - click);
+            if (dist < jointDist) {
+                jointDist = dist;
+                joint = static_cast<int>(i);
+                jointModel = static_cast<int>(m);
+            }
+        }
+        for (std::size_t i = 0; i < n; ++i) {
+            const int parent = fig->boneParent(i);
+            if (parent < 0 || fig->boneParent(static_cast<std::size_t>(parent)) < 0 || !visible[i] ||
+                !visible[static_cast<std::size_t>(parent)]) {
+                continue; // no segment, a root's virtual segment, or off-camera
+            }
+            const float dist = distToSegment(click, screen[static_cast<std::size_t>(parent)], screen[i]);
+            if (dist < segDist) {
+                segDist = dist;
+                seg = parent; // the segment is the PARENT bone's body
+                segModel = static_cast<int>(m);
             }
         }
     }
-    // (Re)select only when the click lands near a joint. On a miss return -1 (so the caller orbits the
-    // camera) but keep the current selection — the gizmo stays up and the figure can be orbited while
-    // a joint is selected.
-    constexpr float kPickRadiusPx = 32.0f; // click tolerance around a projected joint
-    if (best >= 0 && bestDist <= kPickRadiusPx) {
-        if (bestModel != activeFigureIndex()) {
-            // Switching figures: the previous one's selection (and gizmo) goes away.
+    // Priority: a joint under the cursor, then the nearest bone body within the click
+    // tolerance, then a joint within it (leaf bones — toes, fingertips — have no segment).
+    // On a miss return -1 (so the caller orbits / click-selects) but keep the current selection
+    // — the figure can be orbited while a joint is selected.
+    constexpr float kJointSnapPx = 14.0f;  // right on a joint origin
+    constexpr float kPickRadiusPx = 32.0f; // click tolerance around a bone body or joint
+    int chosenModel = -1;
+    int chosen = -1;
+    if (joint >= 0 && jointDist <= kJointSnapPx) {
+        chosenModel = jointModel;
+        chosen = joint;
+    } else if (seg >= 0 && segDist <= kPickRadiusPx) {
+        chosenModel = segModel;
+        chosen = seg;
+    } else if (joint >= 0 && jointDist <= kPickRadiusPx) {
+        chosenModel = jointModel;
+        chosen = joint;
+    }
+    if (chosen >= 0) {
+        if (chosenModel != activeFigureIndex()) {
+            // Switching figures: the previous one's selection goes away.
             if (Model* previous = figureModel()) {
                 previous->setSelectedBone(-1);
             }
         }
-        setActiveFigure(bestModel);
-        m_models[static_cast<std::size_t>(bestModel)]->setSelectedBone(best);
-        return best;
+        setActiveFigure(chosenModel);
+        m_models[static_cast<std::size_t>(chosenModel)]->setSelectedBone(chosen);
+        return chosen;
     }
     return -1;
 }
@@ -957,65 +1103,6 @@ void Scene::unpinAllBones() {
     if (Model* fig = figureModel()) {
         fig->unpinAllBones();
     }
-}
-
-int Scene::gizmoAxisAt(float px, float py, float vpW, float vpH, const Camera& camera) const {
-    Model* fig = figureModel();
-    glm::vec3 center;
-    glm::mat3 axes;
-    if (!fig || !fig->selectedBoneFrame(center, axes)) {
-        return -1;
-    }
-    const float radius = gizmoRadius(center, camera);
-    const glm::mat4 viewProj = camera.viewProjection();
-    constexpr float kTwoPi = 6.2831853f;
-    int bestAxis = -1;
-    float bestDist = kGizmoPickTolerancePx;
-    for (int a = 0; a < 3; ++a) {
-        const glm::vec3 u = axes[(a + 1) % 3];
-        const glm::vec3 v = axes[(a + 2) % 3];
-        for (int s = 0; s < kGizmoRingSegments; ++s) {
-            const float t = kTwoPi * static_cast<float>(s) / static_cast<float>(kGizmoRingSegments);
-            const glm::vec3 p = center + radius * (std::cos(t) * u + std::sin(t) * v);
-            glm::vec2 px2;
-            if (!projectToPixels(viewProj, p, vpW, vpH, px2)) {
-                continue;
-            }
-            const float d = glm::length(px2 - glm::vec2(px, py));
-            if (d < bestDist) {
-                bestDist = d;
-                bestAxis = a;
-            }
-        }
-    }
-    return bestAxis;
-}
-
-void Scene::rotateGizmo(int axis, float prevX, float prevY, float curX, float curY, float vpW,
-                        float vpH, const Camera& camera) {
-    Model* fig = figureModel();
-    glm::vec3 center;
-    glm::mat3 axes;
-    if (!fig || axis < 0 || axis > 2 || !fig->selectedBoneFrame(center, axes)) {
-        return;
-    }
-    glm::vec2 c;
-    if (!projectToPixels(camera.viewProjection(), center, vpW, vpH, c)) {
-        return;
-    }
-    // Signed screen-angle the cursor swept around the joint, from prev to cur.
-    const float a0 = std::atan2(prevY - c.y, prevX - c.x);
-    const float a1 = std::atan2(curY - c.y, curX - c.x);
-    float delta = a1 - a0;
-    constexpr float kPi = 3.14159265f;
-    while (delta > kPi) delta -= 2.0f * kPi;
-    while (delta < -kPi) delta += 2.0f * kPi;
-    // Flip when the ring's axis points away from the camera, so a drag always follows the cursor.
-    const float facing = glm::dot(axes[axis], center - camera.position());
-    const float sign = (facing > 0.0f) ? 1.0f : -1.0f;
-    glm::vec3 nudge(0.0f);
-    nudge[axis] = glm::degrees(delta) * sign;
-    fig->nudgeSelectedBone(nudge);
 }
 
 std::vector<std::pair<std::string, glm::vec3>> Scene::capturePose() const {

@@ -141,6 +141,14 @@ void MenuManager::setupMenus() {
 
     editMenu->addAction(loadDualStateIcon("copy"), "Copy")->setEnabled(false);
     editMenu->addAction("Paste")->setEnabled(false);
+    // Delete removes the SELECTED (outlined) viewport object. The "Del" shown here is a hint,
+    // not a bound QKeySequence: the key itself is handled by the viewport while it has focus
+    // (VulkanWindow::keyPressEvent). A window-level shortcut would hijack Delete from the Asset
+    // Manager's tree and grid, where the key must stay theirs.
+    QAction *deleteAction = editMenu->addAction("Delete Selected Object\tDel");
+    QObject::connect(deleteAction, &QAction::triggered, mainWindow, [this]() {
+        if (viewportWidget) viewportWidget->deleteSelectedObject();
+    });
     editMenu->addSeparator();
 
     QAction *preferencesAction = editMenu->addAction(loadDualStateIcon("preferences"), "Preferences");
@@ -154,12 +162,68 @@ void MenuManager::setupMenus() {
     QMenu *viewMenu = mainWindow->menuBar()->addMenu("View");
 
     // "Show Skeleton": toggle the skeleton overlay (the joint→parent bone lines drawn over the
-    // figure). Off by default — the rotate gizmo is the posing affordance — but joints stay
+    // figure). Off by default — joints are grabbed directly on the figure — but joints stay
     // clickable either way. Kept in sync with the overlay's Skeleton button via the
     // skeletonVisibilityChanged signal. The viewport is registered after setupMenus() (see
     // setViewportWidget), so the action's connections are attached there.
     m_showSkeletonAction = viewMenu->addAction("Show Skeleton");
     m_showSkeletonAction->setCheckable(true);
+    viewMenu->addSeparator();
+
+    // Camera views in Blender's numpad convention, bound APP-WIDE (window shortcuts, so they
+    // work whichever panel has focus — text fields still get their digits and periods: a
+    // focused QLineEdit/spin box accepts the ShortcutOverride for text keys, which parks these).
+    // Each has two bindings: the number-row key, which the shortcut map also matches for the
+    // numpad digit with NumLock ON (it retries a keypad key without its keypad modifier), and
+    // the navigation key the numpad sends with NumLock OFF (End/PageDown/Home/PageUp/Delete),
+    // bound WITH the keypad modifier so the real End/Home/Delete keys stay untouched.
+    struct AxisViewEntry {
+        const char*    label;
+        pose::AxisView view;
+        Qt::Key        rowKey;   // number row / numpad with NumLock on
+        Qt::Key        padKey;   // what the same numpad key sends with NumLock off
+        bool           ctrl;
+    };
+    const AxisViewEntry axisViews[] = {
+        {"Front View",  pose::AxisView::Front,  Qt::Key_1, Qt::Key_End,      false},
+        {"Back View",   pose::AxisView::Back,   Qt::Key_1, Qt::Key_End,      true},
+        {"Right View",  pose::AxisView::Right,  Qt::Key_3, Qt::Key_PageDown, false},
+        {"Left View",   pose::AxisView::Left,   Qt::Key_3, Qt::Key_PageDown, true},
+        {"Top View",    pose::AxisView::Top,    Qt::Key_7, Qt::Key_Home,     false},
+        {"Bottom View", pose::AxisView::Bottom, Qt::Key_7, Qt::Key_Home,     true},
+    };
+    for (const AxisViewEntry& entry : axisViews) {
+        QAction *action = viewMenu->addAction(entry.label);
+        const Qt::KeyboardModifiers mods = entry.ctrl ? Qt::ControlModifier : Qt::NoModifier;
+        action->setShortcuts({QKeySequence(mods | entry.rowKey),
+                              QKeySequence(mods | Qt::KeypadModifier | entry.padKey)});
+        const pose::AxisView view = entry.view;
+        QObject::connect(action, &QAction::triggered, mainWindow, [this, view]() {
+            if (viewportWidget) viewportWidget->setAxisView(view);
+        });
+    }
+    viewMenu->addSeparator();
+    QAction *flipViewAction = viewMenu->addAction("Flip View");
+    flipViewAction->setShortcuts({QKeySequence(Qt::Key_9),
+                                  QKeySequence(Qt::KeypadModifier | Qt::Key_PageUp)});
+    QObject::connect(flipViewAction, &QAction::triggered, mainWindow, [this]() {
+        if (viewportWidget) viewportWidget->flipView();
+    });
+    QAction *frameSelectedAction = viewMenu->addAction("Frame Selected");
+    frameSelectedAction->setShortcuts({QKeySequence(Qt::Key_Period),
+                                       QKeySequence(Qt::KeypadModifier | Qt::Key_Delete),
+                                       QKeySequence(Qt::KeypadModifier | Qt::Key_Comma)});
+    QObject::connect(frameSelectedAction, &QAction::triggered, mainWindow, [this]() {
+        if (viewportWidget) viewportWidget->frameSelected();
+    });
+    // Home View = the viewport's Home button: the default perspective three-quarter framing.
+    // On 5 — the centre of the numpad's view cluster (numpad 5 sends Clear with NumLock off).
+    QAction *homeViewAction = viewMenu->addAction("Home View");
+    homeViewAction->setShortcuts({QKeySequence(Qt::Key_5),
+                                  QKeySequence(Qt::KeypadModifier | Qt::Key_Clear)});
+    QObject::connect(homeViewAction, &QAction::triggered, mainWindow, [this]() {
+        if (viewportWidget) viewportWidget->resetView();
+    });
 
     // =========================================================================
     // HELP MENU — documentation, support links, and the About dialog

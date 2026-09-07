@@ -1336,21 +1336,6 @@ void Model::unpinAllBones() {
     std::fill(m_bonePinned.begin(), m_bonePinned.end(), 0);
 }
 
-std::vector<glm::vec3> Model::activeSupportHull() const {
-    std::vector<glm::vec3> out;
-    if (m_ikRig && m_ikRig->dragActive()) {
-        // Hull points are model-space XZ at the model-space floor height (the world floor
-        // y = 0 sits at -ty once the transform grounds the figure); through the transform
-        // they land ON the world floor.
-        const float floorY = -m_transform[3][1];
-        for (const glm::vec2& h : m_ikRig->supportHull()) {
-            const glm::vec3 w(m_transform * glm::vec4(h.x, floorY, h.y, 1.0f));
-            out.emplace_back(w.x, 0.0f, w.z);
-        }
-    }
-    return out;
-}
-
 std::vector<int> Model::activeContactPins() const {
     std::vector<int> out;
     if (m_ikRig && m_ikRig->dragActive()) {

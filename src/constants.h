@@ -70,6 +70,12 @@ namespace Constants {
     inline constexpr const char* COLOR_TOOLTIP_ACCENT = "#5b87cc"; // Blue extension text
     inline constexpr const char* COLOR_TOOLTIP_MUTED  = "#888888"; // Grey path text
 
+    // Separator lines — one grey for every divider drawn in C++ (the HDRI menu's category
+    // rules) AND, by value, the QSS ones (QMenu::separator in _menumanager.qss, the Asset
+    // Manager's tree/search dividers in _assetmanager.qss): a clearly visible mid grey, since a
+    // near-black hairline vanishes against the app's dark surfaces. Change all three together.
+    inline constexpr const char* COLOR_SEPARATOR = "#6a6b6e";
+
     // =========================================================================
     // TIMING & DELAYS
     // =========================================================================

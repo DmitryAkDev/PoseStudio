@@ -60,6 +60,15 @@ struct PipelineConfig {
     // their blending can't contaminate the mask — blend factors still use the shader's src alpha,
     // only the framebuffer alpha WRITE is masked off.
     bool  colorWriteAlpha    = true;
+    // RGB writes off = a depth-only draw through a colour pass: the hidden-line shade mode's
+    // surface fill lays down depth (so the surface occludes the grid and the wires behind it)
+    // while the framebuffer keeps the viewport's clear colour.
+    bool  colorWriteRgb      = true;
+
+    // Wireframe: rasterize each triangle as its three edges instead of filling it. Needs the
+    // fillModeNonSolid device feature (VulkanContext enables it when the device has it — check
+    // VulkanContext::supportsWireframe() before building a LINE pipeline).
+    VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL;
 
     // Colour attachments in the target render pass. The HDR scene pass has TWO: attachment 0 is
     // the (SSS-blurred) diffuse scene, attachment 1 the SPECULAR the blur must never smear

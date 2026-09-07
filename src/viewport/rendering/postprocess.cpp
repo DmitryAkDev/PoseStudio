@@ -22,16 +22,21 @@ namespace {
 //   bright:    x = threshold
 //   blur:      xy = texel size, zw = blur direction
 //   sss:       xy = texel size, zw = blur direction (H then V; V adds the spec attachment back)
-//   composite: x = tonemap (0/1), y = bloom strength, z = bloom on (0/1)
+//   composite: x = tonemap (0/1), y = bloom strength, z = bloom on (0/1),
+//              w = selection-outline width in pixels (0 = none); outline.rgb = its linear colour
+// The bright/blur/sss shaders declare only the first vec4 — a shader block may be a prefix of
+// the pipeline's push range.
 struct PostPush {
     float params[4];
+    float outline[4];
 };
 
 } // namespace
 
 PostProcess::PostProcess(VulkanContext& context, VkRenderPass swapchainRenderPass,
                          const VkDescriptorImageInfo& hdrResolve,
-                         const VkDescriptorImageInfo& hdrSpecResolve, VkExtent2D extent,
+                         const VkDescriptorImageInfo& hdrSpecResolve,
+                         const VkDescriptorImageInfo& outlineMask, VkExtent2D extent,
                          const std::vector<char>& fullscreenVertSpirv,
                          const std::vector<char>& brightFragSpirv,
                          const std::vector<char>& blurFragSpirv,
@@ -92,8 +97,8 @@ PostProcess::PostProcess(VulkanContext& context, VkRenderPass swapchainRenderPas
     samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     VK_CHECK(vkCreateSampler(device, &samplerInfo, nullptr, &m_sampler));
 
-    // --- Descriptors: one 2-sampler layout, six sets (bright/blurH/blurV/sssH/sssV/composite). --
-    std::array<VkDescriptorSetLayoutBinding, 2> bindings{};
+    // --- Descriptors: one 3-sampler layout, six sets (bright/blurH/blurV/sssH/sssV/composite). --
+    std::array<VkDescriptorSetLayoutBinding, 3> bindings{};
     for (uint32_t i = 0; i < bindings.size(); ++i) {
         bindings[i].binding = i;
         bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -106,7 +111,7 @@ PostProcess::PostProcess(VulkanContext& context, VkRenderPass swapchainRenderPas
     layoutInfo.pBindings = bindings.data();
     VK_CHECK(vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &m_setLayout));
 
-    VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 12};
+    VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 18};
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolInfo.poolSizeCount = 1;
@@ -151,7 +156,7 @@ PostProcess::PostProcess(VulkanContext& context, VkRenderPass swapchainRenderPas
         m_context, swapchainRenderPass, fullscreenVertSpirv, compositeFragSpirv, postConfig);
 
     createTargets();
-    updateDescriptors(hdrResolve, hdrSpecResolve);
+    updateDescriptors(hdrResolve, hdrSpecResolve, outlineMask);
 }
 
 PostProcess::~PostProcess() {
@@ -176,12 +181,13 @@ PostProcess::~PostProcess() {
 }
 
 void PostProcess::resize(VkExtent2D extent, const VkDescriptorImageInfo& hdrResolve,
-                         const VkDescriptorImageInfo& hdrSpecResolve) {
+                         const VkDescriptorImageInfo& hdrSpecResolve,
+                         const VkDescriptorImageInfo& outlineMask) {
     m_extent = extent;
     m_hdrResolveView = hdrResolve.imageView;
     destroyTargets();
     createTargets();
-    updateDescriptors(hdrResolve, hdrSpecResolve);
+    updateDescriptors(hdrResolve, hdrSpecResolve, outlineMask);
 }
 
 void PostProcess::createTargets() {
@@ -298,7 +304,8 @@ void PostProcess::destroyTargets() {
 }
 
 void PostProcess::updateDescriptors(const VkDescriptorImageInfo& hdrResolve,
-                                    const VkDescriptorImageInfo& hdrSpecResolve) {
+                                    const VkDescriptorImageInfo& hdrSpecResolve,
+                                    const VkDescriptorImageInfo& outlineMask) {
     const auto imageInfo = [&](const BloomTarget& target) {
         VkDescriptorImageInfo info{};
         info.sampler = m_sampler;
@@ -311,27 +318,33 @@ void PostProcess::updateDescriptors(const VkDescriptorImageInfo& hdrResolve,
     const VkDescriptorImageInfo sssInfo = imageInfo(m_sssScratch);
 
     // (set, binding, image): bright reads HDR; blurH reads A; blurV reads B; composite reads
-    // HDR + A; sssH reads HDR; sssV reads the SSS scratch + the SPECULAR resolve (added back
-    // after the blur — the blur must never smear glints). Unused second bindings get a duplicate
-    // write so every declared binding is valid.
+    // HDR + A + the selection-outline mask; sssH reads HDR; sssV reads the SSS scratch + the
+    // SPECULAR resolve (added back after the blur — the blur must never smear glints). Unused
+    // bindings get a duplicate write so every declared binding is valid.
     struct Entry {
         VkDescriptorSet              set;
         uint32_t                     binding;
         const VkDescriptorImageInfo* info;
     };
-    const std::array<Entry, 12> entries{{{m_brightSet, 0, &hdrResolve},
+    const std::array<Entry, 18> entries{{{m_brightSet, 0, &hdrResolve},
                                          {m_brightSet, 1, &hdrResolve},
+                                         {m_brightSet, 2, &hdrResolve},
                                          {m_blurHSet, 0, &aInfo},
                                          {m_blurHSet, 1, &aInfo},
+                                         {m_blurHSet, 2, &aInfo},
                                          {m_blurVSet, 0, &bInfo},
                                          {m_blurVSet, 1, &bInfo},
+                                         {m_blurVSet, 2, &bInfo},
                                          {m_compositeSet, 0, &hdrResolve},
                                          {m_compositeSet, 1, &aInfo},
+                                         {m_compositeSet, 2, &outlineMask},
                                          {m_sssHSet, 0, &hdrResolve},
                                          {m_sssHSet, 1, &hdrResolve},
+                                         {m_sssHSet, 2, &hdrResolve},
                                          {m_sssVSet, 0, &sssInfo},
-                                         {m_sssVSet, 1, &hdrSpecResolve}}};
-    std::array<VkWriteDescriptorSet, 12> writes{};
+                                         {m_sssVSet, 1, &hdrSpecResolve},
+                                         {m_sssVSet, 2, &sssInfo}}};
+    std::array<VkWriteDescriptorSet, 18> writes{};
     for (std::size_t i = 0; i < entries.size(); ++i) {
         writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[i].dstSet = entries[i].set;
@@ -402,9 +415,11 @@ void PostProcess::recordBloom(VkCommandBuffer cmd) {
     runFullscreenPass(cmd, m_bloomA.framebuffer, m_bloomExtent, *m_blurPipeline, m_blurVSet, pushV);
 }
 
-void PostProcess::recordComposite(VkCommandBuffer cmd, bool tonemap, bool bloom) {
+void PostProcess::recordComposite(VkCommandBuffer cmd, bool tonemap, bool bloom,
+                                  float outlineWidthPx) {
     constexpr float kBloomStrength = 0.35f;
-    const PostPush push{{tonemap ? 1.0f : 0.0f, kBloomStrength, bloom ? 1.0f : 0.0f, 0.0f}};
+    const PostPush push{{tonemap ? 1.0f : 0.0f, kBloomStrength, bloom ? 1.0f : 0.0f, outlineWidthPx},
+                        {m_outlineColor[0], m_outlineColor[1], m_outlineColor[2], 0.0f}};
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_compositePipeline->handle());
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_compositePipeline->layout(), 0,
                             1, &m_compositeSet, 0, nullptr);
