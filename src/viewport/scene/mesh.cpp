@@ -6,7 +6,6 @@
 #include "mesh.h"
 
 #include "camera.h" // Ray
-#include "ikrig.h"  // full-body IK orchestrator
 #include "modeldata.h"
 #include "vertex.h"
 #include "vulkancommands.h"
@@ -25,7 +24,6 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
-#include <fstream>
 #include <limits>
 #include <unordered_map>
 #include <unordered_set>
@@ -34,42 +32,6 @@
 namespace pose {
 
 namespace {
-
-// Builds a rotation matrix from Euler angles (degrees) composed in @p order (e.g. "YZX"), matching
-// the figure format's per-joint rotation_order. Each listed axis rotation is applied in turn.
-glm::mat4 eulerMatrix(const glm::vec3& degrees, const std::string& order) {
-    glm::mat4 m(1.0f);
-    for (const char c : order) {
-        float angle = 0.0f;
-        glm::vec3 axis(0.0f);
-        if (c == 'X' || c == 'x') {
-            angle = degrees.x;
-            axis = glm::vec3(1.0f, 0.0f, 0.0f);
-        } else if (c == 'Y' || c == 'y') {
-            angle = degrees.y;
-            axis = glm::vec3(0.0f, 1.0f, 0.0f);
-        } else if (c == 'Z' || c == 'z') {
-            angle = degrees.z;
-            axis = glm::vec3(0.0f, 0.0f, 1.0f);
-        } else {
-            continue;
-        }
-        m = m * glm::rotate(glm::mat4(1.0f), glm::radians(angle), axis);
-    }
-    return m;
-}
-
-// Pose-snapshot rows carrying a bone's pose TRANSLATION rather than a rotation are keyed
-// "@trans:<boneName>" — flowing through the existing (name, vec3) snapshot/undo/.pose-file
-// machinery unchanged (bone names never contain '@', and readers ignore unknown names, so old
-// files load and old builds skip the rows). Written by FBIK for the skeleton root: rotations
-// alone can't move it, and a feet-pinned crouch must drop the hip.
-constexpr char kPoseTranslationPrefix[] = "@trans:";
-// Likewise "@pin:<boneName>" rows carry the user's joint PINS (value unused, written as 1 0 0):
-// a pin is part of the pose snapshot, so pin toggles are undoable, a drag's undo restores the
-// pins of that moment, and a .pose file reproduces its pins. Old builds skip the rows; a file
-// without them loads with no pins.
-constexpr char kPosePinPrefix[] = "@pin:";
 
 // Evaluates a corrective driver spline at @p x: a Catmull-Rom Hermite through the (ascending-in-x)
 // knots, clamped flat outside the knot range and — within each segment — clamped to that segment's
@@ -406,90 +368,41 @@ Model::Model(VulkanContext& context, const ModelData& data, VkDescriptorSetLayou
         buildRuntimeCorrectives(data, perMeshBaseIndex);
     }
 
-    // Build the runtime skeleton from the model's bones (empty for a static model). inverseBind and
-    // localBind are precomputed; computeSkinMatrices() then fills the joint buffer — every skin
-    // matrix is identity at bind pose, so a freshly imported model draws exactly as its geometry.
-    m_bones.resize(data.bones.size());
+    // The armature — the runtime skeleton + pose (see armature.h) — built from the model's bones
+    // (empty for a static model: one identity joint). Bind transforms are translation-only, so
+    // each bone's local rest offset is the difference of the global rest positions.
+    std::vector<ArmatureBone> armatureBones(data.bones.size());
     for (std::size_t i = 0; i < data.bones.size(); ++i) {
         const ModelBone& src = data.bones[i];
-        GpuBone& bone = m_bones[i];
-        bone.parent = src.parent;
-        bone.inverseBind = glm::inverse(src.bindGlobal);
-        bone.localBind = (src.parent >= 0 && src.parent < static_cast<int>(data.bones.size()))
-                             ? glm::inverse(data.bones[src.parent].bindGlobal) * src.bindGlobal
-                             : src.bindGlobal;
-        bone.orient = eulerMatrix(src.orientation, "XYZ"); // rest orientation frame for pose rotations
-        bone.invOrient = glm::inverse(bone.orient);
-        bone.rotationOrder = src.rotationOrder;
-        bone.rotMin = src.rotationMin;
-        bone.rotMax = src.rotationMax;
-        bone.rotLimited = src.rotationLimited;
-        bone.poseLocal = bone.localBind;
-        m_boneIndex.emplace(src.name, static_cast<int>(i));
-        m_boneNames.push_back(src.name);
+        ArmatureBone& dst = armatureBones[i];
+        dst.name = src.name;
+        dst.parent = src.parent;
+        const glm::vec3 parentGlobal =
+            (src.parent >= 0 && src.parent < static_cast<int>(data.bones.size()))
+                ? glm::vec3(data.bones[static_cast<std::size_t>(src.parent)].bindGlobal[3])
+                : glm::vec3(0.0f);
+        dst.localBindTranslation = glm::vec3(src.bindGlobal[3]) - parentGlobal;
+        dst.orientation = src.orientation;
+        dst.rotationOrder = src.rotationOrder;
+        dst.rotationMin = src.rotationMin;
+        dst.rotationMax = src.rotationMax;
+        dst.rotationLimited = src.rotationLimited;
     }
-    m_boneEuler.assign(m_bones.size(), glm::vec3(0.0f));
-    m_boneTranslation.assign(m_bones.size(), glm::vec3(0.0f));
-    m_boneWorldPos.assign(m_bones.size(), glm::vec3(0.0f));
-
-    // Highlight twins (see m_highlightTwin): a child whose two swing axes are LOCKED is a twist
-    // bone — pair it with its bend parent both ways. First twist child wins for the parent.
-    m_highlightTwin.assign(m_bones.size(), -1);
-    for (std::size_t i = 0; i < m_bones.size(); ++i) {
-        const GpuBone& b = m_bones[i];
-        if (b.parent < 0 || b.parent >= static_cast<int>(m_bones.size())) {
-            continue;
-        }
-        int lockedAxes = 0;
-        for (int a = 0; a < 3; ++a) {
-            if (b.rotLimited[a] && (b.rotMax[a] - b.rotMin[a]) < 2.0f) {
-                ++lockedAxes;
-            }
-        }
-        const auto parent = static_cast<std::size_t>(b.parent);
-        if (lockedAxes == 2 && m_highlightTwin[parent] < 0) {
-            m_highlightTwin[parent] = static_cast<int>(i);
-            m_highlightTwin[i] = b.parent;
-        }
-    }
-
+    m_armature.build(armatureBones);
     // Debug hook: POSESTUDIO_DUMP_SKELETON=<path> dumps the imported skeleton (one bone per
-    // line) so the FBIK harness can run its drag-loop tests against REAL figure rigs instead of
-    // synthetic approximations. No-op unless the environment variable is set.
+    // line) so the IK harness (tools/ikharness/) can run its drag-loop tests against REAL figure
+    // rigs instead of synthetic approximations. No-op unless the environment variable is set.
     if (const char* dumpPath = std::getenv("POSESTUDIO_DUMP_SKELETON");
-        dumpPath != nullptr && !m_bones.empty()) {
-        std::ofstream dump(dumpPath);
-        if (dump) {
-            for (std::size_t i = 0; i < m_bones.size(); ++i) {
-                const GpuBone& b = m_bones[i];
-                const glm::vec3 t(b.localBind[3]);
-                // name parent order tx ty tz  (orient as 3x3 column-major)  min... max... limited
-                dump << m_boneNames[i] << ' ' << b.parent << ' ' << b.rotationOrder << ' ' << t.x
-                     << ' ' << t.y << ' ' << t.z;
-                for (int c = 0; c < 3; ++c) {
-                    for (int r = 0; r < 3; ++r) {
-                        dump << ' ' << b.orient[c][r];
-                    }
-                }
-                dump << ' ' << b.rotMin.x << ' ' << b.rotMin.y << ' ' << b.rotMin.z << ' '
-                     << b.rotMax.x << ' ' << b.rotMax.y << ' ' << b.rotMax.z << ' '
-                     << (b.rotLimited.x ? 1 : 0) << ' ' << (b.rotLimited.y ? 1 : 0) << ' '
-                     << (b.rotLimited.z ? 1 : 0) << '\n';
-            }
-        }
+        dumpPath != nullptr && m_armature.hasSkeleton()) {
+        m_armature.dump(dumpPath);
     }
-    m_poseGlobal.assign(m_bones.size(), glm::mat4(1.0f));
-    m_jointCount = static_cast<uint32_t>(m_bones.empty() ? 1 : m_bones.size());
+    m_jointCount = m_armature.jointCount();
 
-    // Host-mapped storage buffers of skinning DUAL QUATERNIONS (2 vec4 per joint — see the
-    // member note in mesh.h) — ONE PER FRAME IN FLIGHT (a single shared buffer raced the GPU and
-    // tore skinned frames). Each frame slot gets its own buffer + set-2 descriptor;
+    // Host-mapped storage buffers of skinning DUAL QUATERNIONS (2 vec4 per joint — see
+    // Armature::skinDualQuats) — ONE PER FRAME IN FLIGHT (a single shared buffer raced the GPU
+    // and tore skinned frames). Each frame slot gets its own buffer + set-2 descriptor;
     // uploadJointsIfDirty() fills the current slot's buffer at record time, when that slot's
     // fence guarantees the GPU is done with it.
-    m_skinDualQuats.assign(std::size_t{2} * m_jointCount, glm::vec4(0.0f));
-    for (uint32_t j = 0; j < m_jointCount; ++j) {
-        m_skinDualQuats[2 * j] = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f); // identity rotation
-    }
     std::array<VkDescriptorSetLayout, kMaxFramesInFlight> jointLayouts;
     jointLayouts.fill(jointSetLayout);
     VkDescriptorSetAllocateInfo jointAlloc{};
@@ -520,178 +433,33 @@ Model::Model(VulkanContext& context, const ModelData& data, VkDescriptorSetLayou
         jointWrite.pBufferInfo = &jointInfo;
         vkUpdateDescriptorSets(m_context.device(), 1, &jointWrite, 0, nullptr);
     }
-
-    computeSkinMatrices(); // bind pose (all skin matrices identity) until a caller poses a bone
 }
 
 void Model::uploadJointsIfDirty(uint32_t frameIndex) {
-    if (m_skinDualQuats.empty() || frameIndex >= static_cast<uint32_t>(kMaxFramesInFlight) ||
-        m_jointUploaded[frameIndex] == m_skinVersion) {
+    const std::vector<glm::vec4>& quats = m_armature.skinDualQuats();
+    if (quats.empty() || frameIndex >= static_cast<uint32_t>(kMaxFramesInFlight) ||
+        m_jointUploaded[frameIndex] == m_armature.skinVersion()) {
         return;
     }
     auto* dst = static_cast<glm::vec4*>(m_jointBuffers[frameIndex].mappedData());
     if (dst == nullptr) {
         return;
     }
-    std::memcpy(dst, m_skinDualQuats.data(), m_skinDualQuats.size() * sizeof(glm::vec4));
-    m_jointUploaded[frameIndex] = m_skinVersion;
-}
-
-void Model::computeSkinMatrices() {
-    // CPU-side only: the skinning data lands in m_skinDualQuats and reaches the GPU per frame in
-    // flight via uploadJointsIfDirty() at record time (see the member note in mesh.h — writing a
-    // live GPU buffer here raced in-flight frames and tore skinned geometry).
-    if (m_skinDualQuats.empty()) {
-        return; // no drawable meshes: the constructor early-returned before creating GPU state
-    }
-    ++m_skinVersion;
-    glm::vec4* dst = m_skinDualQuats.data();
-    if (m_bones.empty()) {
-        dst[0] = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f); // static model: one identity joint
-        dst[1] = glm::vec4(0.0f);
-        return;
-    }
-    // Accumulate each bone's posed global transform down the hierarchy (parents precede children),
-    // then convert the rigid skinTransform = poseGlobal · inverseBind into a unit dual quaternion
-    // (real = rotation stored (x,y,z,w); dual = 0.5·(0,t)·real). The transform is exactly rigid —
-    // binds are translation-only and every pose factor is a rotation or translation — so the
-    // conversion is lossless. m_poseGlobal is a member scratch buffer — this runs on every
-    // drag-move while posing, so it mustn't allocate per call.
-    std::vector<glm::mat4>& poseGlobal = m_poseGlobal;
-    for (std::size_t i = 0; i < m_bones.size(); ++i) {
-        const GpuBone& bone = m_bones[i];
-        poseGlobal[i] =
-            (bone.parent >= 0) ? poseGlobal[bone.parent] * bone.poseLocal : bone.poseLocal;
-        const glm::mat4 skin = poseGlobal[i] * bone.inverseBind;
-        const glm::quat q = glm::normalize(glm::quat_cast(glm::mat3(skin)));
-        const glm::vec3 t = glm::vec3(skin[3]);
-        const glm::quat d = glm::quat(0.0f, t.x, t.y, t.z) * q; // (0,t)·q
-        dst[2 * i] = glm::vec4(q.x, q.y, q.z, q.w);
-        dst[2 * i + 1] = 0.5f * glm::vec4(d.x, d.y, d.z, d.w);
-        // The joint's world position (for the posing overlay / picking) = model · poseGlobal · origin.
-        m_boneWorldPos[i] = glm::vec3(m_transform * poseGlobal[i][3]);
-    }
-}
-
-void Model::clampBoneEuler(int index) {
-    if (index < 0 || index >= static_cast<int>(m_bones.size())) {
-        return;
-    }
-    const GpuBone& bone = m_bones[static_cast<std::size_t>(index)];
-    glm::vec3& e = m_boneEuler[static_cast<std::size_t>(index)];
-    for (int a = 0; a < 3; ++a) {
-        if (bone.rotLimited[a]) {
-            e[a] = glm::clamp(e[a], bone.rotMin[a], bone.rotMax[a]);
-        }
-    }
-}
-
-void Model::recomposePoseLocal(std::size_t index) {
-    GpuBone& bone = m_bones[index];
-    bone.poseLocal = bone.localBind * bone.orient *
-                     eulerMatrix(m_boneEuler[index], bone.rotationOrder) * bone.invOrient;
-    // Pose translation adds in the parent frame (only ever non-zero where FBIK moved the root).
-    bone.poseLocal[3] += glm::vec4(m_boneTranslation[index], 0.0f);
-}
-
-void Model::applyBoneEuler(int index) {
-    if (index < 0 || index >= static_cast<int>(m_bones.size())) {
-        return;
-    }
-    clampBoneEuler(index); // keep the joint within its anatomical range of motion
-    recomposePoseLocal(static_cast<std::size_t>(index));
-    computeSkinMatrices();
-}
-
-void Model::nudgeSelectedBone(const glm::vec3& deltaEulerDegrees) {
-    if (m_selectedBone < 0 || m_selectedBone >= static_cast<int>(m_bones.size())) {
-        return;
-    }
-    m_boneEuler[static_cast<std::size_t>(m_selectedBone)] += deltaEulerDegrees;
-    applyBoneEuler(m_selectedBone);
-}
-
-std::vector<std::pair<std::string, glm::vec3>> Model::capturePose() const {
-    std::vector<std::pair<std::string, glm::vec3>> pose;
-    for (std::size_t i = 0; i < m_bones.size(); ++i) {
-        const glm::vec3& e = m_boneEuler[i];
-        if (e.x != 0.0f || e.y != 0.0f || e.z != 0.0f) {
-            pose.emplace_back(m_boneNames[i], e);
-        }
-        const glm::vec3& t = m_boneTranslation[i];
-        if (t.x != 0.0f || t.y != 0.0f || t.z != 0.0f) {
-            pose.emplace_back(kPoseTranslationPrefix + m_boneNames[i], t);
-        }
-    }
-    for (std::size_t i = 0; i < m_bonePinned.size() && i < m_bones.size(); ++i) {
-        if (m_bonePinned[i]) {
-            pose.emplace_back(kPosePinPrefix + m_boneNames[i], glm::vec3(1.0f, 0.0f, 0.0f));
-        }
-    }
-    return pose;
-}
-
-void Model::applyPose(const std::vector<std::pair<std::string, glm::vec3>>& pose) {
-    for (glm::vec3& e : m_boneEuler) {
-        e = glm::vec3(0.0f); // reset to bind pose first
-    }
-    for (glm::vec3& t : m_boneTranslation) {
-        t = glm::vec3(0.0f);
-    }
-    m_bonePinned.assign(m_bones.size(), 0); // the snapshot's pins replace the current ones
-    constexpr std::size_t prefixLen = sizeof(kPoseTranslationPrefix) - 1;
-    constexpr std::size_t pinPrefixLen = sizeof(kPosePinPrefix) - 1;
-    for (const auto& [name, value] : pose) {
-        if (name.compare(0, pinPrefixLen, kPosePinPrefix) == 0) {
-            const auto it = m_boneIndex.find(name.substr(pinPrefixLen));
-            if (it != m_boneIndex.end()) {
-                m_bonePinned[static_cast<std::size_t>(it->second)] = 1;
-            }
-            continue;
-        }
-        if (name.compare(0, prefixLen, kPoseTranslationPrefix) == 0) {
-            const auto it = m_boneIndex.find(name.substr(prefixLen));
-            if (it != m_boneIndex.end()) {
-                // SANITIZE: unlike rotations (per-channel clamped below), translations have no
-                // authored limits — a hand-edited/corrupt .pose row could tear a bone meters
-                // off the skeleton or stream-parse to NaN, which poisons the skin matrices.
-                // The engine itself only ever writes modest root offsets; a ±1m box per
-                // component is far beyond any legitimate value.
-                glm::vec3 t = value;
-                if (!std::isfinite(t.x + t.y + t.z)) {
-                    t = glm::vec3(0.0f);
-                }
-                m_boneTranslation[static_cast<std::size_t>(it->second)] =
-                    glm::clamp(t, glm::vec3(-1.0f), glm::vec3(1.0f));
-            }
-            continue;
-        }
-        const auto it = m_boneIndex.find(name);
-        if (it != m_boneIndex.end()) {
-            m_boneEuler[static_cast<std::size_t>(it->second)] = value;
-        }
-    }
-    // Recompute every bone's posed local transform from its (limit-clamped) Euler, then the skin
-    // matrices once. Clamping here too keeps a loaded pose within the figure's range of motion.
-    for (std::size_t i = 0; i < m_bones.size(); ++i) {
-        clampBoneEuler(static_cast<int>(i));
-        recomposePoseLocal(i);
-    }
-    computeSkinMatrices();
-    refreshCorrectives(); // re-morph for the restored pose
+    const std::size_t bytes =
+        std::min(quats.size(), std::size_t{2} * m_jointCount) * sizeof(glm::vec4);
+    std::memcpy(dst, quats.data(), bytes);
+    m_jointUploaded[frameIndex] = m_armature.skinVersion();
 }
 
 void Model::setBoneRotation(const std::string& boneName, const glm::vec3& eulerDegrees) {
-    const auto it = m_boneIndex.find(boneName);
-    if (it == m_boneIndex.end()) {
-        return;
+    if (m_armature.setBoneRotation(boneName, eulerDegrees)) {
+        refreshCorrectives();
     }
-    // applyBoneEuler poses in the joint's oriented frame: localBind · orient · R(euler, order) ·
-    // orient⁻¹. At rest (euler 0) orient·orient⁻¹ cancels, leaving the bind pose; a rotation then acts
-    // about the joint's true axes (an elbow bends anatomically), composed in its rotation order.
-    m_boneEuler[static_cast<std::size_t>(it->second)] = eulerDegrees;
-    applyBoneEuler(it->second);
-    refreshCorrectives();
+}
+
+void Model::applyPose(const std::vector<std::pair<std::string, glm::vec3>>& pose) {
+    m_armature.applyPose(pose);
+    refreshCorrectives(); // re-morph for the restored pose
 }
 
 void Model::buildRuntimeCorrectives(const ModelData& data,
@@ -776,9 +544,9 @@ float Model::evalCorrectiveWeight(std::size_t correctiveIndex) const {
             switch (op.kind) {
                 case CorrectiveOp::Kind::PushRotation: {
                     float angle = 0.0f;
-                    const auto it = m_boneIndex.find(op.bone);
-                    if (it != m_boneIndex.end()) {
-                        angle = m_boneEuler[static_cast<std::size_t>(it->second)][op.axis];
+                    const int bone = m_armature.boneIndex(op.bone);
+                    if (bone >= 0) {
+                        angle = m_armature.boneEuler(static_cast<std::size_t>(bone))[op.axis];
                     }
                     st.push_back(angle);
                     break;
@@ -897,11 +665,13 @@ void Model::record(VkCommandBuffer cmd, VkPipelineLayout layout, bool transparen
     uploadJointsIfDirty(frameIndex);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 2, 1,
                             &m_jointSets[frameIndex], 0, nullptr);
-    const int twin = selectedHighlightTwin();
+    const glm::mat4& transform = m_armature.transform();
+    const int selected = m_armature.selectedBone();
+    const int twin = m_armature.selectedHighlightTwin();
     if (!transparentPass) {
         for (const Mesh& mesh : m_meshes) {
             if (!mesh.isTransparent()) {
-                mesh.record(cmd, layout, m_transform, MeshDrawKind::Opaque, m_selectedBone, twin);
+                mesh.record(cmd, layout, transform, MeshDrawKind::Opaque, selected, twin);
             }
         }
         return;
@@ -911,7 +681,7 @@ void Model::record(VkCommandBuffer cmd, VkPipelineLayout layout, bool transparen
     std::vector<std::pair<float, const Mesh*>> order;
     for (const Mesh& mesh : m_meshes) {
         if (mesh.isTransparent()) {
-            const glm::vec3 c = glm::vec3(m_transform * glm::vec4(mesh.centroid(), 1.0f));
+            const glm::vec3 c = glm::vec3(transform * glm::vec4(mesh.centroid(), 1.0f));
             const glm::vec3 d = c - cameraPos;
             order.emplace_back(glm::dot(d, d), &mesh);
         }
@@ -921,14 +691,8 @@ void Model::record(VkCommandBuffer cmd, VkPipelineLayout layout, bool transparen
                   return a.first > b.first; // farthest first
               });
     for (const auto& [distSq, mesh] : order) {
-        mesh->record(cmd, layout, m_transform, MeshDrawKind::Transparent, m_selectedBone, twin);
+        mesh->record(cmd, layout, transform, MeshDrawKind::Transparent, selected, twin);
     }
-}
-
-int Model::selectedHighlightTwin() const {
-    return (m_selectedBone >= 0 && m_selectedBone < static_cast<int>(m_highlightTwin.size()))
-               ? m_highlightTwin[static_cast<std::size_t>(m_selectedBone)]
-               : -1;
 }
 
 void Model::recordWire(VkCommandBuffer cmd, VkPipelineLayout layout, uint32_t frameIndex) {
@@ -938,9 +702,10 @@ void Model::recordWire(VkCommandBuffer cmd, VkPipelineLayout layout, uint32_t fr
     uploadJointsIfDirty(frameIndex);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 2, 1,
                             &m_jointSets[frameIndex], 0, nullptr);
-    const int twin = selectedHighlightTwin();
+    const int twin = m_armature.selectedHighlightTwin();
     for (const Mesh& mesh : m_meshes) { // every mesh: cards and shells are geometry too
-        mesh.record(cmd, layout, m_transform, MeshDrawKind::Wire, m_selectedBone, twin);
+        mesh.record(cmd, layout, m_armature.transform(), MeshDrawKind::Wire,
+                    m_armature.selectedBone(), twin);
     }
 }
 
@@ -953,7 +718,7 @@ void Model::recordDepthFill(VkCommandBuffer cmd, VkPipelineLayout layout, uint32
                             &m_jointSets[frameIndex], 0, nullptr);
     for (const Mesh& mesh : m_meshes) {
         if (!mesh.isTransparent()) {
-            mesh.record(cmd, layout, m_transform, MeshDrawKind::DepthOnly);
+            mesh.record(cmd, layout, m_armature.transform(), MeshDrawKind::DepthOnly);
         }
     }
 }
@@ -972,7 +737,7 @@ void Model::recordShadow(VkCommandBuffer cmd, VkPipelineLayout layout,
                             &m_jointSets[frameIndex], 0, nullptr);
     ShadowPushConstants push{};
     push.viewProj = lightViewProj;
-    push.model = m_transform;
+    push.model = m_armature.transform();
     vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), &push);
     for (const Mesh& mesh : m_meshes) {
         if (!mesh.isTransparent()) { // no alpha in this pass — cards/shells would cast solid shadows
@@ -993,7 +758,7 @@ void Model::recordSilhouette(VkCommandBuffer cmd, VkPipelineLayout layout,
                             &m_jointSets[frameIndex], 0, nullptr);
     ShadowPushConstants push{};
     push.viewProj = viewProj;
-    push.model = m_transform;
+    push.model = m_armature.transform();
     vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), &push);
     for (const Mesh& mesh : m_meshes) {
         if (!mesh.hasOpacityMask()) { // a cutout card's real shape lives in a map this pass can't read
@@ -1014,7 +779,7 @@ bool Model::worldBounds(glm::vec3& outMin, glm::vec3& outMax) const {
         const glm::vec3 corner((i & 1) ? m_boundsMax.x : m_boundsMin.x,
                                (i & 2) ? m_boundsMax.y : m_boundsMin.y,
                                (i & 4) ? m_boundsMax.z : m_boundsMin.z);
-        const glm::vec3 world = glm::vec3(m_transform * glm::vec4(corner, 1.0f));
+        const glm::vec3 world = glm::vec3(m_armature.transform() * glm::vec4(corner, 1.0f));
         outMin = glm::min(outMin, world);
         outMax = glm::max(outMax, world);
     }
@@ -1023,11 +788,12 @@ bool Model::worldBounds(glm::vec3& outMin, glm::vec3& outMax) const {
     // map's edge showed as transient dark bands/streaks while posing. Union in the posed bone
     // positions, padded by a flesh margin (the skin extends past the joints — the skull above
     // the head joint, toes past the toe joints). Static models are exact via the box alone.
-    if (!m_bones.empty()) {
+    if (m_armature.hasSkeleton()) {
         constexpr float kFleshMargin = 0.25f;
         glm::vec3 boneMin(std::numeric_limits<float>::max());
         glm::vec3 boneMax(std::numeric_limits<float>::lowest());
-        for (const glm::vec3& p : m_boneWorldPos) {
+        for (std::size_t i = 0; i < m_armature.boneCount(); ++i) {
+            const glm::vec3& p = m_armature.boneWorldPosition(i);
             boneMin = glm::min(boneMin, p);
             boneMax = glm::max(boneMax, p);
         }
@@ -1041,7 +807,7 @@ bool Model::intersectRay(const Ray& ray, float& tOut) const {
     if (!m_hasBounds) {
         return false;
     }
-    if (!m_bones.empty() && m_boneWorldPos.size() == m_bones.size()) {
+    if (m_armature.hasSkeleton()) {
         // A POSED figure is picked against the world-space box of its live joints plus a flesh
         // margin, not its bind box: full-body IK walks and crouches move the whole figure
         // through the hip's pose translation, so after a walk the mesh sat far outside the
@@ -1050,7 +816,8 @@ bool Model::intersectRay(const Ray& ray, float& tOut) const {
         constexpr float kFleshMargin = 0.16f; // metres: the torso's depth around the spine
         glm::vec3 lo(std::numeric_limits<float>::max());
         glm::vec3 hi(std::numeric_limits<float>::lowest());
-        for (const glm::vec3& p : m_boneWorldPos) {
+        for (std::size_t i = 0; i < m_armature.boneCount(); ++i) {
+            const glm::vec3& p = m_armature.boneWorldPosition(i);
             lo = glm::min(lo, p);
             hi = glm::max(hi, p);
         }
@@ -1083,7 +850,7 @@ bool Model::intersectRay(const Ray& ray, float& tOut) const {
     // Transform the ray into local space so we can slab-test the AABB directly (equivalent to an
     // oriented-box test in world space, but cheaper). The transform is affine, so the ray
     // parameter t is preserved — the t we find is the same world-space distance for every model.
-    const glm::mat4 inv = glm::inverse(m_transform);
+    const glm::mat4 inv = glm::inverse(m_armature.transform());
     const glm::vec3 o = glm::vec3(inv * glm::vec4(ray.origin, 1.0f));
     const glm::vec3 d = glm::vec3(inv * glm::vec4(ray.direction, 0.0f));
 
@@ -1122,23 +889,19 @@ bool Model::dropToGround() {
     return true;
 }
 
-void Model::translateY(float dy) {
-    m_transform = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, dy, 0.0f)) * m_transform;
-    computeSkinMatrices(); // refresh the transform-dependent bone world positions (picking/markers)
-}
-
 bool Model::groundGap(float& lowestY) const {
     float minY = std::numeric_limits<float>::max();
-    if (!m_bones.empty() && !m_groundSamples.empty()) {
+    if (m_armature.hasSkeleton() && !m_groundSamples.empty()) {
         // Posed lowest point: CPU-skin every ground sample with the CURRENT pose's skin matrices
-        // (poseGlobal · inverseBind — m_poseGlobal always holds the last computeSkinMatrices
-        // result) and track the world-space minimum. A one-shot ~few-ms walk; corrective deltas
+        // (poseGlobal · inverseBind — the armature's poseGlobal always holds the last pose
+        // update) and track the world-space minimum. A one-shot ~few-ms walk; corrective deltas
         // are ignored (they move contact regions by millimetres at most). Linear matrix blending
         // is fine here even though the GPU skins with dual quaternions: contact regions (feet,
         // knees) are near-single-joint weighted, where LBS and DQS agree exactly.
-        std::vector<glm::mat4> skin(m_bones.size());
-        for (std::size_t i = 0; i < m_bones.size(); ++i) {
-            skin[i] = m_poseGlobal[i] * m_bones[i].inverseBind;
+        const std::size_t boneCount = m_armature.boneCount();
+        std::vector<glm::mat4> skin(boneCount);
+        for (std::size_t i = 0; i < boneCount; ++i) {
+            skin[i] = m_armature.poseGlobal(i) * m_armature.inverseBind(i);
         }
         for (const GroundSample& s : m_groundSamples) {
             const glm::vec4 p(s.pos, 1.0f);
@@ -1149,7 +912,7 @@ bool Model::groundGap(float& lowestY) const {
                     posed += w * glm::vec3(skin[s.joints[j]] * p);
                 }
             }
-            minY = std::min(minY, (m_transform * glm::vec4(posed, 1.0f)).y);
+            minY = std::min(minY, (m_armature.transform() * glm::vec4(posed, 1.0f)).y);
         }
     } else if (m_hasBounds) {
         // Static model: the bind AABB through the transform is exact (it can't pose).
@@ -1157,7 +920,7 @@ bool Model::groundGap(float& lowestY) const {
             const glm::vec3 c((i & 1) ? m_boundsMax.x : m_boundsMin.x,
                               (i & 2) ? m_boundsMax.y : m_boundsMin.y,
                               (i & 4) ? m_boundsMax.z : m_boundsMin.z);
-            minY = std::min(minY, (m_transform * glm::vec4(c, 1.0f)).y);
+            minY = std::min(minY, (m_armature.transform() * glm::vec4(c, 1.0f)).y);
         }
     } else {
         return false; // no geometry to ground

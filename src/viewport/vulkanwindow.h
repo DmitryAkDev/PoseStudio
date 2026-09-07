@@ -17,6 +17,7 @@
 #define VULKANWINDOW_H
 
 #include "scene/camera.h"           // AxisView (the view hotkeys)
+#include "scene/ik/cursorfilter.h"   // IkCursorFilter (the drag target low-pass)
 #include "scene/lightingsettings.h" // stored by value; applied to the renderer once it exists
 #include "scene/shademode.h"        // kDefaultShadeMode
 
@@ -264,9 +265,10 @@ private:
     bool             m_ikSettling = false;
     glm::vec3        m_ikPlanePoint{0.0f};
     glm::vec3        m_ikLastTarget{0.0f};
-    // Low-pass-filtered target actually issued to the solver: raw cursor positions carry pixel
-    // noise even when "held still", and the solve amplifies target jitter into visible trembling.
-    glm::vec3        m_ikSmoothedTarget{0.0f};
+    // The adaptive low-pass the raw cursor target goes through before each solve tick (see
+    // cursorfilter.h): raw cursor positions carry pixel noise even when "held still". Shared
+    // with the IK harness so the app and the tests run the identical loop.
+    IkCursorFilter   m_ikCursorFilter;
     bool             m_ikHasTarget = false;
     // True once a drag's solve has actually CHANGED the pose. A Ctrl+CLICK (select, no motion)
     // must be a no-op: without this gate the release still ran the settle onto the drag's

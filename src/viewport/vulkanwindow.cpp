@@ -155,26 +155,9 @@ VulkanWindow::VulkanWindow(QVulkanInstance* instance, uint32_t apiVersion, QStri
 }
 
 bool VulkanWindow::issueIkTarget() {
-    // ADAPTIVE low-pass on the raw cursor target (see m_ikSmoothedTarget): the smoothing
-    // strength follows how far the smoothed target LAGS the raw one — near-still cursor (the
-    // lag is pixel noise), heavy smoothing kills jitter before it reaches the solver, which
-    // AMPLIFIES it; fast deliberate gesture (the lag is centimeters), the filter opens up and
-    // follows tightly, so smoothing costs almost no lag exactly when the user moves fast. The
-    // old fixed 0.35 charged ~40ms of lag on flicks while passing ~2x the noise on precise
-    // holds. Mirrored in the IK loop harness — keep the constants in sync.
-    // Retuned with the exact drag refinement (Model::refinePins with the drag target): the
-    // whole-body solve no longer amplifies target noise into the hand (the limb fit that
-    // places the hand is locally linear, so noise passes 1:1 - a pixel), so the filter only
-    // has to keep a NEAR-STILL cursor's jitter out (alpha 0.30 at zero lag) and can open all
-    // the way (alpha 1.0 from ~7mm of lag): its steady-state lag at 0.45 m/s drops from ~11mm
-    // to ~3mm, and a fast flick pays nothing.
-    constexpr float kIkAlphaMin = 0.30f;
-    constexpr float kIkAlphaMax = 1.0f;
-    constexpr float kIkAlphaGain = 100.0f; // per meter of lag
-    const float lag = glm::length(m_ikLastTarget - m_ikSmoothedTarget);
-    const float alpha = glm::clamp(kIkAlphaMin + lag * kIkAlphaGain, kIkAlphaMin, kIkAlphaMax);
-    m_ikSmoothedTarget = glm::mix(m_ikSmoothedTarget, m_ikLastTarget, alpha);
-    return m_renderer->dragBoneIkTo(m_ikSmoothedTarget);
+    // The raw cursor target goes through the adaptive low-pass (IkCursorFilter, shared with
+    // the IK harness so the app and the tests run the identical loop) before the solve.
+    return m_renderer->dragBoneIkTo(m_ikCursorFilter.update(m_ikLastTarget));
 }
 
 void VulkanWindow::finishIkSettle() {
@@ -248,7 +231,7 @@ void VulkanWindow::startBench() {
     m_preEditPose = m_renderer->capturePose();
     m_benchStart = m_ikPlanePoint;
     m_ikLastTarget = m_benchStart;
-    m_ikSmoothedTarget = m_benchStart;
+    m_ikCursorFilter.seed(m_benchStart);
     m_ikHasTarget = true;
     m_ikDragging = true;
     m_ikPoseChanged = false;
@@ -967,7 +950,7 @@ void VulkanWindow::mouseMoveEvent(QMouseEvent* event) {
             if (t > 0.0f) {
                 m_ikLastTarget = ray.origin + ray.direction * t;
                 if (!m_ikHasTarget) {
-                    m_ikSmoothedTarget = m_ikLastTarget; // seed the filter at the grab point
+                    m_ikCursorFilter.seed(m_ikLastTarget); // seed the filter at the grab point
                     m_ikHasTarget = true;
                 }
                 // Deliberately NO solve here: the 60 Hz timer is the SOLE caller of

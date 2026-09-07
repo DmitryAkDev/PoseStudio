@@ -75,7 +75,17 @@ constexpr float kOutputDeadband = 8e-4f;
 // least kStepMinDistance. The swing is an eased glide of the pin target with a sine lift arc,
 // paced at ~kStepSpeed per tick; sequential steps under a continuing drag read as the figure
 // WALKING to follow it.
-constexpr float kStepNeedThreshold = 0.035f;
+// 0.025 (was 0.035): recalibrated with the Armature's per-tick FLOOR LIFT (see
+// kFloorLiftTol in armatureik.cpp). Before it, a hard lateral lean sank the far foot through
+// the floor, and that sink inflated the strain signal (kStepPinErrThreshold) enough to step; with
+// the feet held on the floor the honest lateral slip stays under the strain threshold and a 45cm
+// lateral chest drag leaned the hip 19cm on planted feet without ever stepping — a person would
+// have stepped long before. The balance-EFFORT path is the principled trigger for that lean (the
+// pelvis correction fights the imposed lean every tick), and 0.025 restores the steps (3, the
+// chest within 13cm of a 45cm target, was 22cm) while every other harness phase — the hip walks,
+// the strained pull, the pinned-foot chest drag, the crouches — stays bit-identical. Lowering the
+// strain threshold instead (2.5cm) also stepped, but reshaped the walks' step counts.
+constexpr float kStepNeedThreshold = 0.025f;
 constexpr float kStepPinErrThreshold = 0.04f; ///< Entry pin error = a foot dragged off its plant.
 constexpr float kStepStanceThreshold = 0.12f; ///< Explicit-anchor drags: stance error that steps.
 constexpr int   kStepConfirmTicks = 12;

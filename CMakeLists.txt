@@ -259,7 +259,9 @@ add_executable(
     src/viewport/scene/grid.h
     src/viewport/scene/mesh.cpp
     src/viewport/scene/mesh.h
-    src/viewport/scene/meshik.cpp   # Model's FBIK integration (drag/settle/extraction)
+    src/viewport/scene/armature.cpp   # the runtime skeleton + pose + FK + pins (Vulkan-free)
+    src/viewport/scene/armature.h
+    src/viewport/scene/armatureik.cpp # the Armature's FBIK integration (drag/settle/extraction)
     src/viewport/scene/scene.cpp
     src/viewport/scene/scene.h
     src/viewport/scene/shademode.h # the shader picker's mode table (names + how each mode draws)
@@ -277,6 +279,7 @@ add_executable(
     src/viewport/scene/ik/balancecontroller.h
     src/viewport/scene/ik/ikrig.cpp           # per-figure orchestration (contacts -> solve -> balance)
     src/viewport/scene/ik/ikrig.h
+    src/viewport/scene/ik/cursorfilter.h      # the drag's adaptive cursor low-pass (shared with the harness)
 
     # --- Preferences ---
     src/preferences/preferencesdialog.cpp
@@ -383,6 +386,45 @@ target_link_libraries(PoseStudio PRIVATE
     Qt6::Concurrent  # off-thread IBL bake on HDRI switches (QtConcurrent::run + QFutureWatcher)
     Vulkan::Vulkan
 )
+
+# ==============================================================================
+# [ IK HARNESS (tools/ikharness) ]
+# ==============================================================================
+
+# The full-body-IK harness: unit tests for the IK math/constraints plus a drag-loop simulator
+# that runs the REAL engine loop (the Armature — solve -> extract -> FK, through the same cursor
+# filter and tick order as the viewport) on a dumped figure skeleton and gates the measured
+# behaviour. Built by default so it can't rot, and registered with CTest; it links only the
+# Qt-free, Vulkan-free scene/ik + armature sources (no Qt, no Vulkan). The real-figure phases
+# need a skeleton dump (run the app once with POSESTUDIO_DUMP_SKELETON=<path>; the dump is a
+# vendor's rig and stays out of the repo) — pass it on the command line or in
+# POSESTUDIO_IK_SKELETON; without one those phases are skipped and the unit tests still run.
+add_executable(PoseStudioIkHarness
+    tools/ikharness/ikharness.cpp
+    src/viewport/scene/armature.cpp
+    src/viewport/scene/armatureik.cpp
+    src/viewport/scene/ik/ikmath.cpp
+    src/viewport/scene/ik/skeletongraph.cpp
+    src/viewport/scene/ik/ikconstraints.cpp
+    src/viewport/scene/ik/fabriksolver.cpp
+    src/viewport/scene/ik/balancecontroller.cpp
+    src/viewport/scene/ik/ikrig.cpp
+)
+target_include_directories(PoseStudioIkHarness PRIVATE
+    src/viewport/scene
+    src/viewport/scene/ik
+    ${glm_SOURCE_DIR}
+)
+target_compile_definitions(PoseStudioIkHarness PRIVATE
+    GLM_FORCE_RADIANS
+    GLM_FORCE_DEPTH_ZERO_TO_ONE
+)
+enable_testing()
+add_test(NAME ik-harness COMMAND PoseStudioIkHarness)
+if(DEFINED ENV{POSESTUDIO_IK_SKELETON})
+    set_tests_properties(ik-harness PROPERTIES
+        ENVIRONMENT "POSESTUDIO_IK_SKELETON=$ENV{POSESTUDIO_IK_SKELETON}")
+endif()
 
 # ==============================================================================
 # [ SHIPPED ASSET CONTENT ]

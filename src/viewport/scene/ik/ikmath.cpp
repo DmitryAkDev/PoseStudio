@@ -1,5 +1,7 @@
 #include "ikmath.h"
 
+#include <glm/gtc/matrix_transform.hpp>
+
 #include <cmath>
 
 namespace pose {
@@ -47,6 +49,20 @@ int axisIndex(char c) {
 }
 
 } // namespace
+
+glm::mat4 eulerMatrix(const glm::vec3& degrees, const std::string& order) {
+    glm::mat4 m(1.0f);
+    for (const char c : order) {
+        const int axis = axisIndex(c);
+        if (axis < 0) {
+            continue;
+        }
+        glm::vec3 axisVec(0.0f);
+        axisVec[axis] = 1.0f;
+        m = m * glm::rotate(glm::mat4(1.0f), glm::radians(degrees[axis]), axisVec);
+    }
+    return m;
+}
 
 glm::vec3 eulerFromMatrix(const glm::mat3& m, const std::string& order) {
     // Axis indices of the three applied rotations, M = Ri(a) · Rj(b) · Rk(c).

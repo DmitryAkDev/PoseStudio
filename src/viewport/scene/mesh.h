@@ -7,13 +7,15 @@
  * normal/bump, roughness, spec mask, translucency, and micro-detail (pore) normal, each falling
  * back to a shared 1x1 texture when absent — bound through its own descriptor set (set 1, six
  * samplers). A Model groups the meshes of one imported file under a shared transform, owns the
- * descriptor pool those sets are allocated from, and carries the runtime skeleton for skinned
- * figures. Qt-free.
+ * descriptor pool those sets are allocated from, and carries an Armature (armature.h) — the
+ * runtime skeleton, pose, pins, and full-body IK of a skinned figure — whose skin data it
+ * uploads per frame. Qt-free.
  */
 
 #ifndef MESH_H
 #define MESH_H
 
+#include "armature.h"  // the skeleton + pose + IK a Model poses through
 #include "modeldata.h" // CorrectiveFormula (runtime corrective evaluation)
 #include "vulkanbuffer.h"
 #include "vulkancommon.h" // kMaxFramesInFlight (per-frame joint buffers)
@@ -163,8 +165,10 @@ private:
     VkDescriptorSet                m_materialSet = VK_NULL_HANDLE; // set 1; owned by the Model's pool
 };
 
-/// One imported model (OBJ mesh or rigged figure): its meshes (each a material group) plus a shared
-/// model transform. Owns the descriptor pool the meshes' set-1 descriptors are allocated from.
+/// One imported model (OBJ mesh or rigged figure): its meshes (each a material group) plus an
+/// Armature — the shared model transform and, for a figure, the runtime skeleton, pose, pins,
+/// and full-body IK (see armature.h). Owns the descriptor pool the meshes' set-1 descriptors are
+/// allocated from and the per-frame joint buffers the armature's skin data is uploaded into.
 class Model {
 public:
     Model(VulkanContext& context, const ModelData& data, VkDescriptorSetLayout materialSetLayout,
@@ -214,80 +218,63 @@ public:
     /// the model has no geometry bounds. Used to fit the key light's shadow frustum.
     bool worldBounds(glm::vec3& outMin, glm::vec3& outMax) const;
 
+    /// The armature: the skeleton, the pose, the user pins, and the full-body IK — see
+    /// armature.h. Every posing call below is a thin forwarder into it (the ones that change the
+    /// pose also settle this model's correctives, which the armature can't know about); new
+    /// posing behaviour belongs in the armature, never here.
+    Armature&       armature() { return m_armature; }
+    const Armature& armature() const { return m_armature; }
+    /// The model matrix (owned by the armature — IK, picking, and grounding all need it).
+    const glm::mat4& transform() const { return m_armature.transform(); }
+
     /// Poses the joint @p boneName by an Euler rotation (degrees) applied in its local frame, then
-    /// recomputes the skin matrices. No-op if the model has no such bone. This is the primitive a
-    /// posing UI drives; @p eulerDegrees of 0 restores the bone's rest pose.
+    /// recomputes the skin matrices and settles the correctives. No-op if the model has no such
+    /// bone. This is the primitive a posing UI drives; @p eulerDegrees of 0 restores the rest pose.
     void setBoneRotation(const std::string& boneName, const glm::vec3& eulerDegrees);
 
     /// Whether this model has a skeleton (i.e. is a posable figure rather than a static mesh).
-    bool hasSkeleton() const { return !m_bones.empty(); }
+    bool hasSkeleton() const { return m_armature.hasSkeleton(); }
 
     // --- Posing-UI support (world-space skeleton for overlay/picking + interactive rotation) ---
-    std::size_t      boneCount() const { return m_bones.size(); }
+    std::size_t      boneCount() const { return m_armature.boneCount(); }
     /// Current world-space position of each joint (updated whenever the pose changes).
-    const glm::vec3& boneWorldPosition(std::size_t i) const { return m_boneWorldPos[i]; }
-    int              boneParent(std::size_t i) const { return m_bones[i].parent; }
-    const std::string& boneName(std::size_t i) const { return m_boneNames[i]; }
+    const glm::vec3& boneWorldPosition(std::size_t i) const { return m_armature.boneWorldPosition(i); }
+    int              boneParent(std::size_t i) const { return m_armature.boneParent(i); }
+    const std::string& boneName(std::size_t i) const { return m_armature.boneName(i); }
 
-    int  selectedBone() const { return m_selectedBone; }
-    void setSelectedBone(int index) { m_selectedBone = index; }
+    int  selectedBone() const { return m_armature.selectedBone(); }
+    void setSelectedBone(int index) { m_armature.setSelectedBone(index); }
     /// Selects the bone named @p name (diagnostics / the IK benchmark); its index, or -1.
-    int selectBoneByName(const std::string& name) {
-        const auto it = m_boneIndex.find(name);
-        if (it == m_boneIndex.end()) {
-            return -1;
-        }
-        m_selectedBone = it->second;
-        return it->second;
-    }
+    int selectBoneByName(const std::string& name) { return m_armature.selectBoneByName(name); }
     /// Adds @p deltaEulerDegrees to the selected bone's accumulated rotation and re-poses it.
-    void nudgeSelectedBone(const glm::vec3& deltaEulerDegrees);
+    void nudgeSelectedBone(const glm::vec3& deltaEulerDegrees) {
+        m_armature.nudgeSelectedBone(deltaEulerDegrees);
+    }
 
-    // --- Full-body IK (scene/ik/): drag a joint, the whole body follows anatomically ---
-    /// Begins an FBIK drag of the SELECTED joint: detects which joints are planted on the ground,
-    /// anchors the solve at the planted contact farthest from the effector (feet for a standing
-    /// figure — never the hip), pins the rest, and builds the balance support polygon. Builds the
-    /// IK rig from the skeleton on first use. Returns false without a skeleton or selection.
-    bool beginIkDrag();
-    /// One FBIK drag update: solves the body so the selected joint reaches toward @p targetWorld
-    /// (constrained multi-chain FABRIK + CoM auto-balance), converts the solved joint positions
-    /// back to per-channel Euler rotations (clamped to the figure's anatomical limits — the
-    /// authoritative constraint pass) plus a root pose-translation, and re-skins. Returns true if
-    /// the pose changed. Correctives stay deferred to refreshCorrectives(), like any drag.
-    bool dragIkTo(const glm::vec3& targetWorld);
-    /// One ANIMATED release-settle step: with the drag goal gone, relaxes the body one capped
-    /// round toward its pins (an unreachable goal can hold a foot hovering off its plant; on
-    /// release the feet should visibly land, not pop). Call at the drag tick rate after the mouse
-    /// is released, until it returns false (pins planted / no further progress — each round is
-    /// reverted if it fails to improve the worst pin error, so the settle can never regress).
-    bool settleIkTick();
+    // --- Full-body IK (scene/ik/, driven through the armature): drag a joint, the body follows ---
+    bool beginIkDrag() { return m_armature.beginIkDrag(); }
+    bool dragIkTo(const glm::vec3& targetWorld) { return m_armature.dragIkTo(targetWorld); }
+    bool settleIkTick() { return m_armature.settleIkTick(); }
     /// Ends the FBIK drag (the solved pose stays; the caller settles correctives).
-    void endIkDrag();
-    // --- User joint pins (see IkRig::beginDrag's userPins): a pinned joint is held exactly where
-    // it is through every later IK drag of OTHER joints, until unpinned. Dragging a pinned joint
-    // itself moves the pin. Pins are part of the POSE SNAPSHOT (capturePose/applyPose carry them
-    // as "@pin:<bone>" rows), so a pin toggle is undoable, undoing a drag restores the pins of
-    // that moment, and a .pose file reproduces its pins on load (a file without pin rows —
-    // an older one — loads with none).
-    /// Toggles the pin on the selected joint; returns the new pinned state (false with no selection).
-    bool togglePinSelectedBone();
-    bool isBonePinned(std::size_t index) const {
-        return index < m_bonePinned.size() && m_bonePinned[index] != 0;
-    }
-    bool selectedBonePinned() const {
-        return m_selectedBone >= 0 && isBonePinned(static_cast<std::size_t>(m_selectedBone));
-    }
-    bool hasPinnedBones() const;
-    void unpinAllBones();
+    void endIkDrag() { m_armature.endIkDrag(); }
+    // --- User joint pins (see Armature) ---
+    bool togglePinSelectedBone() { return m_armature.togglePinSelectedBone(); }
+    bool isBonePinned(std::size_t index) const { return m_armature.isBonePinned(index); }
+    bool selectedBonePinned() const { return m_armature.selectedBonePinned(); }
+    bool hasPinnedBones() const { return m_armature.hasPinnedBones(); }
+    void unpinAllBones() { m_armature.unpinAllBones(); }
     /// The rig's CONTACT pins (ground-detected, not user pins) while an IK drag is active — for
     /// the overlay's "which feet are planted" markers. Empty outside a drag.
-    std::vector<int> activeContactPins() const;
+    std::vector<int> activeContactPins() const { return m_armature.activeContactPins(); }
     /// The accumulated pose rotation of bone @p i (Euler degrees, its rotation order).
-    const glm::vec3& boneEuler(std::size_t i) const { return m_boneEuler[i]; }
+    const glm::vec3& boneEuler(std::size_t i) const { return m_armature.boneEuler(i); }
 
     /// Captures the current pose as (bone name, Euler degrees) for each non-rest joint (for saving).
-    std::vector<std::pair<std::string, glm::vec3>> capturePose() const;
-    /// Resets to bind pose, then applies @p pose (bone name -> Euler degrees); unknown bones ignored.
+    std::vector<std::pair<std::string, glm::vec3>> capturePose() const {
+        return m_armature.capturePose();
+    }
+    /// Resets to bind pose, then applies @p pose (bone name -> Euler degrees; unknown bones
+    /// ignored) and re-morphs the correctives for the restored pose.
     void applyPose(const std::vector<std::pair<std::string, glm::vec3>>& pose);
 
     /// Whether this model carries pose correctives (joint-driven corrective morphs).
@@ -315,68 +302,9 @@ public:
     bool groundGap(float& lowestY) const;
     /// Translates the model by @p dy along world Y and refreshes the transform-dependent bone
     /// positions (the animated ground drop applies its per-frame fall increments through this).
-    void translateY(float dy);
+    void translateY(float dy) { m_armature.translateY(dy); }
 
 private:
-    /// Recomputes each bone's skin matrix (poseGlobal · inverseBind) from the current pose, updates
-    /// the world-space bone positions, and writes the matrices to the joint storage buffer. Assumes
-    /// bones are ordered parent-before-child (figure skeletons are). No skeleton => one identity.
-    void computeSkinMatrices();
-
-    /// The selected joint's highlight twin (m_highlightTwin), or -1 without a selection / twin.
-    int selectedHighlightTwin() const;
-
-    /// Re-poses bone @p index from its accumulated Euler (m_boneEuler) in its oriented frame, then
-    /// recomputes the skin matrices. Shared by setBoneRotation() and nudgeSelectedBone().
-    void applyBoneEuler(int index);
-
-    /// Recomposes bone @p index's poseLocal from its current Euler + pose translation:
-    /// localBind · orient · R(euler, order) · orient⁻¹, translation added in the parent frame.
-    /// The single composition point every pose path (FK, pose load, IK extraction) shares.
-    void recomposePoseLocal(std::size_t index);
-
-    /// Converts an FBIK solve's joint positions back into the engine's pose: walks the anatomical
-    /// hierarchy top-down, absorbs a moved skeleton root into its pose translation, best-fits each
-    /// active bone's world rotation to its solved child directions (aim at the longest child +
-    /// average twist about it), decomposes into the bone's Euler channels, clamps to the authored
-    /// limits, and re-skins once. Inactive subtrees keep their local pose and ride along.
-    void applyIkSolution(const std::vector<glm::vec3>& solved, const std::vector<char>& active,
-                         bool rotationPrior);
-
-    /// EXACT enforcement of the joint pins, run after every governed pose update of an IK tick
-    /// (drag and release settle alike). The solver holds a pin in POSITION space, but the
-    /// applied pose is what the user sees, and the extraction (aim fit, per-joint angular caps,
-    /// limit clamps, the rotational prior) plus the governor's under-relaxation — a blend in
-    /// JOINT space, which does not preserve an end effector's position — land a pinned joint
-    /// millimetres off every tick: visible micro-motion on a joint declared immovable, and
-    /// planted feet that slide by millimetres under a hand drag. This refines each pin's own
-    /// limb chain in joint space — damped least squares on the chain's unlocked Euler channels
-    /// against a numeric Jacobian, limits respected, iterated to 0.1mm — and re-imposes the
-    /// pin's drag-start world orientation exactly (the flat-sole hold in applyIkSolution is
-    /// capped and then relaxed by the governor, so it too left a residual). USER pins are held
-    /// unconditionally, every tick; the drag's CONTACT pins and the released joint the settle
-    /// holds only when @p settling — the release settle is where the pose comes to rest — and
-    /// only as residual cleanup, band-gated and per-tick capped so the landing stays animated
-    /// (see kContactRefineBand; holding contacts exact DURING the drag masked the FK slip that
-    /// is the balance stepper's strain signal, and its pelvis stage fought the solver root).
-    /// The correction is local to each pin's limb and never touches the trunk or another limb.
-    /// With @p dragTarget (a drag tick: the solve target, model space) the GRABBED joint itself
-    /// is refined onto it the same way — the cursor as a pin: the limb closes whatever part of
-    /// the gap it can reach from the current trunk NOW, deterministically, so the hand tracks
-    /// the cursor without lag while the body's redundant motion stays on the damped dynamics
-    /// underneath (and pixel noise passes through 1:1 instead of being amplified ~14x by the
-    /// whole-body solve — the fit is locally linear). The drag correction is a FINISHER: full
-    /// within kDragRefineFull of the target and fading to nothing by kDragRefineFade, so large
-    /// motions stay with the solve's own posture choice (a minimal-norm fit closing a whole
-    /// 15cm foot lift swung the straight leg back at the hip instead of flexing the knee, and
-    /// stalled at half the lift; a nullspace posture bias and column-scaled least squares were
-    /// both measured and rejected). Re-skins once when it changed anything.
-    void refinePins(bool settling, const glm::vec3* dragTarget = nullptr);
-
-    /// Clamps m_boneEuler[index] in place to the bone's per-axis rotation limits (a no-op on axes the
-    /// figure leaves unconstrained). The single enforcement point every posing path funnels through.
-    void clampBoneEuler(int index);
-
     /// Evaluates one corrective's blend weight from the current pose (Σ sumFormulas × gateScale).
     float evalCorrectiveWeight(std::size_t correctiveIndex) const;
 
@@ -404,73 +332,31 @@ private:
         std::vector<MeshDelta> meshDeltas;
     };
 
-    // One runtime skeleton joint. localBind is its rest transform relative to its parent; poseLocal
-    // folds in the current animated rotation (== localBind at bind pose). `orient`/`invOrient` frame
-    // that rotation in the joint's true orientation so bends are anatomically correct.
-    struct GpuBone {
-        int         parent = -1;
-        glm::mat4   inverseBind{1.0f};
-        glm::mat4   localBind{1.0f};
-        glm::mat4   poseLocal{1.0f};
-        glm::mat4   orient{1.0f};
-        glm::mat4   invOrient{1.0f};
-        std::string rotationOrder = "XYZ";
-        // Per-axis pose-rotation limits (degrees) enforced by clampBoneEuler(); only axes flagged in
-        // rotLimited are constrained (the figure's anatomical range of motion). Default: unconstrained.
-        glm::vec3   rotMin{0.0f};
-        glm::vec3   rotMax{0.0f};
-        glm::bvec3  rotLimited{false, false, false};
-    };
-
     VulkanContext&       m_context;
     VkDescriptorPool     m_materialPool = VK_NULL_HANDLE;
     std::vector<Mesh>    m_meshes;
-    glm::mat4            m_transform{1.0f};
     glm::vec3            m_boundsMin{0.0f}; // local-space AABB over all mesh vertices
     glm::vec3            m_boundsMax{0.0f};
     bool                 m_hasBounds = false;
 
-    // Skinning: the runtime skeleton + a storage buffer of skin matrices (set 2) bound per draw.
-    std::vector<GpuBone>                 m_bones;
-    std::unordered_map<std::string, int> m_boneIndex; // bone name -> index into m_bones
-    std::vector<std::string>             m_boneNames;  // parallel to m_bones (for the posing UI)
-    std::vector<glm::vec3>               m_boneWorldPos; // current world position per bone (overlay/pick)
-    // Per bone: its highlight TWIN (-1 if none). Figures split each limb segment into a bend
-    // bone and a TWIST child whose two swing axes are locked (range under 2°) — the mid-limb
-    // bone that spreads axial twist across the skin. The selection highlight covers the pair
-    // (bend -> its twist child, twist -> its bend parent), so grabbing the upper-arm joint lights
-    // the whole upper arm rather than the half the bend bone's own weights cover.
-    std::vector<int>                     m_highlightTwin;
-    std::vector<glm::mat4>               m_poseGlobal;  // scratch for computeSkinMatrices (it runs per drag-move; no per-call allocation)
-    std::vector<glm::vec3>               m_boneEuler;  // accumulated pose rotation per bone (degrees)
-    // Pose translation per bone (parent-frame offset added to poseLocal). Rotations alone can't
-    // move the skeleton root, so FBIK with pinned feet writes the hip's solved displacement here
-    // (a crouch drops the pelvis). Round-trips through capture/applyPose as "@trans:<bone>" rows.
-    std::vector<glm::vec3>               m_boneTranslation;
-    int                                  m_selectedBone = -1;
-    // Skinning data is computed into the CPU-side m_skinDualQuats whenever the pose changes and
-    // uploaded LAZILY, per frame in flight, at record time (uploadJointsIfDirty). One buffer per
-    // frame in flight is load-bearing: interactive posing rewrites the matrices at 60 Hz, and a
-    // single shared buffer was overwritten while a still-executing frame READ it — vertices
-    // skinned by half-updated matrices streaked into momentary exploded-geometry artifacts (and
-    // the same torn frame corrupted the shadow pass). At record time this frame slot's fence has
-    // been waited on, so writing ITS buffer can never race the GPU.
+    // The skeleton + pose + pins + IK (and the model transform) — see armature.h.
+    Armature             m_armature;
+
+    // Skinning upload: the armature's dual quaternions (see Armature::skinDualQuats) reach the
+    // GPU through a storage buffer (set 2) bound per draw — ONE PER FRAME IN FLIGHT: interactive
+    // posing rewrites the data at 60 Hz, and a single shared buffer was overwritten while a
+    // still-executing frame READ it — vertices skinned by half-updated matrices streaked into
+    // momentary exploded-geometry artifacts (and the same torn frame corrupted the shadow
+    // pass). At record time this frame slot's fence has been waited on, so writing ITS buffer
+    // can never race the GPU.
     std::array<VulkanBuffer, kMaxFramesInFlight>    m_jointBuffers;
     std::array<VkDescriptorSet, kMaxFramesInFlight> m_jointSets{}; // set 2; from m_materialPool
-    // Per joint: TWO vec4s — a unit dual quaternion (real = rotation as (xyz, w), dual =
-    // 0.5·(0,t)·real carrying the translation) built from the rigid poseGlobal·inverseBind.
-    // The shaders blend THESE, not matrices: the figure format authors its weights (and every
-    // pose corrective) against DUAL-QUATERNION skinning (`skin_settings.general_map_mode:
-    // DualQuat`), and linear matrix blending collapses deep bends (a 155° knee folded into a
-    // shapeless blob that the JCMs — sculpted as corrections ON TOP of DQS — made worse).
-    std::vector<glm::vec4>                          m_skinDualQuats;
-    std::uint64_t                                   m_skinVersion = 0; // bumped per recompute
-    std::array<std::uint64_t, kMaxFramesInFlight>   m_jointUploaded{}; // last version per slot
+    std::array<std::uint64_t, kMaxFramesInFlight>   m_jointUploaded{}; // last skin version per slot
     uint32_t                                        m_jointCount = 1;
 
-    /// Uploads m_skinDualQuats into frame slot @p frameIndex's joint buffer if that slot hasn't
-    /// seen the current m_skinVersion yet (called by record/recordShadow — whichever runs first
-    /// in a frame does the copy, the other no-ops).
+    /// Uploads the armature's skin data into frame slot @p frameIndex's joint buffer if that slot
+    /// hasn't seen the current Armature::skinVersion yet (called by record/recordShadow —
+    /// whichever runs first in a frame does the copy, the other no-ops).
     void uploadJointsIfDirty(uint32_t frameIndex);
 
     // Pose correctives: the base (uncorrected) vertices per render mesh, the resolved
@@ -491,89 +377,6 @@ private:
         glm::vec4  weights;
     };
     std::vector<GroundSample> m_groundSamples;
-
-    // Full-body IK: the rig (graph + constraints + masses, built lazily on the first IK drag),
-    // plus the anatomical children lists and model-space bind joint positions the extraction walk
-    // reads (built alongside — bind positions provide the rest aim offsets across the rigid
-    // twist-bone links extraction looks through).
-    std::unique_ptr<IkRig>        m_ikRig;
-    std::vector<std::vector<int>> m_ikChildren;
-    std::vector<glm::vec3>        m_ikBindPos;
-    // WEIGHT-BEARING feet: each planted (pinned) foot bone and its drag-start model-space
-    // rotation. The extraction preserves that world orientation while the pin holds, so the
-    // sole stays flat on the floor as the body moves above it (a solver-side sole pin fought
-    // the ankle and curled toes; orientation preservation at extraction fights nothing).
-    std::vector<int>              m_ikFlatNodes;
-    std::vector<glm::mat3>        m_ikFlatRot;
-    // User joint pins (per bone, see togglePinSelectedBone): persistent until unpinned.
-    std::vector<char>             m_bonePinned;
-    // Bones exempt from the drag-tick rotational prior for the current drag: the LIMB chain of
-    // each user pin (pin up to where its limb joins the axial skeleton — the rig's mass-based
-    // junction, IkRig::userPinLimbNodes). Those joints are fully determined
-    // by the pin's restoration every tick, and the prior — decaying toward the drag-START
-    // pose — could only fight the pin there: a hand pinned through a crouch ratcheted 8cm off
-    // its pin during the still hold as the prior pulled the arm back toward its standing pose.
-    std::vector<char>             m_ikRotPriorExempt;
-    // Drag-start Euler pose: the ROTATIONAL prior. The extraction's aim fit determines only
-    // part of each joint's rotation (a single aim child leaves twist unwitnessed), and the
-    // undetermined components RATCHET across ticks — the spine's forward-biased limits turned
-    // that random walk into a visible bow whenever a hand was pulled up. During drag ticks the
-    // fitted angles decay gently toward these start values: determined components are re-imposed
-    // by the next fit anyway, so only the drift is cleaned.
-    std::vector<glm::vec3>        m_ikStartEuler;
-    // Previous drag tick's APPLIED per-bone deltas (Euler degrees / pose translation), for the
-    // governor's reversal-gated micro-motion damping: a delta OPPOSING the previous tick's is
-    // the loop's own tick-scale oscillation and is attenuated; sustained motion passes at full
-    // rate (magnitude-gated damping shaved a raising arm's climb enough that the rotational
-    // prior's take-back overcame it — the hand visibly sank mid-raise).
-    std::vector<glm::vec3>        m_ikPrevEulerDelta;
-    std::vector<glm::vec3>        m_ikPrevTransDelta;
-    // Last tick's APPLIED worst-joint world speed — the velocity state of the governor's
-    // motion shaping (see kIkAccel/kIkDecel in meshik.cpp): the per-tick movement allowance
-    // may grow at most kIkAccel over this (ease-in) and is bounded by the braking curve toward
-    // the goals (ease-out), so gestures accelerate and decelerate like real limbs instead of
-    // snapping to a constant governor rate. Zeroed when a tick applies nothing (frozen hold).
-    float                         m_ikAppliedSpeed = 0.0f;
-    // Last tick's APPLIED speed of the GRABBED joint itself: the motion shaping bounds the
-    // effector's own step as well as the worst joint's (with the fold plane free to swing, the
-    // elbow is often the worst joint, and the hand could then jump 15mm in one tick — exactly
-    // the mechanical ramp the shaping exists to prevent).
-    float                         m_ikAppliedEffSpeed = 0.0f;
-    // Grab offset (model space) for a PROMOTED drag: the rig solves the limb's real end joint
-    // (a finger grab drives the HAND — see IkRig::dragEffector), so the window's targets, which
-    // track the grabbed joint, are shifted by (grabbed - solved) captured at drag start.
-    glm::vec3                     m_ikGrabOffset{0.0f};
-    // The solved effector's world rotation at drag start: the grab offset is carried through
-    // the effector's rotation since (offset_now = R_now * R_start^-1 * offset), so a finger
-    // grab keeps tracking the FINGER when the hand twists — with the solver now free to twist
-    // the forearm, a constant offset missed the fingertip by up to twice its length.
-    glm::mat3                     m_ikGrabRotStart{1.0f};
-    // Previous drag target (model space): the world-space governor's per-event pose budget is
-    // PROPORTIONAL to how far the target actually moved — a still-but-noisy cursor earns only a
-    // millimeter budget (kills trembling), a fast pull earns the full step.
-    glm::vec3                     m_ikPrevTarget{0.0f};
-    bool                          m_ikPrevTargetValid = false;
-    // Settle-freeze state: while the target is still, worst-goal-error minima are collected in
-    // 6-tick windows; when a window fails to improve on the previous one, solving FREEZES until
-    // the target moves again. Window minima are oscillation-robust (churn can't fake envelope
-    // improvement), while genuine slow catch-up (feet re-planting) keeps improving and stays
-    // live until done — the two things a per-tick movement test cannot tell apart.
-    int                           m_ikStillTicks = 0;
-    float                         m_ikErrCurMin = 1e30f;
-    float                         m_ikErrPrevMin = 1e30f;
-    bool                          m_ikFrozen = false;
-    int                           m_ikSettleTicks = 0; ///< Animated release-settle tick budget.
-    // The worst pin error at the release settle's first tick — the STRAIN the drag left in the
-    // planted feet. A LIMB effector's pose-hold bound (the released hand/foot stays within 2cm
-    // of where it was let go) scales up with it (3x, at most 10cm): a beyond-reach pull leaves a
-    // foot centimetres in the air, and planting it costs the hand a few centimetres — a figure
-    // standing on air is the worse artifact. A TRUNK effector (IkRig::effectorIsTrunk) always
-    // gets the 10cm bound: planting the feet after a chest/hip drag necessarily moves the trunk.
-    float                         m_ikSettleStrain = 0.0f;
-    // Stillness is CUMULATIVE drift from this anchor, not per-tick deltas: a slowly creeping
-    // target (sub-mm per event) must keep the solve live — it accumulates past the threshold and
-    // re-anchors — while zero-mean cursor noise stays inside the ball and allows the freeze.
-    glm::vec3                     m_ikStillAnchor{0.0f};
 };
 
 } // namespace pose

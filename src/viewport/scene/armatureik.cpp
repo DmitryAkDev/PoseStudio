@@ -1,19 +1,20 @@
 /**
- * @file meshik.cpp
- * @brief Model's full-body-IK integration: the engine boundary of the FBIK system (scene/ik/).
+ * @file armatureik.cpp
+ * @brief Armature's full-body-IK integration: the engine boundary of the FBIK system (scene/ik/).
  *
  * Everything FBIK needs from the engine lives in this one file: building the per-figure IkRig
  * from the bind skeleton, detecting ground contacts, driving the per-tick drag solve with its
  * damped-motion governors (under-relaxation, proportional world-space cap, per-joint angular
  * cap, settle-freeze), the animated pose-holding release settle, and the ROTATION EXTRACTION
  * that converts the solver's joint positions back into the engine's per-channel Euler pose (+
- * the root's pose translation). The solver itself is Model-agnostic (scene/ik/, pure positions);
- * this file is the only place the two meet, so solver work and engine work can evolve
- * independently. See CLAUDE.md's FBIK section for the design history — most numeric policies
- * here trace to a specific user-visible failure, documented at their definitions.
+ * the root's pose translation). The solver itself is armature-agnostic (scene/ik/, pure
+ * positions); this file is the only place the two meet, so solver work and engine work can
+ * evolve independently. Vulkan-free like the rest of the Armature, so the IK harness runs this
+ * exact loop. See CLAUDE.md's FBIK section for the design history — most numeric policies here
+ * trace to a specific user-visible failure, documented at their definitions.
  */
 
-#include "mesh.h"
+#include "armature.h"
 
 #include "ikmath.h" // shortestArc / signedAngleAround / eulerFromMatrix (pose extraction)
 #include "ikrig.h"  // full-body IK orchestrator
@@ -59,7 +60,7 @@ float wrappedAngleDelta(float a, float b) {
 // (the viewport re-issues the drag target on a timer while the button is held).
 constexpr float kIkMaxWorldStep = 0.10f;
 
-// Rotational-prior decay per drag tick (see Model::m_ikStartEuler): how fast fit-undetermined
+// Rotational-prior decay per drag tick (see Armature::m_ikStartEuler): how fast fit-undetermined
 // rotation components ease back toward the drag-start pose. Strong enough to keep unwitnessed
 // twist from ratcheting into the joints' permissive clamp side (the spine bow), weak enough
 // that the per-tick lag it adds to determined components is invisible.
@@ -104,7 +105,7 @@ constexpr float kIkBrake = 0.006f;
 
 } // namespace
 
-bool Model::beginIkDrag() {
+bool Armature::beginIkDrag() {
     if (m_selectedBone < 0 || m_selectedBone >= static_cast<int>(m_bones.size()) ||
         m_bones.empty()) {
         return false;
@@ -115,7 +116,7 @@ bool Model::beginIkDrag() {
         std::vector<IkRigBone> rigBones(m_bones.size());
         std::vector<glm::vec3> bindPos(m_bones.size(), glm::vec3(0.0f));
         for (std::size_t i = 0; i < m_bones.size(); ++i) {
-            const GpuBone& bone = m_bones[i];
+            const Bone& bone = m_bones[i];
             const glm::vec3 parentBind =
                 bone.parent >= 0 ? bindPos[static_cast<std::size_t>(bone.parent)] : glm::vec3(0.0f);
             bindPos[i] = parentBind + glm::vec3(bone.localBind[3]);
@@ -217,8 +218,8 @@ bool Model::beginIkDrag() {
         std::fflush(stderr);
     }
     // Capture each planted foot's current orientation for the flat-sole preservation (see
-    // m_ikFlatNodes in mesh.h).
-    m_ikStartEuler = m_boneEuler; // the rotational prior (see mesh.h)
+    // m_ikFlatNodes in armature.h).
+    m_ikStartEuler = m_boneEuler; // the rotational prior (see armature.h)
     m_ikFlatNodes.clear();
     m_ikFlatRot.clear();
     for (const IkEffector& pin : m_ikRig->pins()) {
@@ -230,7 +231,7 @@ bool Model::beginIkDrag() {
     return true;
 }
 
-bool Model::dragIkTo(const glm::vec3& targetWorld) {
+bool Armature::dragIkTo(const glm::vec3& targetWorld) {
     if (!m_ikRig || !m_ikRig->dragActive() || m_bones.empty()) {
         return false;
     }
@@ -256,7 +257,7 @@ bool Model::dragIkTo(const glm::vec3& targetWorld) {
     target.y = std::max(target.y, -m_transform[3][1] +
                                       m_ikRig->floorClearance(m_ikRig->dragEffector()));
 
-    // Settle-freeze (see the m_ikFrozen note in mesh.h): once the still-cursor error trend stops
+    // Settle-freeze (see the m_ikFrozen note in armature.h): once the still-cursor error trend stops
     // improving, stop solving entirely — a genuinely frozen pose, zero trembling — and resume
     // the instant the cursor moves again. This, not budget tuning, is what makes a held pose
     // rock-still: any solving at all lets configuration flip-flops consume whatever budget
@@ -311,13 +312,23 @@ bool Model::dragIkTo(const glm::vec3& targetWorld) {
         m_ikAppliedEffSpeed = 0.0f;
         return false;
     }
-    // Diagnostic: POSESTUDIO_IK_TRACE=1 prints per-tick drag state (world-space heights).
+    // Diagnostic: POSESTUDIO_IK_TRACE=1 prints per-tick drag state (world-space heights), with
+    // the worst contact-pin error at solve entry (the FK pose), in the solver's output, and —
+    // appended at the end of the tick — in the applied pose.
     static const bool kIkTickTrace = std::getenv("POSESTUDIO_IK_TRACE") != nullptr;
     if (kIkTickTrace) {
         const glm::vec3 effW = m_boneWorldPos[static_cast<std::size_t>(m_selectedBone)];
-        std::fprintf(stderr, "[ik] tgt(%.3f %.3f %.3f) eff(%.3f %.3f %.3f) pins=%zu frozen=%d\n",
+        float solvedPinErr = 0.0f;
+        for (const IkEffector& pin : m_ikRig->pins()) {
+            solvedPinErr = std::max(
+                solvedPinErr,
+                glm::length(positions[static_cast<std::size_t>(pin.node)] - pin.target));
+        }
+        std::fprintf(stderr,
+                     "[ik] tgt(%.3f %.3f %.3f) eff(%.3f %.3f %.3f) pins=%zu frozen=%d pinErr "
+                     "entry=%.4f solved=%.4f",
                      targetWorld.x, targetWorld.y, targetWorld.z, effW.x, effW.y, effW.z,
-                     m_ikRig->pins().size(), m_ikFrozen ? 1 : 0);
+                     m_ikRig->pins().size(), m_ikFrozen ? 1 : 0, entryErr, solvedPinErr);
     }
 
     // Pre-solve pose snapshot for the world-space governor below.
@@ -399,8 +410,29 @@ bool Model::dragIkTo(const glm::vec3& targetWorld) {
         }
         computeSkinMatrices();
     }
+    if (kIkTickTrace) {
+        // Before the pin refinement: the governed pose's pin errors, lateral (XZ) and sink.
+        float lat = 0.0f;
+        float sink = 0.0f;
+        for (const IkEffector& pin : m_ikRig->pins()) {
+            const glm::vec3 p(m_poseGlobal[static_cast<std::size_t>(pin.node)][3]);
+            lat = std::max(lat, glm::length(glm::vec2(p.x - pin.target.x, p.z - pin.target.z)));
+            sink = std::max(sink, pin.target.y - p.y);
+        }
+        std::fprintf(stderr, " preLat=%.4f preSink=%.4f", lat, sink);
+    }
     refinePins(false, &target); // the APPLIED pose is what the user sees: user pins AND the
-                                // grabbed joint exact (see mesh.h)
+                                // grabbed joint exact (see armature.h)
+    if (kIkTickTrace) {
+        float appliedPinErr = 0.0f;
+        float lowestPinY = 1e30f;
+        for (const IkEffector& pin : m_ikRig->pins()) {
+            const glm::vec3 p(m_poseGlobal[static_cast<std::size_t>(pin.node)][3]);
+            appliedPinErr = std::max(appliedPinErr, glm::length(p - pin.target));
+            lowestPinY = std::min(lowestPinY, p.y - pin.target.y);
+        }
+        std::fprintf(stderr, " applied=%.4f pinDy=%.4f s=%.3f\n", appliedPinErr, lowestPinY, s);
+    }
     // The velocity state for next tick's motion shaping: what actually moved this tick.
     {
         float applied = 0.0f;
@@ -411,7 +443,7 @@ bool Model::dragIkTo(const glm::vec3& targetWorld) {
         m_ikAppliedSpeed = applied;
         m_ikAppliedEffSpeed = glm::length(glm::vec3(m_poseGlobal[effIdx][3]) - preWorld[effIdx]);
     }
-    // Track the still-cursor error trend for the settle-freeze (see mesh.h): collect worst-goal-
+    // Track the still-cursor error trend for the settle-freeze (see armature.h): collect worst-goal-
     // error minima in 6-tick windows; a window that fails to improve on the previous one means
     // any remaining motion is churn, not catch-up — freeze.
     float pinErr = 0.0f;
@@ -441,7 +473,7 @@ bool Model::dragIkTo(const glm::vec3& targetWorld) {
     return true;
 }
 
-bool Model::settleIkTick() {
+bool Armature::settleIkTick() {
     if (!m_ikRig || !m_ikRig->dragActive() || m_bones.empty() || m_ikRig->pins().empty()) {
         return false;
     }
@@ -479,7 +511,7 @@ bool Model::settleIkTick() {
         // First settle tick: the CURRENT pose (mouse-up) becomes the settle's prior, and the
         // released joint is pinned right where the user let it go — the pose must HOLD.
         m_ikRig->beginSettle(positions);
-        m_ikSettleStrain = errBefore; // see mesh.h: the hold bound scales with this
+        m_ikSettleStrain = errBefore; // see armature.h: the hold bound scales with this
     }
     if (!m_ikRig->settleToPins(positions, frames)) {
         return false;
@@ -546,13 +578,17 @@ bool Model::settleIkTick() {
     return true;
 }
 
-void Model::endIkDrag() {
+void Armature::endIkDrag() {
     if (m_ikRig) {
         m_ikRig->endDrag();
     }
 }
 
-void Model::applyIkSolution(const std::vector<glm::vec3>& solved, const std::vector<char>& active,
+bool Armature::ikDragActive() const {
+    return m_ikRig && m_ikRig->dragActive();
+}
+
+void Armature::applyIkSolution(const std::vector<glm::vec3>& solved, const std::vector<char>& active,
                             bool rotationPrior) {
     if (solved.size() != m_bones.size() || active.size() != m_bones.size()) {
         return;
@@ -562,7 +598,7 @@ void Model::applyIkSolution(const std::vector<glm::vec3>& solved, const std::vec
     // their parent's ALREADY-CLAMPED frame and constraint error never compounds down a limb.
     const int rigRoot = m_ikRig ? m_ikRig->rootNode() : -1;
     for (std::size_t i = 0; i < m_bones.size(); ++i) {
-        GpuBone& bone = m_bones[i];
+        Bone& bone = m_bones[i];
         const glm::mat4 parentGlobal =
             bone.parent >= 0 ? m_poseGlobal[static_cast<std::size_t>(bone.parent)]
                              : glm::mat4(1.0f);
@@ -862,7 +898,7 @@ bool solveDense(std::vector<float>& A, std::vector<float>& b, int n) {
     return true;
 }
 
-// Exact user-pin refinement (Model::refineUserPins): iterations, convergence tolerance (m), the
+// Exact user-pin refinement (Armature::refineUserPins): iterations, convergence tolerance (m), the
 // numeric-Jacobian probe (degrees), the per-iteration channel step cap (degrees — residuals are
 // millimetres, so steps are fractions of a degree; the cap only guards a near-singular chain),
 // the damped-least-squares damping (m/deg — the Jacobian entries are lever × π/180, ~0.01 for
@@ -889,6 +925,25 @@ constexpr float kContactRefineBand = 0.010f;
 constexpr float kContactRefineStep = 0.003f;
 constexpr float kContactRefineRotBand = 0.05235988f; // 3 degrees
 constexpr float kPinUserRowWeight = 4.0f;
+// FLOOR LIFT (drag ticks — see refinePins): a contact pin whose APPLIED position has sunk below
+// its pin height by more than the tolerance is lifted back up to that height through its own
+// limb, vertically only, at most this far per tick. The solver keeps the feet on their pins to
+// a millimetre; it is the governor's joint-space under-relaxation that buries them: a crouch
+// lowers the hip's translation LINEARLY with the applied fraction, but a near-straight leg
+// shortens only QUADRATICALLY with its knee angle, so applying half of each leaves the foot
+// below the floor every tick, and the sink compounded to 4-6cm in a 12cm hip crouch. Lateral
+// slip is deliberately left alone: that is the balance stepper's strain signal.
+// Position only, deliberately: re-flattening the lifted SOLE here too (its drag-start
+// orientation, by a capped 3 deg/tick step) was built and measured — it halved the crouch's toe
+// dip (the sole pitches a few degrees through a crouch and the toe joints, 18cm ahead of the
+// ankle, dip ~2cm below their rest height, about a centimetre through the floor) but made the
+// figure laterally STIFF: a person leaning sideways rolls onto the foot's edge, and with the
+// soles held exactly flat the 45cm lateral chest drag leaned 4cm less, never reached the
+// balance-effort step trigger, and ended 26cm short instead of 13cm. The extraction's capped,
+// relaxed sole hold is the right softness for that roll; the toe dip stays a known soft spot
+// (gated in the harness).
+constexpr float kFloorLiftTol = 0.001f;
+constexpr float kFloorLiftStep = 0.010f;
 // The DRAG target's correction (the grabbed joint is closed onto the cursor every drag tick, see
 // refinePins) is a FINISHER: full within kDragRefineFull of the target, fading linearly to
 // nothing at kDragRefineFade. Per-tick residuals of an ordinary drag (the relaxation's leftover,
@@ -899,7 +954,7 @@ constexpr float kDragRefineFade = 0.06f;
 
 } // namespace
 
-void Model::refinePins(bool settling, const glm::vec3* dragTarget) {
+void Armature::refinePins(bool settling, const glm::vec3* dragTarget) {
     if (!m_ikRig || !m_ikRig->dragActive() || m_bones.empty()) {
         return;
     }
@@ -926,7 +981,9 @@ void Model::refinePins(bool settling, const glm::vec3* dragTarget) {
         const float c = glm::clamp((rel[0][0] + rel[1][1] + rel[2][2] - 1.0f) * 0.5f, -1.0f, 1.0f);
         return std::acos(c);
     };
-    // kind: 0 = contact pin (settle only), 1 = user pin, 2 = the drag target.
+
+    // kind: 0 = contact pin (exact in the settle; floor-lifted during the drag), 1 = user pin,
+    // 2 = the drag target.
     const auto addRef = [&](int node, const glm::vec3& target, int kind) {
         const bool user = kind == 1;
         if (node < 0 || node >= n || node == stepping) {
@@ -952,7 +1009,7 @@ void Model::refinePins(bool settling, const glm::vec3* dragTarget) {
             ref.flat = flat;
             anyUser = true;
         } else if (kind == 2) {
-            // The DRAG TARGET itself (see mesh.h): the grabbed joint is closed onto the
+            // The DRAG TARGET itself (see armature.h): the grabbed joint is closed onto the
             // filtered cursor EXACTLY every drag tick through its own limb — the pin machinery
             // with the cursor as the pin. Whatever part of the target the limb can reach from
             // the current trunk it reaches now; the trunk, legs, and balance keep following on
@@ -972,29 +1029,42 @@ void Model::refinePins(bool settling, const glm::vec3* dragTarget) {
         } else {
             // CONTACT pins (the drag's ground contacts, the settle's held effector): held
             // exactly too, but ONLY IN THE RELEASE SETTLE, and only as RESIDUAL cleanup. During
-            // the drag they are left to the solver: an exact per-tick hold there erased the
-            // FK slip that IS the balance stepper's strain signal (the foot held until the
+            // the drag their PLACE is left to the solver: an exact per-tick hold there erased
+            // the FK slip that IS the balance stepper's strain signal (the foot held until the
             // strain exceeded the band, then jumped 2cm in one tick and a strained release
             // landed 2cm off instead of 5mm), and the pelvis stage fought the solver's root
-            // (fast-drag catch-up never completed, walk landings fell 2cm short). At rest —
-            // the settle — exactness is the contract. A contact farther off than the band is
-            // genuine catch-up (the settle's own animated landing) and is left alone; the
-            // correction is capped per tick so the last centimetre lands eased (a 6-8mm cap
-            // measurably worsened the settle's per-tick residual); and the sole's orientation
-            // is re-imposed only once the extraction's flat-sole hold has brought it within
-            // the rotation band.
-            if (!settling) {
-                return;
-            }
+            // (fast-drag catch-up never completed, walk landings fell 2cm short) — the drag
+            // ticks only apply the vertical FLOOR LIFT below. At rest — the settle — exactness
+            // is the contract. A contact farther off than the band is genuine catch-up (the
+            // settle's own animated landing) and is left alone; the correction is capped per
+            // tick so the last centimetre lands eased (a 6-8mm cap measurably worsened the
+            // settle's per-tick residual); and the sole's orientation is re-imposed only once
+            // the extraction's flat-sole hold has brought it within the rotation band.
             const glm::vec3 pos(m_poseGlobal[static_cast<std::size_t>(node)][3]);
-            const glm::vec3 delta = target - pos;
-            const float dist = glm::length(delta);
-            if (dist > kContactRefineBand) {
-                return;
+            if (!settling) {
+                // DRAG ticks: the FLOOR LIFT only (see kFloorLiftTol). A planted contact that
+                // the applied pose has pushed below its pin height is raised back to that
+                // height — through its own leg, vertically, keeping whatever lateral slip the
+                // strain produced — so a crouch never buries a foot, tick after tick.
+                const float sink = target.y - pos.y;
+                if (sink <= kFloorLiftTol) {
+                    return;
+                }
+                ref.target = glm::vec3(pos.x, pos.y + std::min(sink, kFloorLiftStep), pos.z);
+                ref.flat = -1;
+            } else {
+                const glm::vec3 delta = target - pos;
+                const float dist = glm::length(delta);
+                if (dist > kContactRefineBand) {
+                    return;
+                }
+                ref.target = dist > kContactRefineStep
+                                 ? pos + delta * (kContactRefineStep / dist)
+                                 : target;
+                ref.flat = (flat >= 0 && flatRotError(node, flat) < kContactRefineRotBand)
+                               ? flat
+                               : -1;
             }
-            ref.target = dist > kContactRefineStep ? pos + delta * (kContactRefineStep / dist)
-                                                   : target;
-            ref.flat = (flat >= 0 && flatRotError(node, flat) < kContactRefineRotBand) ? flat : -1;
         }
         // The pin's limb chain (see IkRig::limbJunction): its parent up to, excluding, the
         // junction where the limb joins the axial skeleton. A pin ON the solve root has no
@@ -1054,7 +1124,7 @@ void Model::refinePins(bool settling, const glm::vec3* dragTarget) {
             return;
         }
         dofJoint[static_cast<std::size_t>(j)] = 1;
-        const GpuBone& b = m_bones[static_cast<std::size_t>(j)];
+        const Bone& b = m_bones[static_cast<std::size_t>(j)];
         for (int a = 0; a < 3; ++a) {
             if (b.rotLimited[a] && b.rotMax[a] - b.rotMin[a] < 1e-3f) {
                 continue; // locked channel
@@ -1311,7 +1381,7 @@ void Model::refinePins(bool settling, const glm::vec3* dragTarget) {
     computeSkinMatrices();
 }
 
-bool Model::togglePinSelectedBone() {
+bool Armature::togglePinSelectedBone() {
     if (m_selectedBone < 0 || m_selectedBone >= static_cast<int>(m_bones.size())) {
         return false;
     }
@@ -1323,7 +1393,7 @@ bool Model::togglePinSelectedBone() {
     return flag != 0;
 }
 
-bool Model::hasPinnedBones() const {
+bool Armature::hasPinnedBones() const {
     for (const char p : m_bonePinned) {
         if (p) {
             return true;
@@ -1332,11 +1402,11 @@ bool Model::hasPinnedBones() const {
     return false;
 }
 
-void Model::unpinAllBones() {
+void Armature::unpinAllBones() {
     std::fill(m_bonePinned.begin(), m_bonePinned.end(), 0);
 }
 
-std::vector<int> Model::activeContactPins() const {
+std::vector<int> Armature::activeContactPins() const {
     std::vector<int> out;
     if (m_ikRig && m_ikRig->dragActive()) {
         const std::vector<IkEffector>& pins = m_ikRig->pins();
