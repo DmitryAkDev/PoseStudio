@@ -754,6 +754,153 @@ void realPhases(Report& report, const std::vector<ArmatureBone>& bones) {
                       info("steps", r.stepsTaken)});
     }
 
+    // --- Wheel DEPTH steps: the app moves the drag plane in discrete notches while the cursor
+    // rests (a ~5cm target jump per notch at the default framing — VulkanWindow::wheelEvent), so
+    // the raw target arrives as a staircase. Each step must read as a smooth push (the accel
+    // shaping ramps the hand over a few ticks), the hand must land on the moved cursor, and the
+    // feet must stay planted — a forward hand pull recruits the arm and trunk, not the legs.
+    if (report.wants("depth")) {
+        Scenario sc;
+        sc.grab = "lHand";
+        sc.path.push_back({0, glm::vec3(0.0f), "start"});
+        int t = 0;
+        for (int k = 1; k <= 6; ++k) {
+            const glm::vec3 off(0.0f, 0.0f, 0.05f * static_cast<float>(k)); // toward a front camera
+            sc.path.push_back({t + 1, off, "step"});
+            sc.path.push_back({t + 11, off, "hold"});
+            t += 11;
+        }
+        sc.path.push_back({t + 60, sc.path.back().offset, "rest"});
+        sc.idleJoints = kIdleForHandDrag;
+        const RunResult r = run(sc);
+        double stepJumpMax = 0.0;
+        double stepSpeedUpMax = 0.0;
+        for (const PhaseStats& ph : r.phases) {
+            stepJumpMax = std::max(stepJumpMax, ph.maxJump);
+            stepSpeedUpMax = std::max(stepSpeedUpMax, ph.effSpeedUpMax);
+        }
+        report.phase("[real] wheel depth steps (lHand 6 x 5cm z notches)",
+                     {gateMax("hand-to-cursor at rest (mm)", r.restingMiss * 1000.0, 25.0),
+                      gateMax("feet drift (mm)", r.contactDriftMax * 1000.0, 10.0),
+                      gateMax("hip displacement (mm)", r.hipDisp * 1000.0, 40.0),
+                      gateMax("settle max step (mm)", r.settleMaxStep * 1000.0, 20.0),
+                      gateMax("idle-joint oscillation", r.idleOscMax, 0.035),
+                      info("worst single-tick joint jump (mm)", stepJumpMax * 1000.0),
+                      info("worst hand speed-up per tick (mm)", stepSpeedUpMax * 1000.0),
+                      info("steps", r.stepsTaken)});
+    }
+
+    // --- Pose utilities (Armature::mirrorPose / mirrorSubtreeToOpposite / resetBone /
+    // resetPose). The mirror rule — (x, -y, -z) per Euler channel, a negated x translation — is
+    // checked GEOMETRICALLY: after mirroring, the right hand and foot must sit exactly where the
+    // reflection (x -> -x) of the left ones was, which only holds if the rule matches the rig's
+    // real left/right orientation frames. Mirroring twice must be the identity, a limb copy must
+    // be one-way, and the resets must return exactly to rest without touching pins.
+    if (report.wants("utilities")) {
+        Armature arm;
+        arm.build(bones);
+        const int lShin = arm.boneIndex("lShin"), rShin = arm.boneIndex("rShin");
+        const int lFoot = arm.boneIndex("lFoot"), rFoot = arm.boneIndex("rFoot");
+        const int lForeArm = arm.boneIndex("lForeArm"), rForeArm = arm.boneIndex("rForeArm");
+        const int lHand = arm.boneIndex("lHand"), rHand = arm.boneIndex("rHand");
+        const int abdomen = arm.boneIndex("abdomenLower"), hip = arm.boneIndex("hip");
+        const int head = arm.boneIndex("head");
+        const bool named = lShin >= 0 && rShin >= 0 && lFoot >= 0 && rFoot >= 0 && lForeArm >= 0 &&
+                           rForeArm >= 0 && lHand >= 0 && rHand >= 0 && abdomen >= 0 && hip >= 0 &&
+                           head >= 0;
+        double pairing = 0.0, geomErr = 1e9, ruleErr = 1e9, involutionErr = 1e9, copyErr = 1e9;
+        double resetJointErr = 1e9, resetLimbErr = 1e9, resetPoseErr = 1e9;
+        double pinKept = 0.0;
+        auto err = [](const glm::vec3& a, const glm::vec3& b) {
+            return static_cast<double>(glm::length(a - b));
+        };
+        if (named) {
+            pairing = (arm.mirrorBone(static_cast<std::size_t>(lShin)) == rShin &&
+                       arm.mirrorBone(static_cast<std::size_t>(rShin)) == lShin &&
+                       arm.mirrorBone(static_cast<std::size_t>(lHand)) == rHand &&
+                       arm.mirrorBone(static_cast<std::size_t>(hip)) == hip &&
+                       arm.mirrorBone(static_cast<std::size_t>(head)) == head)
+                          ? 1.0
+                          : 0.0;
+            // A one-sided pose well inside every limit on both sides (see the base rig's ranges).
+            const std::vector<std::pair<std::string, glm::vec3>> pose = {
+                {"lShin", glm::vec3(120.0f, -8.0f, 3.0f)},
+                {"lForeArm", glm::vec3(0.0f, -100.0f, 0.0f)},
+                {"lHand", glm::vec3(5.0f, -20.0f, 30.0f)},
+                {"abdomenLower", glm::vec3(10.0f, 5.0f, -5.0f)},
+                {"head", glm::vec3(-10.0f, 10.0f, 5.0f)},
+                {"@trans:hip", glm::vec3(0.05f, -0.10f, 0.02f)},
+            };
+            arm.applyPose(pose);
+            const glm::vec3 lFootBefore = arm.boneWorldPosition(static_cast<std::size_t>(lFoot));
+            const glm::vec3 lHandBefore = arm.boneWorldPosition(static_cast<std::size_t>(lHand));
+            std::vector<glm::vec3> eulerBefore, transBefore;
+            for (std::size_t i = 0; i < arm.boneCount(); ++i) {
+                eulerBefore.push_back(arm.boneEuler(i));
+                transBefore.push_back(arm.boneTranslation(i));
+            }
+
+            arm.mirrorPose();
+            const glm::vec3 reflFoot(-lFootBefore.x, lFootBefore.y, lFootBefore.z);
+            const glm::vec3 reflHand(-lHandBefore.x, lHandBefore.y, lHandBefore.z);
+            geomErr = std::max(err(arm.boneWorldPosition(static_cast<std::size_t>(rFoot)), reflFoot),
+                               err(arm.boneWorldPosition(static_cast<std::size_t>(rHand)), reflHand));
+            ruleErr = 0.0;
+            ruleErr = std::max(ruleErr, err(arm.boneEuler(static_cast<std::size_t>(rShin)), glm::vec3(120.0f, 8.0f, -3.0f)));
+            ruleErr = std::max(ruleErr, err(arm.boneEuler(static_cast<std::size_t>(rForeArm)), glm::vec3(0.0f, 100.0f, 0.0f)));
+            ruleErr = std::max(ruleErr, err(arm.boneEuler(static_cast<std::size_t>(rHand)), glm::vec3(5.0f, 20.0f, -30.0f)));
+            ruleErr = std::max(ruleErr, err(arm.boneEuler(static_cast<std::size_t>(abdomen)), glm::vec3(10.0f, -5.0f, 5.0f)));
+            ruleErr = std::max(ruleErr, err(arm.boneEuler(static_cast<std::size_t>(head)), glm::vec3(-10.0f, -10.0f, -5.0f)));
+            ruleErr = std::max(ruleErr, err(arm.boneEuler(static_cast<std::size_t>(lShin)), glm::vec3(0.0f)));
+            ruleErr = std::max(ruleErr, err(arm.boneTranslation(static_cast<std::size_t>(hip)), glm::vec3(-0.05f, -0.10f, 0.02f)));
+
+            arm.mirrorPose(); // an involution: back to the original pose exactly
+            involutionErr = 0.0;
+            for (std::size_t i = 0; i < arm.boneCount(); ++i) {
+                involutionErr = std::max(involutionErr, err(arm.boneEuler(i), eulerBefore[i]));
+                involutionErr = std::max(involutionErr, err(arm.boneTranslation(i), transBefore[i]));
+            }
+
+            // One-way limb copy: the right arm takes the left's pose; the left keeps its own.
+            arm.mirrorSubtreeToOpposite(lForeArm);
+            copyErr = 0.0;
+            copyErr = std::max(copyErr, err(arm.boneEuler(static_cast<std::size_t>(rForeArm)), glm::vec3(0.0f, 100.0f, 0.0f)));
+            copyErr = std::max(copyErr, err(arm.boneEuler(static_cast<std::size_t>(rHand)), glm::vec3(5.0f, 20.0f, -30.0f)));
+            copyErr = std::max(copyErr, err(arm.boneEuler(static_cast<std::size_t>(lForeArm)), glm::vec3(0.0f, -100.0f, 0.0f)));
+            copyErr = std::max(copyErr, err(arm.boneEuler(static_cast<std::size_t>(lHand)), glm::vec3(5.0f, -20.0f, 30.0f)));
+            copyErr = std::max(copyErr, err(arm.boneEuler(static_cast<std::size_t>(rShin)), glm::vec3(0.0f))); // outside the subtree: untouched
+
+            // Reset one joint: the hand only, its parent keeps its bend.
+            arm.resetBone(lHand, false);
+            resetJointErr = std::max(err(arm.boneEuler(static_cast<std::size_t>(lHand)), glm::vec3(0.0f)),
+                                     err(arm.boneEuler(static_cast<std::size_t>(lForeArm)), glm::vec3(0.0f, -100.0f, 0.0f)));
+            // Reset a limb: the forearm and everything below it; the other arm is untouched.
+            arm.resetBone(lForeArm, true);
+            resetLimbErr = std::max(err(arm.boneEuler(static_cast<std::size_t>(lForeArm)), glm::vec3(0.0f)),
+                                    err(arm.boneEuler(static_cast<std::size_t>(rForeArm)), glm::vec3(0.0f, 100.0f, 0.0f)));
+            // Reset the pose: everything to rest, a pin survives.
+            arm.selectBoneByName("rHand");
+            arm.togglePinSelectedBone();
+            arm.resetPose();
+            resetPoseErr = 0.0;
+            for (std::size_t i = 0; i < arm.boneCount(); ++i) {
+                resetPoseErr = std::max(resetPoseErr, err(arm.boneEuler(i), glm::vec3(0.0f)));
+                resetPoseErr = std::max(resetPoseErr, err(arm.boneTranslation(i), glm::vec3(0.0f)));
+            }
+            pinKept = arm.isBonePinned(static_cast<std::size_t>(rHand)) ? 1.0 : 0.0;
+        }
+        report.phase("[real] pose utilities: mirror + reset",
+                     {gateMin("bone pairing (l<->r, centre = self)", pairing, 1.0),
+                      gateMax("mirrored hand/foot vs reflected original (mm)", geomErr * 1000.0, 1.0),
+                      gateMax("mirror rule error (deg / m)", ruleErr, 1e-3),
+                      gateMax("mirror twice = identity (max error)", involutionErr, 1e-3),
+                      gateMax("limb copy error (deg)", copyErr, 1e-3),
+                      gateMax("reset joint error (deg)", resetJointErr, 1e-3),
+                      gateMax("reset limb error (deg)", resetLimbErr, 1e-3),
+                      gateMax("reset pose error", resetPoseErr, 1e-3),
+                      gateMin("pin survives reset pose", pinKept, 1.0)});
+    }
+
     // --- A reachable overhead pull RAISES THE ARM with the head and chest still, the feet
     // planted, no suspension (the "pulling straight up bends her over" repro).
     if (report.wants("arm-raise")) {

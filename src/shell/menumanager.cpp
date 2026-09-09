@@ -151,6 +151,32 @@ void MenuManager::setupMenus() {
     });
     editMenu->addSeparator();
 
+    // Pose utilities, on the ACTIVE figure (the one whose joint was last clicked). "Limb" = the
+    // selected joint and everything below it. Each is one undo step; pins are left alone. The
+    // joint context menu in the viewport offers the per-joint ones too.
+    QAction *resetJointAction = editMenu->addAction("Reset Selected Joint");
+    QObject::connect(resetJointAction, &QAction::triggered, mainWindow, [this]() {
+        if (viewportWidget) viewportWidget->resetSelectedJoint();
+    });
+    QAction *resetLimbAction = editMenu->addAction("Reset Limb");
+    QObject::connect(resetLimbAction, &QAction::triggered, mainWindow, [this]() {
+        if (viewportWidget) viewportWidget->resetSelectedLimb();
+    });
+    QAction *resetPoseAction = editMenu->addAction("Reset Pose");
+    QObject::connect(resetPoseAction, &QAction::triggered, mainWindow, [this]() {
+        if (viewportWidget) viewportWidget->resetPose();
+    });
+    editMenu->addSeparator();
+    QAction *mirrorPoseAction = editMenu->addAction("Mirror Pose");
+    QObject::connect(mirrorPoseAction, &QAction::triggered, mainWindow, [this]() {
+        if (viewportWidget) viewportWidget->mirrorPose();
+    });
+    QAction *mirrorLimbAction = editMenu->addAction("Mirror Limb to Other Side");
+    QObject::connect(mirrorLimbAction, &QAction::triggered, mainWindow, [this]() {
+        if (viewportWidget) viewportWidget->mirrorSelectedLimb();
+    });
+    editMenu->addSeparator();
+
     QAction *preferencesAction = editMenu->addAction(loadDualStateIcon("preferences"), "Preferences");
     QObject::connect(preferencesAction, &QAction::triggered, mainWindow, [this]() {
         openPreferencesDialog();

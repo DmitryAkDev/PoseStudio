@@ -224,6 +224,26 @@ void VulkanRenderer::unpinAllBones() {
     }
 }
 
+bool VulkanRenderer::resetSelectedJoint(bool subtree) {
+    return m_scene && m_scene->resetSelectedJoint(subtree);
+}
+
+void VulkanRenderer::resetPose() {
+    if (m_scene) {
+        m_scene->resetPose();
+    }
+}
+
+void VulkanRenderer::mirrorPose() {
+    if (m_scene) {
+        m_scene->mirrorPose();
+    }
+}
+
+bool VulkanRenderer::mirrorSelectedLimb() {
+    return m_scene && m_scene->mirrorSelectedLimb();
+}
+
 bool VulkanRenderer::groundFigure() {
     return m_scene ? m_scene->groundFigure() : false;
 }

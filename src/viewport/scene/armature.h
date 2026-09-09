@@ -165,6 +165,29 @@ public:
     /// rows honoured, unknown names ignored) and recomputes the skin data.
     void applyPose(const std::vector<std::pair<std::string, glm::vec3>>& pose);
 
+    // --- Pose utilities: reset and mirror (the Edit menu / joint context menu). Pins are left
+    // untouched by all of them — they are constraints, not shape (Unpin All exists for that).
+    /// The bone on the OTHER side of the body: names pair by prefix — `l`/`r` followed by an
+    /// uppercase letter or underscore (`lShin`/`rShin`, `l_thigh`/`r_thigh`), or `Left`/`Right`
+    /// — and a centre bone (or an unpaired name) maps to itself.
+    int mirrorBone(std::size_t index) const { return m_mirrorBone[index]; }
+    /// Returns bone @p index to rest (rotation and pose translation zero); with @p subtree,
+    /// every descendant too. False without such a bone.
+    bool resetBone(int index, bool subtree);
+    /// Returns every bone to the bind pose (rotations + translations).
+    void resetPose();
+    /// Mirrors the WHOLE pose across the sagittal plane: left and right swap, centre bones flip.
+    /// Per Euler channel the mirror is (x, -y, -z) and the pose translation negates x — exact
+    /// for a reflection because the figure's left/right orientation frames are themselves
+    /// mirrored ((a, b, c) <-> (a, -b, -c)), so the reflected world rotation lands in the other
+    /// side's frame with exactly those channel values (verified geometrically in the harness).
+    void mirrorPose();
+    /// Copies bone @p index's pose AND its subtree's to the opposite side, mirrored (the
+    /// matching bones there take the mirrored values; centre bones inside the subtree flip in
+    /// place, so mirroring from the chest mirrors both arms and the head). False without such a
+    /// bone.
+    bool mirrorSubtreeToOpposite(int index);
+
     // --- Full-body IK (scene/ik/): drag a joint, the whole body follows anatomically ---
     /// Begins an FBIK drag of the SELECTED joint: detects which joints are planted on the ground,
     /// pins them (feet for a standing figure — never the hip), and builds the balance support
@@ -240,6 +263,11 @@ private:
     /// The single composition point every pose path (FK, pose load, IK extraction) shares.
     void recomposePoseLocal(std::size_t index);
 
+    /// Appends bone @p index and every descendant to @p out (anatomical hierarchy).
+    void collectSubtree(int index, std::vector<int>& out) const;
+    /// Re-poses every bone from its (limit-clamped) Euler + translation, then the skin data once.
+    void reposeAll();
+
     /// Clamps m_boneEuler[index] in place to the bone's per-axis rotation limits (a no-op on axes
     /// the figure leaves unconstrained). The single enforcement point every posing path funnels
     /// through.
@@ -295,6 +323,8 @@ private:
     // (bend -> its twist child, twist -> its bend parent), so grabbing the upper-arm joint lights
     // the whole upper arm rather than the half the bend bone's own weights cover.
     std::vector<int>                     m_highlightTwin;
+    std::vector<std::vector<int>>        m_children;   // anatomical children per bone (subtree walks)
+    std::vector<int>                     m_mirrorBone; // the other side's bone per bone (self for centre)
     std::vector<glm::mat4>               m_poseGlobal;  // scratch for computeSkinMatrices (it runs per drag-move; no per-call allocation)
     std::vector<glm::vec3>               m_boneEuler;  // accumulated pose rotation per bone (degrees)
     // Pose translation per bone (parent-frame offset added to poseLocal). Rotations alone can't

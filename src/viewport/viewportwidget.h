@@ -66,6 +66,16 @@ public:
     /// handling reaches the same place. No-op without a selection or if the viewport degraded.
     void deleteSelectedObject();
 
+    /// Pose utilities (Edit menu), all undoable pose edits on the active figure; no-ops without
+    /// a figure/selection or if the viewport degraded. "Limb" = the selected joint and
+    /// everything below it; Mirror Pose swaps the body's sides, Mirror Limb copies the selected
+    /// limb, mirrored, onto the other side.
+    void resetSelectedJoint();
+    void resetSelectedLimb();
+    void resetPose();
+    void mirrorPose();
+    void mirrorSelectedLimb();
+
     /// Returns the camera to the default perspective framing (the overlay's Home button).
     /// No-op if the viewport degraded.
     void resetView();

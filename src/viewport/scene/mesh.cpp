@@ -103,11 +103,24 @@ std::shared_ptr<VulkanTexture> uploadShared(VulkanContext& context, TextureUploa
     return texture;
 }
 
+/// A host-mapped, zero-filled storage buffer of @p bytes: the per-frame corrective weight
+/// buffers (rewritten in place), and the placeholder bound where a model has no correctives.
+VulkanBuffer makeZeroedHostStorageBuffer(VulkanContext& context, VkDeviceSize bytes) {
+    VulkanBuffer buffer(context, bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO,
+                        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                            VMA_ALLOCATION_CREATE_MAPPED_BIT);
+    if (buffer.mappedData() != nullptr) {
+        std::memset(buffer.mappedData(), 0, static_cast<std::size_t>(bytes));
+    }
+    return buffer;
+}
+
 } // namespace
 
 Mesh::Mesh(VulkanContext& context, const MeshData& data, VkDescriptorSetLayout materialSetLayout,
            VkDescriptorPool materialPool, const VulkanTexture& fallbackDiffuse,
-           const VulkanTexture& fallbackNormal, TextureUploadCache& uploads, ImmediateBatch& batch)
+           const VulkanTexture& fallbackNormal, TextureUploadCache& uploads, ImmediateBatch& batch,
+           const std::vector<uint32_t>* correctiveRanges)
     : m_indexCount(static_cast<uint32_t>(data.indices.size())), m_baseColor(data.baseColor),
       m_roughness(data.roughness), m_specularWeight(data.specularWeight),
       m_metalness(data.metalness), m_lobe1Roughness(data.lobe1Roughness),
@@ -127,9 +140,22 @@ Mesh::Mesh(VulkanContext& context, const MeshData& data, VkDescriptorSetLayout m
 
     const VkDeviceSize vertexBytes = sizeof(Vertex) * data.vertices.size();
     const VkDeviceSize indexBytes = sizeof(uint32_t) * data.indices.size();
-    // Record all uploads into the shared batch instead of submitting per buffer/texture.
-    m_vertexBuffer = createDeviceLocalBuffer(context, data.vertices.data(), vertexBytes,
-                                             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, batch);
+    // Record all uploads into the shared batch instead of submitting per buffer/texture. A mesh
+    // some pose corrective touches uploads a COPY of its vertices with the Model's per-vertex
+    // corrective ranges stamped in (Vertex::correctiveRange) — the importer's data stays
+    // pristine (the ground samples and bounds read it after this), and the batch copies the
+    // temporary into its staging buffer before returning.
+    if (correctiveRanges != nullptr && correctiveRanges->size() == data.vertices.size()) {
+        std::vector<Vertex> stamped = data.vertices;
+        for (std::size_t i = 0; i < stamped.size(); ++i) {
+            stamped[i].correctiveRange = (*correctiveRanges)[i];
+        }
+        m_vertexBuffer = createDeviceLocalBuffer(context, stamped.data(), vertexBytes,
+                                                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, batch);
+    } else {
+        m_vertexBuffer = createDeviceLocalBuffer(context, data.vertices.data(), vertexBytes,
+                                                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, batch);
+    }
     m_indexBuffer = createDeviceLocalBuffer(context, data.indices.data(), indexBytes,
                                             VK_BUFFER_USAGE_INDEX_BUFFER_BIT, batch);
 
@@ -257,15 +283,6 @@ void Mesh::recordDepth(VkCommandBuffer cmd) const {
     vkCmdDrawIndexed(cmd, m_indexCount, 1, 0, 0, 0);
 }
 
-void Mesh::reuploadVertices(VulkanContext& context, const std::vector<Vertex>& vertices,
-                            ImmediateBatch& batch) {
-    // Recreate the device-local vertex buffer with the re-morphed data (same count). The previous
-    // buffer is freed on assignment; the caller has made the GPU idle so it isn't in use.
-    const VkDeviceSize vertexBytes = sizeof(Vertex) * vertices.size();
-    m_vertexBuffer = createDeviceLocalBuffer(context, vertices.data(), vertexBytes,
-                                             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, batch);
-}
-
 Model::Model(VulkanContext& context, const ModelData& data, VkDescriptorSetLayout materialSetLayout,
              VkDescriptorSetLayout jointSetLayout, const VulkanTexture& fallbackDiffuse,
              const VulkanTexture& fallbackNormal)
@@ -305,7 +322,7 @@ Model::Model(VulkanContext& context, const ModelData& data, VkDescriptorSetLayou
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     poolSizes[0].descriptorCount = meshCount * 6;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSizes[1].descriptorCount = kMaxFramesInFlight; // one joint set per frame in flight
+    poolSizes[1].descriptorCount = kMaxFramesInFlight * 3; // per frame slot: joints + corrective weights + deltas
 
     VkDescriptorPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -325,10 +342,12 @@ Model::Model(VulkanContext& context, const ModelData& data, VkDescriptorSetLayou
     // through this cache — one staging upload + mip chain per unique image instead of per mesh.
     TextureUploadCache uploads;
     m_meshes.reserve(meshCount);
-    std::vector<std::vector<uint32_t>> perMeshBaseIndex; // parallel to m_meshes (for corrective mapping)
+    // Pose correctives resolve BEFORE the meshes upload: each touched vertex's packed range into
+    // the GPU delta table rides in its vertex data (see Mesh's correctiveRanges parameter).
+    std::vector<std::vector<uint32_t>> perMeshRanges; // parallel to m_meshes; empty = untouched mesh
+    std::vector<CorrectiveEntry>       correctiveEntries;
     if (hasCorrectives) {
-        m_baseVertices.reserve(meshCount);
-        perMeshBaseIndex.reserve(meshCount);
+        buildRuntimeCorrectives(data, perMeshRanges, correctiveEntries);
     }
     const bool skinned = !data.bones.empty();
     if (skinned) {
@@ -348,12 +367,11 @@ Model::Model(VulkanContext& context, const ModelData& data, VkDescriptorSetLayou
         if (meshData.indices.empty()) {
             continue;
         }
+        const std::size_t mi = m_meshes.size();
+        const std::vector<uint32_t>* ranges =
+            (mi < perMeshRanges.size() && !perMeshRanges[mi].empty()) ? &perMeshRanges[mi] : nullptr;
         m_meshes.emplace_back(m_context, meshData, materialSetLayout, m_materialPool, fallbackDiffuse,
-                              fallbackNormal, uploads, batch);
-        if (hasCorrectives) {
-            m_baseVertices.push_back(meshData.vertices);    // uncorrected base, for re-morphing
-            perMeshBaseIndex.push_back(meshData.baseVertex); // source base index per render vertex
-        }
+                              fallbackNormal, uploads, batch, ranges);
         if (skinned) {
             // Ground samples: the skinning inputs dropToGround() needs to find the posed lowest
             // point (the GPU buffers are device-local and unreadable).
@@ -362,11 +380,17 @@ Model::Model(VulkanContext& context, const ModelData& data, VkDescriptorSetLayou
             }
         }
     }
-    batch.submitAndWait();
-
-    if (hasCorrectives) {
-        buildRuntimeCorrectives(data, perMeshBaseIndex);
+    // The corrective delta table: one static device-local buffer for the whole model (the vertex
+    // shaders index it through each vertex's range), riding the same upload batch; a 16-byte zero
+    // placeholder keeps set 2 complete for a model without correctives.
+    if (!correctiveEntries.empty()) {
+        m_correctiveDeltaBuffer = createDeviceLocalBuffer(
+            m_context, correctiveEntries.data(), sizeof(CorrectiveEntry) * correctiveEntries.size(),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, batch);
+    } else {
+        m_correctiveDeltaBuffer = makeZeroedHostStorageBuffer(m_context, sizeof(CorrectiveEntry));
     }
+    batch.submitAndWait();
 
     // The armature — the runtime skeleton + pose (see armature.h) — built from the model's bones
     // (empty for a static model: one identity joint). Bind transforms are translation-only, so
@@ -412,30 +436,49 @@ Model::Model(VulkanContext& context, const ModelData& data, VkDescriptorSetLayou
     jointAlloc.pSetLayouts = jointLayouts.data();
     VK_CHECK(vkAllocateDescriptorSets(m_context.device(), &jointAlloc, m_jointSets.data()));
 
+    // The corrective weight buffers ride the same per-slot scheme: one float per corrective
+    // (16-byte minimum, zero-filled — a fresh model renders uncorrected until its first
+    // evaluation at record time), host-mapped and rewritten in place by
+    // uploadCorrectiveWeightsIfDirty.
+    const VkDeviceSize weightBytes =
+        std::max<VkDeviceSize>(16, sizeof(float) * m_correctives.size());
     for (int f = 0; f < kMaxFramesInFlight; ++f) {
-        m_jointBuffers[static_cast<std::size_t>(f)] =
+        const auto slot = static_cast<std::size_t>(f);
+        m_jointBuffers[slot] =
             VulkanBuffer(m_context, m_jointCount * 2 * sizeof(glm::vec4),
                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO,
                          VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
                              VMA_ALLOCATION_CREATE_MAPPED_BIT);
+        m_correctiveWeightBuffers[slot] = makeZeroedHostStorageBuffer(m_context, weightBytes);
 
-        VkDescriptorBufferInfo jointInfo{};
-        jointInfo.buffer = m_jointBuffers[static_cast<std::size_t>(f)].handle();
-        jointInfo.offset = 0;
-        jointInfo.range = m_jointCount * 2 * sizeof(glm::vec4);
+        // Set 2 for this slot: 0 = joints, 1 = corrective weights, 2 = the shared delta table.
+        std::array<VkDescriptorBufferInfo, 3> infos{};
+        infos[0].buffer = m_jointBuffers[slot].handle();
+        infos[0].offset = 0;
+        infos[0].range = m_jointCount * 2 * sizeof(glm::vec4);
+        infos[1].buffer = m_correctiveWeightBuffers[slot].handle();
+        infos[1].offset = 0;
+        infos[1].range = VK_WHOLE_SIZE;
+        infos[2].buffer = m_correctiveDeltaBuffer.handle();
+        infos[2].offset = 0;
+        infos[2].range = VK_WHOLE_SIZE;
 
-        VkWriteDescriptorSet jointWrite{};
-        jointWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        jointWrite.dstSet = m_jointSets[static_cast<std::size_t>(f)];
-        jointWrite.dstBinding = 0;
-        jointWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        jointWrite.descriptorCount = 1;
-        jointWrite.pBufferInfo = &jointInfo;
-        vkUpdateDescriptorSets(m_context.device(), 1, &jointWrite, 0, nullptr);
+        std::array<VkWriteDescriptorSet, 3> writes{};
+        for (uint32_t b = 0; b < writes.size(); ++b) {
+            writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[b].dstSet = m_jointSets[slot];
+            writes[b].dstBinding = b;
+            writes[b].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[b].descriptorCount = 1;
+            writes[b].pBufferInfo = &infos[b];
+        }
+        vkUpdateDescriptorSets(m_context.device(), static_cast<uint32_t>(writes.size()),
+                               writes.data(), 0, nullptr);
     }
 }
 
 void Model::uploadJointsIfDirty(uint32_t frameIndex) {
+    uploadCorrectiveWeightsIfDirty(frameIndex); // the pose's other per-frame data (no-op without JCMs)
     const std::vector<glm::vec4>& quats = m_armature.skinDualQuats();
     if (quats.empty() || frameIndex >= static_cast<uint32_t>(kMaxFramesInFlight) ||
         m_jointUploaded[frameIndex] == m_armature.skinVersion()) {
@@ -463,73 +506,184 @@ void Model::applyPose(const std::vector<std::pair<std::string, glm::vec3>>& pose
 }
 
 void Model::buildRuntimeCorrectives(const ModelData& data,
-                                    const std::vector<std::vector<uint32_t>>& perMeshBaseIndex) {
-    // Invert each mesh's baseVertex array: base vertex -> the render (mesh, local) vertices it fed. A
-    // base vertex on a UV/zone seam feeds several render vertices (possibly across meshes), so a
-    // corrective's single delta must reach all of them.
-    std::unordered_map<uint32_t, std::vector<std::pair<uint32_t, uint32_t>>> baseToRender;
-    for (uint32_t mi = 0; mi < perMeshBaseIndex.size(); ++mi) {
-        const std::vector<uint32_t>& bidx = perMeshBaseIndex[mi];
-        for (uint32_t lv = 0; lv < bidx.size(); ++lv) {
-            baseToRender[bidx[lv]].emplace_back(mi, lv);
+                                    std::vector<std::vector<uint32_t>>& perMeshRanges,
+                                    std::vector<CorrectiveEntry>& entries) {
+    // Bone names -> indices, resolved once (the armature is built from data.bones in this same
+    // order, so these ARE the runtime bone indices the pose is read by).
+    std::unordered_map<std::string, int> boneOf;
+    boneOf.reserve(data.bones.size());
+    for (std::size_t i = 0; i < data.bones.size(); ++i) {
+        boneOf.emplace(data.bones[i].name, static_cast<int>(i));
+    }
+
+    // The non-empty meshes, in the order the constructor builds them (= m_meshes order).
+    std::vector<const MeshData*> meshes;
+    meshes.reserve(data.meshes.size());
+    uint32_t baseCount = 0;
+    for (const MeshData& md : data.meshes) {
+        if (md.indices.empty()) {
+            continue;
+        }
+        meshes.push_back(&md);
+        for (const uint32_t b : md.baseVertex) {
+            baseCount = std::max(baseCount, b + 1);
+        }
+    }
+    const std::size_t meshCount = meshes.size();
+    perMeshRanges.assign(meshCount, {});
+    entries.clear();
+
+    // Invert each mesh's baseVertex array: base vertex -> the render (mesh, local) vertices it
+    // fed. A base vertex on a UV/zone seam feeds several render vertices (possibly across
+    // meshes), so a corrective's single delta must reach all of them. Dense CSR over the (small)
+    // base cage: one counting pass, one fill pass.
+    std::vector<uint32_t> fanStart(static_cast<std::size_t>(baseCount) + 1, 0);
+    for (const MeshData* md : meshes) {
+        for (const uint32_t b : md->baseVertex) {
+            ++fanStart[b + 1];
+        }
+    }
+    for (std::size_t i = 1; i < fanStart.size(); ++i) {
+        fanStart[i] += fanStart[i - 1];
+    }
+    std::vector<std::pair<uint32_t, uint32_t>> fan(fanStart.back()); // (mesh, local vertex)
+    {
+        std::vector<uint32_t> cursor(fanStart.begin(), fanStart.end() - 1);
+        for (uint32_t k = 0; k < meshCount; ++k) {
+            const std::vector<uint32_t>& bidx = meshes[k]->baseVertex;
+            for (uint32_t lv = 0; lv < bidx.size(); ++lv) {
+                fan[cursor[bidx[lv]]++] = {k, lv};
+            }
         }
     }
 
-    std::unordered_set<uint32_t> affected;
-    m_correctives.reserve(data.correctives.size());
-    for (const PoseCorrective& pc : data.correctives) {
-        RuntimeCorrective rc;
-        rc.id = pc.id;
-        rc.sumFormulas = pc.sumFormulas;
-        rc.gateScale = pc.gateScale;
-        rc.clamped = pc.clamped;
-        rc.clampMin = pc.clampMin;
-        rc.clampMax = pc.clampMax;
-        std::unordered_map<uint32_t, std::size_t> slotOfMesh; // mesh index -> index into rc.meshDeltas
-        for (const auto& [baseIdx, delta] : pc.deltas) {
-            const auto it = baseToRender.find(baseIdx);
-            if (it == baseToRender.end()) {
-                continue; // delta targets a vertex not present in any rendered mesh
+    // Pass 1: how many correctives touch each render vertex, and which correctives land on any
+    // rendered geometry at all (those are the ones kept — the GPU index is the compacted one).
+    std::vector<std::vector<uint32_t>> count(meshCount);
+    for (uint32_t k = 0; k < meshCount; ++k) {
+        count[k].assign(meshes[k]->vertices.size(), 0);
+    }
+    std::vector<int> compactIndex(data.correctives.size(), -1);
+    std::size_t total = 0;
+    for (std::size_t ci = 0; ci < data.correctives.size(); ++ci) {
+        bool landed = false;
+        for (const auto& [baseIdx, delta] : data.correctives[ci].deltas) {
+            if (baseIdx >= baseCount) {
+                continue; // targets a vertex not present in any rendered mesh
             }
-            for (const auto& [mi, lv] : it->second) {
-                std::size_t slot;
-                const auto s = slotOfMesh.find(mi);
-                if (s == slotOfMesh.end()) {
-                    slot = rc.meshDeltas.size();
-                    slotOfMesh.emplace(mi, slot);
-                    RuntimeCorrective::MeshDelta md;
-                    md.mesh = mi;
-                    rc.meshDeltas.push_back(std::move(md));
-                } else {
-                    slot = s->second;
+            for (uint32_t f = fanStart[baseIdx]; f < fanStart[baseIdx + 1]; ++f) {
+                const auto [k, lv] = fan[f];
+                ++count[k][lv];
+                ++total;
+                landed = true;
+            }
+        }
+        if (landed) {
+            compactIndex[ci] = static_cast<int>(m_correctives.size());
+            RuntimeCorrective rc;
+            const PoseCorrective& pc = data.correctives[ci];
+            rc.id = pc.id;
+            rc.sumFormulas = pc.sumFormulas;
+            rc.gateScale = pc.gateScale;
+            rc.clamped = pc.clamped;
+            rc.clampMin = pc.clampMin;
+            rc.clampMax = pc.clampMax;
+            rc.opBone.resize(rc.sumFormulas.size());
+            for (std::size_t f = 0; f < rc.sumFormulas.size(); ++f) {
+                const std::vector<CorrectiveOp>& ops = rc.sumFormulas[f].ops;
+                rc.opBone[f].assign(ops.size(), -1);
+                for (std::size_t k = 0; k < ops.size(); ++k) {
+                    if (ops[k].kind == CorrectiveOp::Kind::PushRotation) {
+                        const auto it = boneOf.find(ops[k].bone);
+                        rc.opBone[f][k] = it == boneOf.end() ? -1 : it->second;
+                    }
                 }
-                rc.meshDeltas[slot].localVertex.push_back(lv);
-                rc.meshDeltas[slot].delta.push_back(delta);
             }
+            m_correctives.push_back(std::move(rc));
         }
-        if (rc.meshDeltas.empty()) {
-            continue; // none of this corrective's deltas landed on rendered geometry
-        }
-        for (const RuntimeCorrective::MeshDelta& md : rc.meshDeltas) {
-            affected.insert(md.mesh);
-        }
-        m_correctives.push_back(std::move(rc));
+    }
+    m_correctiveWeight.assign(m_correctives.size(), 0.0f);
+    if (m_correctives.empty()) {
+        return;
     }
 
-    m_correctiveWeight.assign(m_correctives.size(), 0.0f);
-    m_correctiveMeshes.assign(affected.begin(), affected.end());
-    std::sort(m_correctiveMeshes.begin(), m_correctiveMeshes.end());
+    // The packed range is (first entry << 8) | count: 24 bits of entry offset, 8 of count. Cap
+    // the total at the guaranteed storage-buffer range (2^23 entries × 16 B = 128 MB) — a real
+    // figure lands around a million — and a vertex's run at 255 (its later correctives are
+    // dropped; no authored content approaches this).
+    constexpr std::size_t kMaxEntries = std::size_t{1} << 23;
+    constexpr uint32_t    kMaxPerVertex = 255;
+    if (total > kMaxEntries) {
+        std::fprintf(stderr,
+                     "[correctives] %zu delta entries exceed the GPU table limit (%zu); "
+                     "pose correctives disabled for this model\n",
+                     total, kMaxEntries);
+        m_correctives.clear();
+        m_correctiveWeight.clear();
+        perMeshRanges.assign(meshCount, {});
+        return;
+    }
 
-    // Base vertices are only needed for meshes a corrective actually touches; free the rest (and all
-    // of them if no corrective survived).
-    if (m_correctives.empty()) {
-        m_baseVertices.clear();
-    } else {
-        for (uint32_t mi = 0; mi < m_baseVertices.size(); ++mi) {
-            if (affected.find(mi) == affected.end()) {
-                std::vector<Vertex>().swap(m_baseVertices[mi]);
+    // Prefix the runs into the flat table and stamp each touched vertex's packed range.
+    std::vector<std::vector<uint32_t>> start(meshCount);
+    std::size_t running = 0;
+    bool capped = false;
+    for (uint32_t k = 0; k < meshCount; ++k) {
+        const std::vector<uint32_t>& cnt = count[k];
+        start[k].assign(cnt.size(), 0);
+        bool touched = false;
+        for (std::size_t lv = 0; lv < cnt.size(); ++lv) {
+            if (cnt[lv] == 0) {
+                continue;
+            }
+            touched = true;
+            const uint32_t n = std::min(cnt[lv], kMaxPerVertex);
+            capped = capped || n != cnt[lv];
+            start[k][lv] = static_cast<uint32_t>(running);
+            running += n;
+        }
+        if (touched) {
+            perMeshRanges[k].assign(cnt.size(), 0);
+            for (std::size_t lv = 0; lv < cnt.size(); ++lv) {
+                if (cnt[lv] != 0) {
+                    perMeshRanges[k][lv] = (start[k][lv] << 8) | std::min(cnt[lv], kMaxPerVertex);
+                }
             }
         }
+    }
+    if (capped) {
+        std::fprintf(stderr, "[correctives] a vertex is touched by more than %u correctives; "
+                             "the extra ones are dropped for it\n", kMaxPerVertex);
+    }
+
+    // Pass 2: fill the table, each vertex's run in corrective order.
+    entries.resize(running);
+    std::vector<std::vector<uint32_t>> filled(meshCount);
+    for (uint32_t k = 0; k < meshCount; ++k) {
+        filled[k].assign(count[k].size(), 0);
+    }
+    for (std::size_t ci = 0; ci < data.correctives.size(); ++ci) {
+        if (compactIndex[ci] < 0) {
+            continue;
+        }
+        const auto gpuIndex = static_cast<uint32_t>(compactIndex[ci]);
+        for (const auto& [baseIdx, delta] : data.correctives[ci].deltas) {
+            if (baseIdx >= baseCount) {
+                continue;
+            }
+            for (uint32_t f = fanStart[baseIdx]; f < fanStart[baseIdx + 1]; ++f) {
+                const auto [k, lv] = fan[f];
+                if (filled[k][lv] >= kMaxPerVertex) {
+                    continue;
+                }
+                entries[start[k][lv] + filled[k][lv]++] = {gpuIndex, delta};
+            }
+        }
+    }
+    if (std::getenv("POSESTUDIO_DUMP_CORRECTIVES") != nullptr) {
+        std::fprintf(stderr, "[correctives] %zu correctives -> %zu GPU delta entries (%.1f MB)\n",
+                     m_correctives.size(), entries.size(),
+                     static_cast<double>(entries.size() * sizeof(CorrectiveEntry)) / (1024.0 * 1024.0));
     }
 }
 
@@ -538,13 +692,15 @@ float Model::evalCorrectiveWeight(std::size_t correctiveIndex) const {
     float sum = 0.0f;
     std::vector<float> st;
     st.reserve(8);
-    for (const CorrectiveFormula& f : rc.sumFormulas) {
+    for (std::size_t fi = 0; fi < rc.sumFormulas.size(); ++fi) {
+        const CorrectiveFormula& f = rc.sumFormulas[fi];
         st.clear();
-        for (const CorrectiveOp& op : f.ops) {
+        for (std::size_t oi = 0; oi < f.ops.size(); ++oi) {
+            const CorrectiveOp& op = f.ops[oi];
             switch (op.kind) {
                 case CorrectiveOp::Kind::PushRotation: {
                     float angle = 0.0f;
-                    const int bone = m_armature.boneIndex(op.bone);
+                    const int bone = rc.opBone[fi][oi];
                     if (bone >= 0) {
                         angle = m_armature.boneEuler(static_cast<std::size_t>(bone))[op.axis];
                     }
@@ -587,26 +743,54 @@ float Model::evalCorrectiveWeight(std::size_t correctiveIndex) const {
     return rc.clamped ? glm::clamp(w, rc.clampMin, rc.clampMax) : w;
 }
 
+bool Model::evaluateCorrectiveWeights() {
+    bool changed = false;
+    for (std::size_t i = 0; i < m_correctives.size(); ++i) {
+        const float w = evalCorrectiveWeight(i);
+        // Only commit a move past the threshold, so the stored weight is always exactly what the
+        // GPU has (sub-threshold drift accumulates until it trips, never silently diverges).
+        if (std::fabs(w - m_correctiveWeight[i]) > 1e-4f) {
+            m_correctiveWeight[i] = w;
+            changed = true;
+        }
+    }
+    if (changed) {
+        ++m_correctiveVersion;
+    }
+    return changed;
+}
+
+void Model::uploadCorrectiveWeightsIfDirty(uint32_t frameIndex) {
+    if (m_correctives.empty() || frameIndex >= static_cast<uint32_t>(kMaxFramesInFlight)) {
+        return;
+    }
+    // The pose moved since the weights were last evaluated (any posing path — a drag tick, a
+    // gizmo/wheel nudge, an IK settle, a pose load — bumps the armature's skin version).
+    if (m_correctiveEvalSkinVersion != m_armature.skinVersion()) {
+        evaluateCorrectiveWeights();
+        m_correctiveEvalSkinVersion = m_armature.skinVersion();
+    }
+    if (m_correctiveUploaded[frameIndex] == m_correctiveVersion) {
+        return;
+    }
+    auto* dst = static_cast<float*>(m_correctiveWeightBuffers[frameIndex].mappedData());
+    if (dst == nullptr) {
+        return;
+    }
+    std::memcpy(dst, m_correctiveWeight.data(), sizeof(float) * m_correctiveWeight.size());
+    m_correctiveUploaded[frameIndex] = m_correctiveVersion;
+}
+
 void Model::refreshCorrectives() {
     if (m_correctives.empty()) {
         return;
     }
-    // Re-evaluate weights; bail if none moved enough to matter (the common case mid-drag / for a joint
-    // that has no corrective).
-    bool changed = false;
-    for (std::size_t i = 0; i < m_correctives.size(); ++i) {
-        const float w = evalCorrectiveWeight(i);
-        if (std::fabs(w - m_correctiveWeight[i]) > 1e-4f) {
-            changed = true;
-        }
-        m_correctiveWeight[i] = w;
-    }
-    if (!changed) {
-        return;
-    }
+    evaluateCorrectiveWeights();
+    m_correctiveEvalSkinVersion = m_armature.skinVersion();
     // Diagnostic hook: POSESTUDIO_DUMP_CORRECTIVES=1 prints every corrective whose weight is
-    // non-zero after a pose settles — which JCMs fire, and how hard. No-op unless set.
-    if (std::getenv("POSESTUDIO_DUMP_CORRECTIVES") != nullptr) {
+    // non-zero when a pose settles — which JCMs fire, and how hard. No-op unless set.
+    static const bool dump = std::getenv("POSESTUDIO_DUMP_CORRECTIVES") != nullptr;
+    if (dump) {
         std::fprintf(stderr, "[correctives] active after pose change:\n");
         for (std::size_t i = 0; i < m_correctives.size(); ++i) {
             if (std::fabs(m_correctiveWeight[i]) >= 1e-4f) {
@@ -616,31 +800,6 @@ void Model::refreshCorrectives() {
         }
         std::fflush(stderr);
     }
-
-    // Re-morph each affected mesh from its base and re-upload. The old buffers may be referenced by an
-    // in-flight frame, so make the GPU idle first (this runs between frames on a settled pose, not per
-    // drag-move, so the stall is infrequent).
-    vkDeviceWaitIdle(m_context.device());
-    ImmediateBatch batch(m_context);
-    for (const uint32_t mi : m_correctiveMeshes) {
-        std::vector<Vertex> verts = m_baseVertices[mi]; // start from the uncorrected base
-        for (std::size_t c = 0; c < m_correctives.size(); ++c) {
-            const float w = m_correctiveWeight[c];
-            if (std::fabs(w) < 1e-4f) {
-                continue;
-            }
-            for (const RuntimeCorrective::MeshDelta& md : m_correctives[c].meshDeltas) {
-                if (md.mesh != mi) {
-                    continue;
-                }
-                for (std::size_t k = 0; k < md.localVertex.size(); ++k) {
-                    verts[md.localVertex[k]].pos += w * md.delta[k];
-                }
-            }
-        }
-        m_meshes[mi].reuploadVertices(m_context, verts, batch);
-    }
-    batch.submitAndWait();
 }
 
 Model::~Model() {

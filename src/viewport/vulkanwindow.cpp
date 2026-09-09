@@ -48,6 +48,10 @@ namespace {
 constexpr float kOrbitRadiansPerPixel = 0.008f;
 constexpr float kPanPerPixel = 0.0015f;
 constexpr float kDollyPerWheelStep = 0.12f; // per 120-unit wheel notch
+// Wheel during a full-body-IK drag: how far the drag plane moves along the view direction per
+// 120-unit notch, as a FRACTION of the plane's distance from the camera (~5cm framing a whole
+// figure at the default 2.6m, millimetres in a close-up on a hand).
+constexpr float kIkDepthPerWheelNotch = 0.02f;
 } // namespace
 
 VulkanWindow::VulkanWindow(QVulkanInstance* instance, uint32_t apiVersion, QString shaderDir,
@@ -230,6 +234,13 @@ void VulkanWindow::startBench() {
     }
     m_preEditPose = m_renderer->capturePose();
     m_benchStart = m_ikPlanePoint;
+    m_benchDepth = m_benchSpec.section(QLatin1Char(':'), 1, 1) == QLatin1String("depth");
+    m_benchDepthOffset = glm::vec3(0.0f);
+    m_benchDepthExpected = 0.0f;
+    m_benchDepthActual = 0.0f;
+    if (m_benchDepth) {
+        std::fprintf(stderr, "[ikbench] depth variant: 5 wheel pushes in hold-1, 5 pulls in hold-2\n");
+    }
     m_ikLastTarget = m_benchStart;
     m_ikCursorFilter.seed(m_benchStart);
     m_ikHasTarget = true;
@@ -269,7 +280,28 @@ void VulkanWindow::benchAdvance() {
         if (t <= kPath[i].tick) {
             const float f = static_cast<float>(t - kPath[i - 1].tick) /
                             static_cast<float>(kPath[i].tick - kPath[i - 1].tick);
-            m_ikLastTarget = m_benchStart + glm::mix(kPath[i - 1].offset, kPath[i].offset, f);
+            m_ikLastTarget = m_benchStart + glm::mix(kPath[i - 1].offset, kPath[i].offset, f) +
+                             m_benchDepthOffset;
+            if (m_benchDepth) {
+                // A real drag's target always lies ON the drag plane (it is the cursor ray's
+                // intersection with it); the scripted path is a world-space offset, so project
+                // it onto the plane along the view axis — the path keeps its on-screen shape and
+                // depth comes ONLY from the notches, exactly like a mouse-driven drag. (The plain
+                // bench keeps its world-space path untouched: its numbers are the calibrated
+                // reference the harness mirrors.)
+                const glm::mat4 view = m_renderer->camera().view();
+                const glm::vec3 axis(view[0][2], view[1][2], view[2][2]);
+                m_ikLastTarget -= axis * glm::dot(m_ikLastTarget - m_ikPlanePoint, axis);
+            }
+            if (m_benchDepth && t % 10 == 0) {
+                // The ":depth" variant: a wheel notch every 10 ticks through the two holds —
+                // pushes away from the camera through hold-1, pulls back through hold-2.
+                if (t >= 70 && t <= 110) {
+                    benchDepthNotch(+1);
+                } else if (t >= 190 && t <= 230) {
+                    benchDepthNotch(-1);
+                }
+            }
             return;
         }
     }
@@ -279,8 +311,63 @@ void VulkanWindow::benchAdvance() {
     m_ikSettling = true;
 }
 
+void VulkanWindow::benchDepthNotch(int notch) {
+    // Exercise the wheel's depth control exactly as wheelEvent does, with the virtual cursor
+    // at the current raw target's screen position, and report what the geometry produced:
+    // the drag plane's camera distance before/after, the target's displacement ALONG the view
+    // axis (must match notch x kIkDepthPerWheelNotch x distance, sign = away from the camera)
+    // and ACROSS it (the cursor ray's obliquity — an off-centre pointer's ray is not parallel to
+    // the view axis, so keeping the joint under the pointer moves it slightly sideways too).
+    QPointF cursor;
+    if (!projectToScreen(m_ikLastTarget, cursor)) {
+        std::fprintf(stderr, "[ikbench] depth notch: target behind the camera, skipped\n");
+        return;
+    }
+    // The scripted path moves the raw target in WORLD space, so unlike a real drag (whose
+    // target is always derived from the plane) it can sit off the drag plane. Re-derive it onto
+    // the plane first (a zero-notch step) and fold that correction into the path offset, so the
+    // notch below measures the depth step alone.
+    {
+        const glm::vec3 offPlane = m_ikLastTarget;
+        if (stepIkDepth(0.0f, cursor)) {
+            m_benchDepthOffset += m_ikLastTarget - offPlane;
+        }
+    }
+    Camera& camera = m_renderer->camera();
+    const glm::mat4 view = camera.view();
+    const glm::vec3 away = -glm::vec3(view[0][2], view[1][2], view[2][2]);
+    const float distBefore = glm::dot(m_ikPlanePoint - camera.position(), away);
+    const float expected = static_cast<float>(notch) * kIkDepthPerWheelNotch * distBefore;
+    const glm::vec3 before = m_ikLastTarget;
+    if (!stepIkDepth(static_cast<float>(notch), cursor)) {
+        std::fprintf(stderr, "[ikbench] depth notch %+d: cursor ray missed the plane\n", notch);
+        return;
+    }
+    const float distAfter = glm::dot(m_ikPlanePoint - camera.position(), away);
+    const glm::vec3 moved = m_ikLastTarget - before;
+    const float along = glm::dot(moved, away);
+    const float across = glm::length(moved - away * along);
+    m_benchDepthOffset += moved;
+    m_benchDepthExpected += expected;
+    m_benchDepthActual += along;
+    std::fprintf(stderr,
+                 "[ikbench] depth notch %+d at tick %d: plane %.3f -> %.3f m from camera; target moved "
+                 "%+.1f mm along the view axis (expected %+.1f), %.1f mm across it\n",
+                 notch, m_benchTick, distBefore, distAfter, along * 1000.0f, expected * 1000.0f,
+                 across * 1000.0f);
+    std::fflush(stderr);
+}
+
 void VulkanWindow::benchFinish() {
     perfReport("settle");
+    if (m_benchDepth) {
+        std::fprintf(stderr,
+                     "[ikbench] depth total: %+.1f mm along the view axis (expected %+.1f); net "
+                     "offset after pushes+pulls (%.1f %.1f %.1f) mm\n",
+                     m_benchDepthActual * 1000.0f, m_benchDepthExpected * 1000.0f,
+                     m_benchDepthOffset.x * 1000.0f, m_benchDepthOffset.y * 1000.0f,
+                     m_benchDepthOffset.z * 1000.0f);
+    }
     std::fprintf(stderr, "[ikbench] done\n");
     std::fflush(stderr);
     m_benchActive = false;
@@ -865,6 +952,9 @@ void VulkanWindow::showObjectContextMenu(const QPointF& localPos, const QPoint& 
     QMenu menu;
     QAction* pinAction = nullptr;
     QAction* unpinAllAction = nullptr;
+    QAction* resetJointAction = nullptr;
+    QAction* resetLimbAction = nullptr;
+    QAction* mirrorLimbAction = nullptr;
     if (joint >= 0) {
         pinAction = menu.addAction(m_renderer->selectedBonePinned()
                                        ? QStringLiteral("Unpin Joint\tP")
@@ -872,13 +962,25 @@ void VulkanWindow::showObjectContextMenu(const QPointF& localPos, const QPoint& 
         if (m_renderer->hasPinnedBones()) {
             unpinAllAction = menu.addAction(QStringLiteral("Unpin All Joints"));
         }
+        // Pose utilities on the clicked joint (selectBoneAt selected it): "limb" = the joint and
+        // everything below it. The Edit menu carries the same plus the whole-pose variants.
+        menu.addSeparator();
+        resetJointAction = menu.addAction(QStringLiteral("Reset Joint"));
+        resetLimbAction = menu.addAction(QStringLiteral("Reset Limb"));
+        mirrorLimbAction = menu.addAction(QStringLiteral("Mirror Limb to Other Side"));
         if (picked >= 0) {
             menu.addSeparator();
         }
     }
     QAction* deleteAction = picked >= 0 ? menu.addAction(QStringLiteral("Delete")) : nullptr;
     QAction* chosen = menu.exec(globalPos);
-    if (chosen != nullptr && (chosen == pinAction || chosen == unpinAllAction)) {
+    if (chosen != nullptr && chosen == resetJointAction) {
+        runPoseUtility(PoseUtility::ResetJoint);
+    } else if (chosen != nullptr && chosen == resetLimbAction) {
+        runPoseUtility(PoseUtility::ResetLimb);
+    } else if (chosen != nullptr && chosen == mirrorLimbAction) {
+        runPoseUtility(PoseUtility::MirrorLimb);
+    } else if (chosen != nullptr && (chosen == pinAction || chosen == unpinAllAction)) {
         // Pins ride in the pose snapshot, so a pin edit is an ordinary undoable pose edit.
         m_preEditPose = m_renderer->capturePose();
         if (chosen == pinAction) {
@@ -892,6 +994,43 @@ void VulkanWindow::showObjectContextMenu(const QPointF& localPos, const QPoint& 
     }
     requestUpdate(); // selection highlight / pin markers changed even if nothing was chosen
 }
+
+void VulkanWindow::runPoseUtility(PoseUtility what) {
+    if (!m_renderer || m_ikDragging) {
+        return; // not mid-gesture: the rig captured its pins and pose at drag start
+    }
+    if (m_ikSettling) {
+        finishIkSettle(); // land the previous release first; this edit starts from its result
+    }
+    endAxisRotate(); // a held X/Y/Z wheel edit closes as its own undo step first (no-op if none)
+    m_preEditPose = m_renderer->capturePose();
+    switch (what) {
+        case PoseUtility::ResetJoint:
+            m_renderer->resetSelectedJoint(false);
+            break;
+        case PoseUtility::ResetLimb:
+            m_renderer->resetSelectedJoint(true);
+            break;
+        case PoseUtility::ResetPose:
+            m_renderer->resetPose();
+            break;
+        case PoseUtility::MirrorPose:
+            m_renderer->mirrorPose();
+            break;
+        case PoseUtility::MirrorLimb:
+            m_renderer->mirrorSelectedLimb();
+            break;
+    }
+    m_renderer->finalizePose(); // the settled-pose hook (correctives already follow per frame)
+    commitPoseUndo();           // no-op if nothing changed (no selection, already at rest)
+    requestUpdate();
+}
+
+void VulkanWindow::resetSelectedJoint() { runPoseUtility(PoseUtility::ResetJoint); }
+void VulkanWindow::resetSelectedLimb() { runPoseUtility(PoseUtility::ResetLimb); }
+void VulkanWindow::resetPose() { runPoseUtility(PoseUtility::ResetPose); }
+void VulkanWindow::mirrorPose() { runPoseUtility(PoseUtility::MirrorPose); }
+void VulkanWindow::mirrorSelectedLimb() { runPoseUtility(PoseUtility::MirrorLimb); }
 
 void VulkanWindow::deleteSelectedObject() {
     if (m_renderer) {
@@ -938,7 +1077,8 @@ void VulkanWindow::mouseMoveEvent(QMouseEvent* event) {
     Camera& camera = m_renderer->camera();
     if ((active & Qt::LeftButton) && m_ikDragging) {
         // Full-body IK: the grabbed joint tracks the cursor within the camera-parallel plane
-        // through its grab point (fixed for the whole drag so the depth can't feed back).
+        // through its grab point. The plane's depth changes ONLY by explicit wheel steps
+        // (wheelEvent), never from the solve, so it can't feed back.
         const glm::mat4 view = camera.view();
         const glm::vec3 planeNormal(view[0][2], view[1][2], view[2][2]); // toward the camera
         const Ray ray = camera.screenPointToRay(
@@ -1000,8 +1140,63 @@ void VulkanWindow::wheelEvent(QWheelEvent* event) {
         requestUpdate();
         return;
     }
+    if (m_ikDragging && (m_activeDragButtons & event->buttons() & Qt::LeftButton)) {
+        // DEPTH during a full-body-IK drag. The cursor only ever places the grabbed joint within
+        // the camera-parallel drag plane, so without this every "bring the hand forward" needed a
+        // release, an orbit, and a second drag. Each notch moves the drag plane along the view
+        // direction — scroll up (the dolly-in direction) pushes the joint AWAY from the camera,
+        // scroll down pulls it toward it — by a fraction of the plane's distance from the camera,
+        // so the step matches the view's scale, and the raw target is re-derived from the
+        // CURRENT cursor through the moved plane so the joint stays under the pointer while its
+        // depth changes. The 60 Hz timer picks the new target up like any cursor motion (same
+        // filter, same governors), so a notch reads as a smooth push rather than a jump, and the
+        // Armature's floor clamp on the drag target still applies. The plane is kept at least
+        // 10cm in front of the camera: pulled through it, the cursor ray could no longer hit it.
+        stepIkDepth(steps, event->position());
+        requestUpdate(); // the drag timer issues the moved target on its next tick
+        return;
+    }
     m_renderer->camera().dolly(steps * kDollyPerWheelStep);
     requestUpdate();
+}
+
+bool VulkanWindow::stepIkDepth(float notches, const QPointF& cursorPos) {
+    Camera& camera = m_renderer->camera();
+    const glm::mat4 view = camera.view();
+    const glm::vec3 towardCamera(view[0][2], view[1][2], view[2][2]);
+    const float distance = glm::dot(m_ikPlanePoint - camera.position(), -towardCamera);
+    constexpr float kMinPlaneDistance = 0.10f;
+    float push = notches * kIkDepthPerWheelNotch * std::max(distance, kMinPlaneDistance);
+    push = std::max(push, kMinPlaneDistance - distance);
+    const glm::vec3 grab = m_ikPlanePoint;
+    m_ikPlanePoint -= towardCamera * push;
+    const Ray ray = camera.screenPointToRay(static_cast<float>(cursorPos.x()),
+                                            static_cast<float>(cursorPos.y()),
+                                            static_cast<float>(width()), static_cast<float>(height()));
+    const float denom = glm::dot(ray.direction, towardCamera);
+    if (std::abs(denom) <= 1e-4f) {
+        return false;
+    }
+    const float t = glm::dot(m_ikPlanePoint - ray.origin, towardCamera) / denom;
+    if (t <= 0.0f) {
+        return false;
+    }
+    if (!m_ikHasTarget) {
+        m_ikCursorFilter.seed(grab); // a wheel before any move: start from the grab
+        m_ikHasTarget = true;
+    }
+    m_ikLastTarget = ray.origin + ray.direction * t;
+    return true;
+}
+
+bool VulkanWindow::projectToScreen(const glm::vec3& world, QPointF& out) const {
+    const glm::vec4 clip = m_renderer->camera().viewProjection() * glm::vec4(world, 1.0f);
+    if (clip.w <= 1e-4f) {
+        return false;
+    }
+    const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+    out = QPointF((ndc.x * 0.5f + 0.5f) * width(), (ndc.y * 0.5f + 0.5f) * height());
+    return true;
 }
 
 void VulkanWindow::beginAxisRotate(int axis) {

@@ -39,6 +39,33 @@ Armature::~Armature() = default;
 Armature::Armature(Armature&&) noexcept = default;
 Armature& Armature::operator=(Armature&&) noexcept = default;
 
+namespace {
+
+/// The other side's name for a left/right-prefixed bone name, or "" for a centre/unpaired one.
+/// Figures prefix `l`/`r` before an uppercase letter or underscore (`lShin`, `l_thigh`); a few
+/// use `Left`/`Right`. A plain lowercase continuation (`lowerJaw`, `rectus`) is not a side.
+std::string mirroredBoneName(const std::string& name) {
+    if (name.size() >= 2 && (name[0] == 'l' || name[0] == 'r')) {
+        const char next = name[1];
+        if ((next >= 'A' && next <= 'Z') || next == '_') {
+            std::string other = name;
+            other[0] = name[0] == 'l' ? 'r' : 'l';
+            return other;
+        }
+    }
+    static const char* const kWords[][2] = {{"Left", "Right"}, {"Right", "Left"},
+                                            {"left", "right"}, {"right", "left"}};
+    for (const auto& pair : kWords) {
+        const std::string from(pair[0]);
+        if (name.size() > from.size() && name.compare(0, from.size(), from) == 0) {
+            return pair[1] + name.substr(from.size());
+        }
+    }
+    return {};
+}
+
+} // namespace
+
 void Armature::build(const std::vector<ArmatureBone>& bones) {
     m_bones.clear();
     m_boneIndex.clear();
@@ -99,6 +126,19 @@ void Armature::build(const std::vector<ArmatureBone>& bones) {
             m_highlightTwin[parent] = static_cast<int>(i);
             m_highlightTwin[i] = b.parent;
         }
+    }
+
+    // Children lists (subtree walks for the reset/mirror utilities) and each bone's mirror —
+    // the other side's bone by name, itself for centre bones and names without a counterpart.
+    m_children.assign(m_bones.size(), {});
+    m_mirrorBone.resize(m_bones.size());
+    for (std::size_t i = 0; i < m_bones.size(); ++i) {
+        if (m_bones[i].parent >= 0) {
+            m_children[static_cast<std::size_t>(m_bones[i].parent)].push_back(static_cast<int>(i));
+        }
+        const std::string other = mirroredBoneName(m_boneNames[i]);
+        const int j = other.empty() ? -1 : boneIndex(other);
+        m_mirrorBone[i] = j >= 0 ? j : static_cast<int>(i);
     }
 
     // Skin data: two vec4s per joint (a static armature has one identity joint).
@@ -321,6 +361,91 @@ void Armature::applyPose(const std::vector<std::pair<std::string, glm::vec3>>& p
         recomposePoseLocal(i);
     }
     computeSkinMatrices();
+}
+
+void Armature::collectSubtree(int index, std::vector<int>& out) const {
+    if (index < 0 || index >= static_cast<int>(m_bones.size())) {
+        return;
+    }
+    out.push_back(index);
+    for (const int child : m_children[static_cast<std::size_t>(index)]) {
+        collectSubtree(child, out);
+    }
+}
+
+void Armature::reposeAll() {
+    for (std::size_t i = 0; i < m_bones.size(); ++i) {
+        clampBoneEuler(static_cast<int>(i));
+        recomposePoseLocal(i);
+    }
+    computeSkinMatrices();
+}
+
+namespace {
+// The sagittal-plane reflection of a pose rotation, per Euler channel, and of a parent-frame
+// translation. Reflecting a rotation about an axis flips its angle and mirrors the axis: the
+// x axis maps to -x (angle flip cancels), y and z stay (angle flips) — so (x, -y, -z), in
+// any rotation order, since each factor transforms independently.
+glm::vec3 mirrorEuler(const glm::vec3& e) { return glm::vec3(e.x, -e.y, -e.z); }
+glm::vec3 mirrorTranslation(const glm::vec3& t) { return glm::vec3(-t.x, t.y, t.z); }
+} // namespace
+
+bool Armature::resetBone(int index, bool subtree) {
+    if (index < 0 || index >= static_cast<int>(m_bones.size())) {
+        return false;
+    }
+    std::vector<int> bones;
+    if (subtree) {
+        collectSubtree(index, bones);
+    } else {
+        bones.push_back(index);
+    }
+    for (const int b : bones) {
+        m_boneEuler[static_cast<std::size_t>(b)] = glm::vec3(0.0f);
+        m_boneTranslation[static_cast<std::size_t>(b)] = glm::vec3(0.0f);
+    }
+    reposeAll();
+    return true;
+}
+
+void Armature::resetPose() {
+    for (glm::vec3& e : m_boneEuler) {
+        e = glm::vec3(0.0f);
+    }
+    for (glm::vec3& t : m_boneTranslation) {
+        t = glm::vec3(0.0f);
+    }
+    reposeAll();
+}
+
+void Armature::mirrorPose() {
+    // Read the whole pose first: a left/right pair writes each other's slot.
+    const std::vector<glm::vec3> euler = m_boneEuler;
+    const std::vector<glm::vec3> translation = m_boneTranslation;
+    for (std::size_t i = 0; i < m_bones.size(); ++i) {
+        const auto j = static_cast<std::size_t>(m_mirrorBone[i]);
+        m_boneEuler[j] = mirrorEuler(euler[i]);
+        m_boneTranslation[j] = mirrorTranslation(translation[i]);
+    }
+    reposeAll();
+}
+
+bool Armature::mirrorSubtreeToOpposite(int index) {
+    if (index < 0 || index >= static_cast<int>(m_bones.size())) {
+        return false;
+    }
+    std::vector<int> bones;
+    collectSubtree(index, bones);
+    const std::vector<glm::vec3> euler = m_boneEuler;
+    const std::vector<glm::vec3> translation = m_boneTranslation;
+    for (const int b : bones) {
+        const auto i = static_cast<std::size_t>(b);
+        const auto j = static_cast<std::size_t>(m_mirrorBone[i]);
+        m_boneEuler[j] = mirrorEuler(euler[i]);
+        m_boneTranslation[j] = mirrorTranslation(translation[i]);
+    }
+    reposeAll();
+    return true;
 }
 
 } // namespace pose

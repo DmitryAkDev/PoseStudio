@@ -10,6 +10,14 @@
 // Static meshes bind a single identity joint and default to weight (1,0,0,0), so this same path
 // leaves them untransformed. Passes a world-space normal, UV, and world position (the last feeds
 // the specular view vector) to the fragment.
+//
+// POSE CORRECTIVES (JCMs) are blended here too, BEFORE skinning: each vertex carries a packed
+// range into the model's corrective-delta buffer (set 2, binding 2 — sorted per vertex), and the
+// per-frame corrective weights (set 2, binding 1) scale those deltas. The corrected bind mesh is
+// then skinned, exactly what the CPU re-morph used to produce — but a weight change is now a
+// tiny per-frame buffer write instead of a device-idle + vertex-buffer re-upload, which is what
+// lets the correctives track a drag live rather than popping in on release. shadow.vert applies
+// the IDENTICAL blend (shadows/outlines must follow the corrected surface).
 
 // Shared set-0 camera/lighting UBO. The fragment stage declares the full block (view + lighting rig +
 // SH + params — see mesh.frag / scene.cpp's CameraUbo); the vertex stage only needs the view-projection,
@@ -35,6 +43,21 @@ layout(std430, set = 2, binding = 0) readonly buffer Joints {
     DualQuat dq[];
 } joints;
 
+// Pose correctives: this frame's weight per corrective (binding 1) and the model's per-vertex
+// (corrective, displacement) entries (binding 2), addressed through inCorrectiveRange.
+layout(std430, set = 2, binding = 1) readonly buffer CorrectiveWeights {
+    float w[];
+} jcmWeights;
+struct CorrectiveDelta {
+    uint  corrective; // index into jcmWeights.w
+    float dx;         // bind-space displacement at weight 1 (model units)
+    float dy;
+    float dz;
+};
+layout(std430, set = 2, binding = 2) readonly buffer CorrectiveDeltas {
+    CorrectiveDelta d[];
+} jcmDeltas;
+
 // Rotates v by unit quaternion r ((xyz, w) layout).
 vec3 quatRotate(vec4 r, vec3 v) {
     return v + 2.0 * cross(r.xyz, cross(r.xyz, v) + r.w * v);
@@ -47,6 +70,7 @@ layout(location = 3) in uvec4 inJoints;
 layout(location = 4) in vec4 inWeights;
 layout(location = 5) in float inAo; // baked per-vertex ambient occlusion (1 = open)
 layout(location = 6) in vec4 inTangent; // UV tangent + handedness (w = 0 -> none baked)
+layout(location = 7) in uint inCorrectiveRange; // (first delta entry << 8) | count; 0 = none
 
 layout(location = 0) out vec3 vWorldNormal;
 layout(location = 1) out vec2 vUv;
@@ -56,6 +80,16 @@ layout(location = 4) out vec4 vTangent; // world-space tangent, w = handedness (
 layout(location = 5) out float vSelect; // this vertex's skin weight on the SELECTED joint (+ twin)
 
 void main() {
+    // Pose correctives: the bind position plus this vertex's weighted corrective deltas (the
+    // range is empty for untouched vertices and every static-mesh vertex, so the loop is free).
+    vec3 bindPos = inPos;
+    uint jcmCount = inCorrectiveRange & 0xFFu;
+    uint jcmFirst = inCorrectiveRange >> 8;
+    for (uint k = 0u; k < jcmCount; ++k) {
+        CorrectiveDelta cd = jcmDeltas.d[jcmFirst + k];
+        bindPos += jcmWeights.w[cd.corrective] * vec3(cd.dx, cd.dy, cd.dz);
+    }
+
     // Blend the influencing joints' dual quaternions by weight, sign-aligning each against the
     // first joint's hemisphere (q and -q encode the same rotation; blending across the seam
     // cancels instead of averaging). Weights sum to 1, so at bind pose (identity DQs) the
@@ -78,7 +112,7 @@ void main() {
 
     // Rigid transform of the normalized blend: rotate by the real part, translate by
     // 2 * (dual * conjugate(real)).vector.
-    vec3 skinnedPos = quatRotate(rAcc, inPos) +
+    vec3 skinnedPos = quatRotate(rAcc, bindPos) +
                       2.0 * (rAcc.w * dAcc.xyz - dAcc.w * rAcc.xyz + cross(rAcc.xyz, dAcc.xyz));
     vec4 worldPos = pc.model * vec4(skinnedPos, 1.0);
     // mat3(model) is correct for the rigid/uniform-scale model transforms in play; swap to a

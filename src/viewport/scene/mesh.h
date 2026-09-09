@@ -90,9 +90,14 @@ public:
     ///                           import time by the sharing factor).
     /// @param batch              Upload batch the mesh's buffers/textures record into (the Model
     ///                           flushes it once for all its meshes — one submit per import).
+    /// @param correctiveRanges   Per-vertex packed pose-corrective ranges (Vertex::correctiveRange,
+    ///                           one per data.vertices entry) the Model resolved, or nullptr when
+    ///                           no corrective touches this mesh. They're stamped into the vertex
+    ///                           data as it uploads — the importer's copy stays pristine.
     Mesh(VulkanContext& context, const MeshData& data, VkDescriptorSetLayout materialSetLayout,
          VkDescriptorPool materialPool, const VulkanTexture& fallbackDiffuse,
-         const VulkanTexture& fallbackNormal, TextureUploadCache& uploads, ImmediateBatch& batch);
+         const VulkanTexture& fallbackNormal, TextureUploadCache& uploads, ImmediateBatch& batch,
+         const std::vector<uint32_t>* correctiveRanges = nullptr);
 
     Mesh(const Mesh&) = delete;
     Mesh& operator=(const Mesh&) = delete;
@@ -114,12 +119,6 @@ public:
     /// Depth-only draw for the shadow pass: just buffers + drawIndexed — no material set, no push
     /// (the Model pushes the light matrices once for all its meshes).
     void recordDepth(VkCommandBuffer cmd) const;
-
-    /// Replaces the vertex buffer contents (same vertex count) — used to push a re-morphed mesh after
-    /// pose correctives change. Records into @p batch; the caller submits it and must have made the
-    /// GPU idle first (the old buffer may still be referenced by an in-flight frame).
-    void reuploadVertices(VulkanContext& context, const std::vector<Vertex>& vertices,
-                          ImmediateBatch& batch);
 
     /// True if this mesh is (partly) see-through and must be drawn in the transparent pass. An
     /// opacity mask baked into the diffuse alpha makes a mesh transparent even at scalar opacity 1
@@ -263,6 +262,16 @@ public:
     bool selectedBonePinned() const { return m_armature.selectedBonePinned(); }
     bool hasPinnedBones() const { return m_armature.hasPinnedBones(); }
     void unpinAllBones() { m_armature.unpinAllBones(); }
+    // --- Pose utilities (see Armature): reset / mirror. The correctives follow at the next
+    // recorded frame like any pose change; the caller's finalizePose is the settled-pose hook.
+    bool resetSelectedBone(bool subtree) {
+        return m_armature.resetBone(m_armature.selectedBone(), subtree);
+    }
+    void resetPose() { m_armature.resetPose(); }
+    void mirrorPose() { m_armature.mirrorPose(); }
+    bool mirrorSelectedLimb() {
+        return m_armature.mirrorSubtreeToOpposite(m_armature.selectedBone());
+    }
     /// The rig's CONTACT pins (ground-detected, not user pins) while an IK drag is active — for
     /// the overlay's "which feet are planted" markers. Empty outside a drag.
     std::vector<int> activeContactPins() const { return m_armature.activeContactPins(); }
@@ -279,9 +288,12 @@ public:
 
     /// Whether this model carries pose correctives (joint-driven corrective morphs).
     bool hasCorrectives() const { return !m_correctives.empty(); }
-    /// Re-evaluates the pose correctives against the current pose and, if any changed, re-morphs and
-    /// re-uploads the affected meshes. No-op without correctives. Call after a pose edit settles (the
-    /// interactive drag defers to this on release; setBoneRotation/applyPose call it immediately).
+    /// Re-evaluates the pose correctives' weights against the current pose now (the GPU blend
+    /// picks them up at the next recorded frame) and, with POSESTUDIO_DUMP_CORRECTIVES set,
+    /// prints the active ones. No-op without correctives. The correctives no longer NEED this to
+    /// show: every recorded frame re-evaluates them from the live pose (uploadJointsIfDirty), so
+    /// they track a drag continuously — this is the explicit "pose settled" hook
+    /// (Scene::finalizePose, setBoneRotation, applyPose): cheap, and where the dump lives.
     void refreshCorrectives();
 
     /// Tests @p ray (world space) against the model's axis-aligned bounding box (transformed by the
@@ -307,29 +319,45 @@ public:
 private:
     /// Evaluates one corrective's blend weight from the current pose (Σ sumFormulas × gateScale).
     float evalCorrectiveWeight(std::size_t correctiveIndex) const;
+    /// Re-evaluates every corrective's weight from the current pose; returns whether any moved
+    /// (past a 1e-4 threshold) and, if so, bumps m_correctiveVersion so the frame slots re-upload.
+    bool evaluateCorrectiveWeights();
+    /// Writes the current corrective weights into frame slot @p frameIndex's buffer if that slot
+    /// hasn't seen m_correctiveVersion — re-evaluating them first when the pose moved since the
+    /// last evaluation (Armature::skinVersion is the pose's change counter).
+    void uploadCorrectiveWeightsIfDirty(uint32_t frameIndex);
 
-    /// Maps each corrective's base-vertex deltas onto the render meshes (via @p perMeshBaseIndex),
-    /// records which meshes are affected, and keeps their base vertices for re-morphing. Called once
-    /// at construction when the model has correctives.
+    /// One (corrective, displacement) entry of the GPU delta buffer — the vertex shaders'
+    /// CorrectiveDelta (std430: uint + 3 floats, 16 bytes). Entries are grouped per render
+    /// vertex; Vertex::correctiveRange addresses a vertex's run.
+    struct CorrectiveEntry {
+        uint32_t  corrective; ///< Index into m_correctives / the weights buffer.
+        glm::vec3 delta;      ///< Bind-space displacement at weight 1 (model units).
+    };
+    static_assert(sizeof(CorrectiveEntry) == 16, "must match the shaders' CorrectiveDelta");
+
+    /// Resolves the model's correctives for the GPU: keeps each one's driver formulas (bone
+    /// names pre-resolved to indices) and maps every base-vertex delta through each mesh's
+    /// baseVertex array onto the render vertices (a seam vertex feeds several), producing the
+    /// flat, per-vertex-grouped @p entries and, per non-empty mesh, the packed range each of its
+    /// vertices carries (@p perMeshRanges — parallel to the meshes the constructor builds next;
+    /// an untouched mesh's vector stays empty). Runs once at construction, BEFORE the meshes
+    /// upload, because the ranges ride in the vertex data.
     void buildRuntimeCorrectives(const ModelData& data,
-                                 const std::vector<std::vector<uint32_t>>& perMeshBaseIndex);
+                                 std::vector<std::vector<uint32_t>>& perMeshRanges,
+                                 std::vector<CorrectiveEntry>& entries);
 
-    // One pose corrective resolved for this model: its driver formulas (in base-vertex-independent
-    // joint-angle terms) plus, per affected render mesh, the local vertices its deltas land on. Built
-    // once at construction by mapping the base-vertex deltas through each mesh's baseVertex array.
+    // One pose corrective resolved for this model: its driver formulas in joint-angle terms (the
+    // deltas themselves live in the GPU delta buffer). opBone[f][k] is the pre-resolved bone
+    // index of sumFormulas[f].ops[k] (a PushRotation); -1 for other ops / unknown bones.
     struct RuntimeCorrective {
         std::string                    id; // corrective morph id (diagnostics)
         std::vector<CorrectiveFormula> sumFormulas;
+        std::vector<std::vector<int>>  opBone;
         float                          gateScale = 1.0f;
         bool                           clamped = false; // clamp the driven weight to [min,max]
         float                          clampMin = 0.0f;
         float                          clampMax = 1.0f;
-        struct MeshDelta {
-            uint32_t               mesh = 0;      ///< Index into m_meshes / m_baseVertices.
-            std::vector<uint32_t>  localVertex;   ///< Render-vertex indices within that mesh.
-            std::vector<glm::vec3> delta;         ///< Matching displacement (world units).
-        };
-        std::vector<MeshDelta> meshDeltas;
     };
 
     VulkanContext&       m_context;
@@ -355,18 +383,28 @@ private:
     uint32_t                                        m_jointCount = 1;
 
     /// Uploads the armature's skin data into frame slot @p frameIndex's joint buffer if that slot
-    /// hasn't seen the current Armature::skinVersion yet (called by record/recordShadow —
-    /// whichever runs first in a frame does the copy, the other no-ops).
+    /// hasn't seen the current Armature::skinVersion yet, and likewise the pose-corrective
+    /// weights (uploadCorrectiveWeightsIfDirty). Called by every record path — whichever runs
+    /// first in a frame does the copies, the rest no-op.
     void uploadJointsIfDirty(uint32_t frameIndex);
 
-    // Pose correctives: the base (uncorrected) vertices per render mesh, the resolved
-    // correctives, and each corrective's last-applied weight. Empty for a model without correctives.
-    // The base mesh is re-morphed on the CPU (base + Σ weight·delta) and re-uploaded when the pose
-    // changes enough to move a corrective's weight.
-    std::vector<std::vector<Vertex>>  m_baseVertices;     // parallel to m_meshes; only affected meshes filled
-    std::vector<RuntimeCorrective>    m_correctives;
-    std::vector<float>                m_correctiveWeight;  // last-applied weight per corrective
-    std::vector<uint32_t>             m_correctiveMeshes;  // affected render-mesh indices (sorted, unique)
+    // Pose correctives, blended ON THE GPU (set 2 bindings 1 + 2 — see mesh.vert): the resolved
+    // correctives (driver formulas), each one's current weight, the static device-local buffer of
+    // per-vertex (corrective, delta) entries, and — ONE PER FRAME IN FLIGHT, like the joints — the
+    // host-mapped weight buffers the vertex shaders read. At record time the weights are
+    // re-evaluated whenever the pose moved (Armature::skinVersion) and copied into the current
+    // frame slot when it is behind m_correctiveVersion: a weight change costs a few hundred bytes
+    // per frame, never a geometry re-upload. (The CPU re-morph this replaced had to idle the
+    // device and rebuild whole vertex buffers, so correctives could only run once a drag ENDED —
+    // the figure visibly deformed mid-drag and snapped right on release.) A model without
+    // correctives keeps 16-byte zero placeholders bound so its set 2 is complete.
+    std::vector<RuntimeCorrective>                  m_correctives;
+    std::vector<float>                              m_correctiveWeight; // current weight per corrective
+    VulkanBuffer                                    m_correctiveDeltaBuffer;
+    std::array<VulkanBuffer, kMaxFramesInFlight>    m_correctiveWeightBuffers;
+    std::array<std::uint64_t, kMaxFramesInFlight>   m_correctiveUploaded{}; // weight version per slot
+    std::uint64_t                                   m_correctiveVersion = 1;
+    std::uint64_t                                   m_correctiveEvalSkinVersion = ~std::uint64_t{0};
 
     // Compact CPU copy of every render vertex's skinning inputs (position + joints + weights),
     // kept only for skinned models, so dropToGround() can find the CURRENT pose's lowest point

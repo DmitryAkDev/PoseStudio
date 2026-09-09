@@ -42,6 +42,13 @@ struct Vertex {
     /// cotangent frame, so geometry that skips the util still normal-maps.
     glm::vec4  tangent{0.0f};
 
+    // Pose-corrective lookup, packed (first entry << 8) | count: where in the owning Model's
+    // corrective-delta storage buffer this vertex's (corrective, displacement) entries start and
+    // how many there are (0 = the vertex is untouched by any corrective). FILLED BY THE GPU LAYER
+    // (Model, at upload) — importers leave it 0. The vertex shaders sum weight·delta over the
+    // range before skinning, so joint-driven correctives blend live on the GPU (see mesh.vert).
+    uint32_t   correctiveRange = 0;
+
     /// Single interleaved binding at slot 0.
     static VkVertexInputBindingDescription bindingDescription() {
         VkVertexInputBindingDescription binding{};
@@ -53,8 +60,8 @@ struct Vertex {
 
     /// loc0 = pos (vec3), loc1 = normal (vec3), loc2 = uv (vec2), loc3 = joints (uvec4),
     /// loc4 = weights (vec4), loc5 = ao (float), loc6 = tangent (vec4) — matches mesh.vert.
-    static std::array<VkVertexInputAttributeDescription, 7> attributeDescriptions() {
-        std::array<VkVertexInputAttributeDescription, 7> attrs{};
+    static std::array<VkVertexInputAttributeDescription, 8> attributeDescriptions() {
+        std::array<VkVertexInputAttributeDescription, 8> attrs{};
         attrs[0].location = 0;
         attrs[0].binding = 0;
         attrs[0].format = VK_FORMAT_R32G32B32_SFLOAT;
@@ -83,6 +90,10 @@ struct Vertex {
         attrs[6].binding = 0;
         attrs[6].format = VK_FORMAT_R32G32B32A32_SFLOAT;
         attrs[6].offset = offsetof(Vertex, tangent);
+        attrs[7].location = 7;
+        attrs[7].binding = 0;
+        attrs[7].format = VK_FORMAT_R32_UINT;
+        attrs[7].offset = offsetof(Vertex, correctiveRange);
         return attrs;
     }
 };

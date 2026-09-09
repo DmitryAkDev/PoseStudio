@@ -141,6 +141,11 @@ public:
     bool selectedBonePinned() const;
     bool hasPinnedBones() const;
     void unpinAllBones();
+    // --- Pose utilities (forwarded to the Scene's active figure) ---
+    bool resetSelectedJoint(bool subtree);
+    void resetPose();
+    void mirrorPose();
+    bool mirrorSelectedLimb();
     /// Drops the posable figure onto the ground plane (posed lowest point → y = 0). Returns true
     /// if it actually moved (the caller then requests a frame).
     bool groundFigure();

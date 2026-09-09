@@ -189,6 +189,36 @@ void ViewportWidget::deleteSelectedObject() {
     }
 }
 
+void ViewportWidget::resetSelectedJoint() {
+    if (m_window) {
+        m_window->resetSelectedJoint();
+    }
+}
+
+void ViewportWidget::resetSelectedLimb() {
+    if (m_window) {
+        m_window->resetSelectedLimb();
+    }
+}
+
+void ViewportWidget::resetPose() {
+    if (m_window) {
+        m_window->resetPose();
+    }
+}
+
+void ViewportWidget::mirrorPose() {
+    if (m_window) {
+        m_window->mirrorPose();
+    }
+}
+
+void ViewportWidget::mirrorSelectedLimb() {
+    if (m_window) {
+        m_window->mirrorSelectedLimb();
+    }
+}
+
 void ViewportWidget::setShowSkeleton(bool on) {
     if (!m_window || m_window->showSkeleton() == on) {
         return;

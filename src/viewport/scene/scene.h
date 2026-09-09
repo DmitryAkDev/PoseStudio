@@ -189,6 +189,11 @@ public:
     bool selectedBonePinned() const;
     bool hasPinnedBones() const;
     void unpinAllBones();
+    // --- Pose utilities on the ACTIVE figure (see Armature::resetBone / mirrorPose) ---
+    bool resetSelectedJoint(bool subtree);
+    void resetPose();
+    void mirrorPose();
+    bool mirrorSelectedLimb();
     /// Drops the posable figure onto the ground plane: translates it so the CURRENT pose's lowest
     /// point rests at y = 0 (the viewport's "move to ground" button). Returns true if it moved.
     bool groundFigure();

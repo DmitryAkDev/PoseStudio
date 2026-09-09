@@ -333,17 +333,22 @@ void Scene::createDescriptorResources() {
     materialLayoutInfo.pBindings = samplerBindings.data();
     VK_CHECK(vkCreateDescriptorSetLayout(device, &materialLayoutInfo, nullptr, &m_materialSetLayout));
 
-    // Set 2: the per-model skinning joint-matrix storage buffer, read in the vertex stage.
-    VkDescriptorSetLayoutBinding jointBinding{};
-    jointBinding.binding = 0;
-    jointBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    jointBinding.descriptorCount = 1;
-    jointBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    // Set 2: the per-model POSE buffers, all read in the vertex stage — binding 0 = the skinning
+    // dual quaternions, binding 1 = this frame's pose-corrective weights, binding 2 = the
+    // model's per-vertex corrective delta entries (static). Bindings 1/2 let the vertex shaders
+    // blend the correctives (JCMs) live; a model without correctives binds tiny zero buffers.
+    std::array<VkDescriptorSetLayoutBinding, 3> poseBindings{};
+    for (uint32_t i = 0; i < poseBindings.size(); ++i) {
+        poseBindings[i].binding = i;
+        poseBindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        poseBindings[i].descriptorCount = 1;
+        poseBindings[i].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    }
 
     VkDescriptorSetLayoutCreateInfo jointLayoutInfo{};
     jointLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    jointLayoutInfo.bindingCount = 1;
-    jointLayoutInfo.pBindings = &jointBinding;
+    jointLayoutInfo.bindingCount = static_cast<uint32_t>(poseBindings.size());
+    jointLayoutInfo.pBindings = poseBindings.data();
     VK_CHECK(vkCreateDescriptorSetLayout(device, &jointLayoutInfo, nullptr, &m_jointSetLayout));
 
     // Set 3: the scene-wide maps — binding 0 = prefiltered specular cubemap, binding 1 = BRDF LUT
@@ -1103,6 +1108,28 @@ void Scene::unpinAllBones() {
     if (Model* fig = figureModel()) {
         fig->unpinAllBones();
     }
+}
+
+bool Scene::resetSelectedJoint(bool subtree) {
+    Model* fig = figureModel();
+    return fig && fig->resetSelectedBone(subtree);
+}
+
+void Scene::resetPose() {
+    if (Model* fig = figureModel()) {
+        fig->resetPose();
+    }
+}
+
+void Scene::mirrorPose() {
+    if (Model* fig = figureModel()) {
+        fig->mirrorPose();
+    }
+}
+
+bool Scene::mirrorSelectedLimb() {
+    Model* fig = figureModel();
+    return fig && fig->mirrorSelectedLimb();
 }
 
 std::vector<std::pair<std::string, glm::vec3>> Scene::capturePose() const {

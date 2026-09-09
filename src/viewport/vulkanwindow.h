@@ -92,6 +92,14 @@ public:
     /// the undo history is cleared (model indices shift; the deleted figure's poses are moot).
     void deleteSelectedObject();
 
+    /// Pose utilities (Edit menu / the joint context menu), each ONE undoable pose edit on the
+    /// active figure — see runPoseUtility. "Limb" = the selected joint and everything below it.
+    void resetSelectedJoint();
+    void resetSelectedLimb();
+    void resetPose();
+    void mirrorPose();
+    void mirrorSelectedLimb();
+
     /// Toggles the skeleton overlay (the joint→parent bone lines drawn over the figure). Off by
     /// default — joints are grabbed directly on the figure — but they stay grabbable either way.
     /// Remembered and applied once the renderer exists if it isn't built yet.
@@ -251,8 +259,10 @@ private:
     bool             m_leftClickCandidate = false;
     QPointF          m_leftPressPos;
     // True while a PLAIN left-drag is full-body-IK-dragging the grabbed joint: the joint follows
-    // the cursor in a camera-parallel plane through its grab point (m_ikPlanePoint, world space),
-    // the body following via the FBIK solve (feet pinned, auto-balanced). This is THE posing
+    // the cursor in a camera-parallel plane through its grab point (m_ikPlanePoint, world space —
+    // the mouse WHEEL moves that plane along the view direction during the drag, the gesture's
+    // depth control; see wheelEvent), the body following via the FBIK solve (feet pinned,
+    // auto-balanced). This is THE posing
     // gesture; Ctrl+drag is the single-joint FK rotate. The solve is rate-limited per call (it
     // can only move the pose so far per event), so while the button is held m_ikTimer keeps
     // re-issuing the LAST target — catch-up continues and settles even when the mouse stops
@@ -281,12 +291,28 @@ private:
     /// and the drag timer, so both apply the same target filtering. Returns true if the solve
     /// actually changed the pose (the caller only requests a frame then).
     bool issueIkTarget();
+    /// The IK drag's DEPTH control: moves the drag plane (m_ikPlanePoint) along the view
+    /// direction by @p notches wheel notches (+ = away from the camera) and re-derives the raw
+    /// drag target from @p cursorPos (window coords) through the moved plane, so the grabbed joint
+    /// stays under the pointer while its depth changes. Shared by wheelEvent and the scripted
+    /// bench (POSESTUDIO_IK_BENCH=<bone>:depth), which exercises the same geometry with no
+    /// desktop input. Returns false if the cursor ray missed the plane (target left unchanged).
+    bool stepIkDepth(float notches, const QPointF& cursorPos);
+    /// Projects a world point to window coordinates (false if behind the camera).
+    bool projectToScreen(const glm::vec3& world, QPointF& out) const;
     /// Completes the post-release IK settle NOW (ends the drag, settles correctives, commits the
     /// undo entry). Called by the timer when the animated settle lands, and by any interaction
     /// that must not overlap it (a new press, undo/redo) to cut it short cleanly.
     void finishIkSettle();
     /// Commits an undo entry for the pose edit bracketed by m_preEditPose (no-op if unchanged).
     void commitPoseUndo();
+    /// Runs one reset/mirror utility as an undoable pose edit: refused mid-drag (the rig
+    /// captured its pins and pose at drag start), a pending release settle is landed first, a
+    /// held X/Y/Z wheel edit is closed as its own undo step first, then the edit is bracketed
+    /// with m_preEditPose/commitPoseUndo (a no-op when nothing changed — no selection, already
+    /// at rest), correctives re-evaluate, and a frame is requested.
+    enum class PoseUtility { ResetJoint, ResetLimb, ResetPose, MirrorPose, MirrorLimb };
+    void runPoseUtility(PoseUtility what);
     /// Completes an in-flight ground fall NOW (applies the remaining drop, stops the timer):
     /// any interaction that reads the figure's transform (a press, a pose save) calls this first.
     void finishGroundFall();
@@ -337,6 +363,14 @@ private:
     int           m_benchTick = 0;
     int           m_benchRetries = 0;
     glm::vec3     m_benchStart{0.0f};
+    // Bench ":depth" variant: wheel notches applied through stepIkDepth during the holds (five
+    // pushes in hold-1, five pulls in hold-2). The displacement they produce is folded into the
+    // scripted path (m_benchDepthOffset) so the path keeps its own shape on top of the depth.
+    bool          m_benchDepth = false;
+    glm::vec3     m_benchDepthOffset{0.0f};
+    float         m_benchDepthExpected = 0.0f; // Σ expected along-view displacement (m)
+    float         m_benchDepthActual = 0.0f;   // Σ measured along-view displacement (m)
+    void benchDepthNotch(int notch);
 
     // Undo/redo: each committed edit (a pose drag, or a registered lighting gesture) pushes its
     // pre-edit state. m_preEditPose snapshots the pose at drag start (committed on release).
