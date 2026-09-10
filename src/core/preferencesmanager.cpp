@@ -4,6 +4,8 @@
  */
 
 #include "preferencesmanager.h"
+#include "database.h"
+#include <QDir>
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QSqlError>
@@ -17,7 +19,7 @@
 void PreferencesManager::loadFromDatabase() {
     m_preferences.clear();
 
-    QSqlDatabase db = QSqlDatabase::database("db_conn");
+    QSqlDatabase db = appDatabase();
     QSqlQuery query(db);
 
     if (!query.exec("SELECT PreferenceName, PreferenceValue FROM Preferences")) {
@@ -35,11 +37,17 @@ QVariant PreferencesManager::getValue(const QString& key, const QVariant& defaul
     return m_preferences.value(key, defaultValue);
 }
 
+QString PreferencesManager::rememberedDirectory(const QString& key, const QString& fallback) const {
+    const QString stored = getValue(key, fallback).toString();
+    if (stored.isEmpty() || !QDir(stored).exists()) return fallback;
+    return stored;
+}
+
 void PreferencesManager::setValue(const QString& key, const QVariant& value) {
     // Update the cache first so callers see the new value immediately, even if the write below fails
     m_preferences.insert(key, value);
 
-    QSqlDatabase db = QSqlDatabase::database("db_conn");
+    QSqlDatabase db = appDatabase();
     QSqlQuery query(db);
     query.prepare(
         "INSERT INTO Preferences (PreferenceName, PreferenceValue) "

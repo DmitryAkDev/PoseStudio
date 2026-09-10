@@ -1,13 +1,31 @@
+/**
+ * @file constants.h
+ * @brief Cross-cutting compile-time constants: app identity, preference keys, shared UI
+ *        geometry/colours/timings.
+ *
+ * Anything two or more subsystems agree on lives here rather than as duplicated magic numbers
+ * (e.g. the grid delegates' cell geometry, the one separator grey every divider uses). Viewport-
+ * internal tuning that nothing outside src/viewport/ needs stays next to its use; promote a value
+ * here only once a second subsystem depends on it.
+ */
+
 #ifndef CONSTANTS_H
 #define CONSTANTS_H
 
 #include <QString>
 
+// The version string is stamped by CMake from project(PoseStudio VERSION x.y.z) — the ONE place
+// a release bump edits (CHANGELOG.md is the human-readable record of the same number). A build
+// outside CMake would show the placeholder below, which the install ping's server rejects.
+#ifndef POSESTUDIO_VERSION
+#define POSESTUDIO_VERSION "0.0.0"
+#endif
+
 namespace Constants {
     // --- Application Info ---
     // const char* (not QString) avoids a heap allocation for strings that never change.
     inline constexpr const char* APP_NAME = "PoseStudio";
-    inline constexpr const char* APP_VERSION = "0.3.11";
+    inline constexpr const char* APP_VERSION = POSESTUDIO_VERSION;
 
     // Folder name of the default per-user asset library ("My PoseStudio Library"). Created in the
     // user's Documents on first launch (unless a library by this name is already registered) and
@@ -36,6 +54,13 @@ namespace Constants {
     // still find its geometry. Populated by the on-import "locate content folder" recovery prompt.
     inline constexpr const char* PREF_FIGURE_CONTENT_ROOTS = "FigureContentRoots";
 
+    // --- Anonymous install ping (src/core/installping.h) ---
+    // Random per-installation UUID the ping carries; created on first use. A Factory Reset wipes
+    // the Preferences table, so a reset install counts as a new one — acceptable.
+    inline constexpr const char* PREF_INSTALL_ID = "InstallId";
+    // "1"/"0" — the Preferences → General toggle. Absent = on.
+    inline constexpr const char* PREF_PING_ENABLED = "InstallPingEnabled";
+
     // =========================================================================
     // UI DIMENSIONS & LAYOUT
     // =========================================================================
@@ -59,15 +84,23 @@ namespace Constants {
     // =========================================================================
     // UI COLORS (C++ & Rich Text)
     // =========================================================================
-    // Accent Colors
-    inline constexpr const char* COLOR_ACCENT_BLUE = "#497fd4"; // Used for title counts & highlights
+    // THE app accent blue: the QSS hover borders and check glyphs, the DragNumberBox editor
+    // border, the tooltip's extension text, and (sRGB-decoded to linear in the render core) the
+    // viewport's selection outline. QSS can't read C++ constants, so the same value is spelled
+    // out in the stylesheets — change them together. Distinct from the darker selection FILL
+    // blue (#314D7A) the menus and DragNumberBox range fill use.
+    inline constexpr const char* COLOR_ACCENT = "#5b87cc";
+
+    // A brighter, more saturated blue used ONLY for the Asset Manager's drag-reorder drop line and
+    // its tree drop highlight — it has to read over the selection fill, which the accent doesn't.
+    // Not the app accent; don't reach for it for anything else.
+    inline constexpr const char* COLOR_ACCENT_BLUE = "#497fd4";
 
     // Thumbnail Grid Canvas
     inline constexpr const char* COLOR_THUMB_BG_START = "#2a2d30"; // Top gradient color
     inline constexpr const char* COLOR_THUMB_BG_END   = "#0d0d0e"; // Bottom gradient color
 
     // Tooltips
-    inline constexpr const char* COLOR_TOOLTIP_ACCENT = "#5b87cc"; // Blue extension text
     inline constexpr const char* COLOR_TOOLTIP_MUTED  = "#888888"; // Grey path text
 
     // Separator lines — one grey for every divider drawn in C++ (the HDRI menu's category

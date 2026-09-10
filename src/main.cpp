@@ -11,6 +11,7 @@
 #include "splashoverlay.h"
 #include "constants.h"
 #include "preferencesmanager.h"
+#include "installping.h"
 #include "assetmanagerwidget.h"
 #include "appproxystyle.h"
 #include "environmentpanel.h"
@@ -211,6 +212,11 @@ int main(int argc, char *argv[]) {
             viewport->loadPose(arg);
         }
     }
+
+    // The anonymous per-launch install ping (see installping.h): armed now, it fires a few
+    // seconds into the session so it never competes with startup, and is a no-op in builds
+    // without a signing key or when the user has switched it off.
+    InstallPing::scheduleAtStartup(&app);
 
     return app.exec();
 }

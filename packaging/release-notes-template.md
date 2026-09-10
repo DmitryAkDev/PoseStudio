@@ -16,6 +16,8 @@ Full step-by-step instructions, including screenshots of the SmartScreen warning
 
 **System requirements:** 64-bit Windows 10 or 11, and a Vulkan-capable GPU (virtually any graphics card from 2016 onward) with reasonably current drivers.
 
+**Privacy:** each time it starts, the app sends a small anonymous ping (a random install ID, the version, and your OS/CPU type — nothing else) so we can count active installs. Switch it off any time in Edit → Preferences → General.
+
 ## 💡 Quick Tips — the stuff that isn't obvious
 
 - 🖱️ **Camera** — left-drag empty space to orbit, scroll to zoom, middle-drag to pan. The 🏠 button (top-right of the viewport) resets the view. Blender-style view keys: **1** / **3** / **7** for the front / right / top view (**Ctrl** for the opposite side; these are flat orthographic views — orbit to return to perspective), **9** flips the view, **5** is the Home view, **.** frames the selected object.

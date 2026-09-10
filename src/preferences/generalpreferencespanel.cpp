@@ -4,8 +4,36 @@
  */
 
 #include "generalpreferencespanel.h"
+#include "installping.h"
+
+#include <QCheckBox>
+#include <QVBoxLayout>
 
 GeneralPreferencesPanel::GeneralPreferencesPanel(QWidget* parent)
     : PreferencesPanel(QStringLiteral("General"), parent) {
-    addPlaceholder(QStringLiteral("General settings will appear here."));
+
+    // --- Anonymous install ping ---
+    // The toggle is the user-facing half of InstallPing; the copy below is the disclosure of
+    // exactly what the ping carries, so keep it in step with InstallPing::buildPayload().
+    auto* pingToggle = new QCheckBox(QStringLiteral("Send an anonymous install ping"), this);
+    pingToggle->setChecked(InstallPing::isEnabled());
+    contentLayout()->addWidget(pingToggle);
+
+    addDescription(
+        "Each time it starts, PoseStudio lets posestudio.io know that this installation exists, so we can "
+        "see how many people use it and which versions are out there. The ping carries a random "
+        "install ID, the app version, your operating system and CPU type, and whether the app was "
+        "installed or is running portable — nothing else: no names, no files, no usage data, "
+        "and the ID isn't linked to you in any way.");
+    addDescription(QStringLiteral("Install ID: %1").arg(InstallPing::installId()));
+
+    if (!InstallPing::isBuiltIn()) {
+        // Local builds carry no signing key (it comes from the release pipeline's secret), so
+        // the setting is honoured but moot — say so rather than leave a developer guessing.
+        addDescription("This build has no ping key, so nothing is sent regardless of this setting.");
+    }
+
+    connect(pingToggle, &QCheckBox::toggled, this, [](bool enabled) {
+        InstallPing::setEnabled(enabled);
+    });
 }

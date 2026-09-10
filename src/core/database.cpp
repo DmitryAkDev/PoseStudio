@@ -55,6 +55,10 @@ void ensureColumn(QSqlDatabase& db, const QString& table, const QString& column,
 
 } // namespace
 
+QSqlDatabase appDatabase() {
+    return QSqlDatabase::database(QLatin1String(kDatabaseConnectionName));
+}
+
 /**
  * @brief Opens (or rebuilds) the SQLite database and returns the active connection.
  * @param mode Normal opens the existing file, building the schema only if this is the first
@@ -62,7 +66,7 @@ void ensureColumn(QSqlDatabase& db, const QString& table, const QString& column,
  *             rebuilds the schema from initialize.sql.
  */
 QSqlDatabase initializeDatabase(DbInitMode mode) {
-    const QString connectionName = QStringLiteral("db_conn");
+    const QString connectionName = QLatin1String(kDatabaseConnectionName);
 
     // Writable per-user data belongs in the platform's app-data location, not next to the
     // executable: an installed app's directory is read-only on macOS (.app bundle) and Linux

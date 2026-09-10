@@ -8,7 +8,7 @@
 
 #include "preferencespanel.h"
 
-/// General application settings. Placeholder for now.
+/// General application settings. Today: the anonymous install ping toggle (see installping.h).
 class GeneralPreferencesPanel : public PreferencesPanel {
     Q_OBJECT
 

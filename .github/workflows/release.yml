@@ -93,8 +93,16 @@ jobs:
 
       - name: Configure and build (Release)
         shell: pwsh
+        env:
+          # HMAC key that signs the app's anonymous install ping (src/core/installping.h).
+          # It lives only in this repository's Actions secrets; a fork, or a run without
+          # the secret, gets an empty key and ships with the ping disabled.
+          POSESTUDIO_PING_KEY: ${{ secrets.POSESTUDIO_PING_KEY }}
         run: |
-          cmake -B build "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR"
+          if (-not $env:POSESTUDIO_PING_KEY) {
+            Write-Warning 'POSESTUDIO_PING_KEY secret is not set: this build will never send an install ping.'
+          }
+          cmake -B build "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR" "-DPOSESTUDIO_PING_KEY=$env:POSESTUDIO_PING_KEY"
           if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed.' }
           cmake --build build --config Release --parallel
           if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }

@@ -24,6 +24,8 @@ PoseStudio is in early development, and we'd love for you to **try it and tell u
 
 Needs 64-bit Windows 10/11 and a Vulkan-capable GPU (virtually any graphics card from 2016 onward). A portable no-install zip is also available on the release page. **Full instructions and troubleshooting: [Installation Guide](docs/INSTALL.md)**. macOS and Linux builds are planned.
 
+**Privacy:** each time it starts, the app sends a small anonymous ping to posestudio.io — a random install ID, the version, and your OS and CPU type — so we can count active installs and see which versions are in use. No names, no files, no usage data. You can switch it off in Edit → Preferences → General; details in the [Installation Guide](docs/INSTALL.md#privacy--the-install-ping).
+
 Tried it? **[Tell us what was confusing or delightful](https://github.com/PoseStudio/PoseStudio/issues/new?template=usability_feedback.yml)** — usability feedback is exactly what this early release is for — or join the conversation on [Discord](https://discord.gg/SaKvt9aYCM).
 
 ## <img src="/docs/assets/icons/sponsor.png" width="28" alt="get involved"> Get Involved

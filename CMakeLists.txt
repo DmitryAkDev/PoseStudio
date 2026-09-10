@@ -33,7 +33,7 @@ if(NOT DEFINED CMAKE_PREFIX_PATH)
 endif()
 
 # Locate required Qt modules. The build will fatally abort if these are missing.
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Sql Concurrent)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Sql Concurrent Network)
 
 # Automatically invoke Qt's pre-processors during the build:
 set(CMAKE_AUTOMOC ON) # Meta-Object Compiler (Handles Signals & Slots)
@@ -161,6 +161,8 @@ add_executable(
     # --- Shared custom widgets (app-standard controls, reusable across panels) ---
     src/widgets/dragnumberbox.cpp         # scrub field: drag to change, click to type
     src/widgets/dragnumberbox.h
+    src/widgets/menupickerbutton.cpp      # push button + exclusive QMenu (the app's "dropdown")
+    src/widgets/menupickerbutton.h
 
     # --- Properties panels (right-docker tabs) ---
     src/properties/environmentpanel.cpp
@@ -188,6 +190,8 @@ add_executable(
     src/viewport/tinyexr_impl.cpp         # single TU that compiles tinyexr's implementation
     # Rendering core (pure Vulkan + std + GLM, no Qt):
     src/viewport/rendering/vulkancommon.h
+    src/viewport/rendering/vulkanhandles.h  # move-only RAII owners for raw device handles
+    src/viewport/rendering/descriptorutil.h # one-call descriptor layout/pool/set/write helpers
     src/viewport/rendering/parallelfor.h  # index-parallel loop for CPU bakes (IBL prefilter, corrective subdivision)
     src/viewport/rendering/vulkancontext.cpp
     src/viewport/rendering/vulkancontext.h
@@ -304,10 +308,14 @@ add_executable(
     # --- Data Layer & Storage ---
     src/core/database.cpp
     src/core/database.h
+    src/core/assetlibraries.cpp           # the one reader/writer of the AssetLibraries table
+    src/core/assetlibraries.h
     src/core/librarypaths.cpp             # resolves the per-user "My PoseStudio Library" (+ hdri/)
     src/core/librarypaths.h
     src/core/preferencesmanager.cpp
     src/core/preferencesmanager.h
+    src/core/installping.cpp              # per-launch anonymous install ping (signed; official builds only)
+    src/core/installping.h
     
     # --- Embedded Resources ---
     resources/resources.qrc   # Injects images, UI styles, and SQL templates
@@ -375,6 +383,31 @@ target_sources(PoseStudio PRIVATE
 target_compile_definitions(PoseStudio PRIVATE
     GLM_FORCE_RADIANS
     GLM_FORCE_DEPTH_ZERO_TO_ONE
+    # The app's version string (Constants::APP_VERSION, the title bar, the About overlay, the
+    # install ping) is stamped from project(... VERSION) above, so a release bumps one number.
+    POSESTUDIO_VERSION="${PROJECT_VERSION}"
+)
+
+# ------------------------------------------------------------------------------
+# Anonymous install ping (src/core/installping.h): on every launch the app tells
+# posestudio.io that an installation exists (random install ID + version + OS).
+# The HMAC key that signs each ping is NOT in the repository: the release
+# workflow passes it from a GitHub Actions secret as -DPOSESTUDIO_PING_KEY=...,
+# and a build without one (any local build, any fork) compiles an EMPTY key and
+# never pings — the server rejects unsigned pings, so there is nothing to send.
+# Keep the key to hex characters: it travels through a compile definition.
+# The URL is a cache variable too, so a staging endpoint can be built in.
+# ------------------------------------------------------------------------------
+set(POSESTUDIO_PING_KEY "" CACHE STRING
+    "HMAC key that signs the anonymous install ping (official builds only; empty = never pings)")
+set(POSESTUDIO_PING_URL "https://www.posestudio.io/ping" CACHE STRING
+    "Endpoint the anonymous install ping is sent to")
+mark_as_advanced(POSESTUDIO_PING_KEY POSESTUDIO_PING_URL)
+# Scoped to the one translation unit that reads them (not target-wide): the key then reaches
+# exactly one compiler invocation, and changing it rebuilds one file rather than the whole app.
+set_property(SOURCE src/core/installping.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+    POSESTUDIO_PING_KEY="${POSESTUDIO_PING_KEY}"
+    POSESTUDIO_PING_URL="${POSESTUDIO_PING_URL}"
 )
 
 # Link Qt (Gui is now explicit: QWindow/QVulkanInstance live there) and the Vulkan
@@ -384,6 +417,7 @@ target_link_libraries(PoseStudio PRIVATE
     Qt6::Gui
     Qt6::Sql
     Qt6::Concurrent  # off-thread IBL bake on HDRI switches (QtConcurrent::run + QFutureWatcher)
+    Qt6::Network     # the anonymous install ping (src/core/installping.*) — its only user
     Vulkan::Vulkan
 )
 

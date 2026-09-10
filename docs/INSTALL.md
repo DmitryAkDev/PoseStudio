@@ -67,6 +67,12 @@ You should see the PoseStudio window: an asset panel on the left, a 3D viewport 
 | **Your content library** (HDRIs, your saved assets) | `Documents\My PoseStudio Library` | It's yours — but deleting it removes your content |
 | Settings + asset database | `C:\Users\<you>\AppData\Roaming\PoseStudio` | Yes — resets the app to defaults |
 
+### Privacy — the install ping
+
+Each time it starts, PoseStudio sends one small request to `posestudio.io` saying that this installation exists. It carries a random install ID (generated on first launch, not tied to you), the app version, your operating system and CPU type, and whether the app was installed or runs portable — nothing else. No names, no file names, no usage data, and it never slows the app down or blocks anything. It's how we count active installs and see which versions people are on.
+
+To switch it off: **Edit → Preferences → General** and untick *Send an anonymous install ping*. The same page shows your install ID and exactly what is sent.
+
 ---
 
 ## The portable version

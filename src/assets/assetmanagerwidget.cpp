@@ -1749,7 +1749,7 @@ void AssetManagerWidget::displayFolder(const QString& folderPath, const QString&
             "Modified: %4<br/><br/>"
             "<span style='color: %5; font-size: 11px;'>%6</span>"
             "</div>"
-        ).arg(Constants::COLOR_TOOLTIP_ACCENT,
+        ).arg(Constants::COLOR_ACCENT,
               ext.isEmpty() ? QStringLiteral("File") : QString(".%1 File").arg(ext),
               sz > (1024 * 1024) ? QString::number(sz / (1024.0 * 1024.0), 'f', 2) + " MB"
                                  : QString::number(sz / 1024.0, 'f', 2) + " KB",

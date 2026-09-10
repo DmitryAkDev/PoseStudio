@@ -29,10 +29,14 @@ Run the workflow manually: **Actions → Build Release → Run workflow**. A man
 `.github/workflows/release.yml`, on a `windows-latest` runner:
 
 1. Installs Qt (version pinned in the workflow's `QT_VERSION` env — includes the `qtimageformats` module for webp/tiff thumbnail support) and the latest LunarG Vulkan SDK (silent install; CMake finds it via its `C:/VulkanSDK/*` fallback glob).
-2. Builds Release with CMake/MSVC. The existing post-build steps mirror `shaders/` and `Maquettes/` next to the exe.
+2. Builds Release with CMake/MSVC, passing the install-ping signing key from the `POSESTUDIO_PING_KEY` repository secret (see below). The existing post-build steps mirror `shaders/` and `Maquettes/` next to the exe.
 3. Stages a deployable folder: exe + shaders + Maquettes, then `windeployqt --release --no-translations --compiler-runtime` adds the Qt runtime, plugins (platforms, sqldrivers, imageformats, styles), and the MSVC CRT DLLs.
 4. Downloads the **stock HDRI content pack** (see below) — the installer places it in the user's `Documents\My PoseStudio Library\hdri`; the portable zip carries it as `stock-content\hdri` with copy-me instructions.
 5. Compiles `packaging/PoseStudio.iss` with Inno Setup (preinstalled on the runner), zips the portable variant, generates `SHA256SUMS.txt`, and publishes the GitHub Release.
+
+## The install-ping signing key
+
+The app sends an anonymous install ping on every launch (`src/core/installping.h`), signed with an HMAC key that must never be committed. It reaches the build as the repository secret **`POSESTUDIO_PING_KEY`** (Settings → Secrets and variables → Actions), which the workflow passes to CMake as `-DPOSESTUDIO_PING_KEY=…`. Generate it once with `openssl rand -hex 32` (keep it to hex — it travels through a CMake compile definition) and use the same value as the server's verification key. If the secret is missing the workflow warns and the build ships with the ping disabled (an empty key never sends), so forks never ping. Rotating the key means updating the secret and the server together, then cutting a release — older builds keep signing with the old key and are rejected, which is the intended way to retire them from the count.
 
 ## The stock HDRI content pack
 

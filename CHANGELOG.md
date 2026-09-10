@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > public repository; this changelog, `CMakeLists.txt`, and `src/constants.h` are the
 > authoritative version record, and releases are tagged from 0.3.0 onward.
 
+## [Unreleased]
+### Added
+* **An anonymous install ping, so we can see how many people run PoseStudio and which versions.** Each time it starts, the app sends one small signed request to posestudio.io carrying a random install ID, the app version, the operating system and CPU type, and whether it was installed or runs portable — nothing else: no names, no files, no usage data. It fires a few seconds after launch, never delays anything, and ignores failures. Switch it off in Edit → Preferences → **General**, where the exact contents and your install ID are shown. (Developer: `src/core/installping.*`; the request is HMAC-signed with a key that only official release builds carry — passed from the `POSESTUDIO_PING_KEY` repository secret — so local builds and forks never ping; `POSESTUDIO_NO_PING=1` disables it for a run, and `POSESTUDIO_PING_URL` overrides the endpoint. The server side — the PHP handler, its MySQL schema, a signed test-ping script, and the stats queries — lives in `server/ping/`.)
+
 ## [0.3.11] - 2026-09-09
 ### Added
 * **Reset and mirror the pose.** Edit → **Reset Selected Joint**, **Reset Limb** (the joint and everything below it), and **Reset Pose** return joints to their rest position. **Mirror Pose** swaps the left and right sides of the whole pose, so a pose built on one side becomes its mirror image, and **Mirror Limb to Other Side** copies the selected arm or leg, mirrored, onto the other side (from the chest it mirrors both arms and the head). Right-clicking a joint offers Reset Joint, Reset Limb, and Mirror Limb too. Each is a single undo step; pinned joints keep their pins.

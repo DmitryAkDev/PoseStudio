@@ -52,6 +52,36 @@
 }
 
 /* =========================================================================
+   [ CHECKBOXES — e.g. the General page's install-ping toggle ]
+   The indicator mirrors the Environment panel's checkbox (_environment.qss) so
+   the two read as one control; the label is a touch brighter than the muted
+   description copy beneath it, since here the checkbox IS the setting.
+   ========================================================================= */
+
+#PreferencesPanel QCheckBox {
+    color: #e0e0e0;
+    font-size: 13px;
+    spacing: 6px;
+}
+
+#PreferencesPanel QCheckBox::indicator {
+    width: 15px;
+    height: 15px;
+    border: 1px solid #4a4b4d;
+    border-radius: 3px;
+    background: #2a2b2d;
+}
+
+#PreferencesPanel QCheckBox::indicator:hover {
+    border-color: #5b87cc; /* the app's hover accent */
+}
+
+#PreferencesPanel QCheckBox::indicator:checked {
+    background: #2a2b2d;
+    image: url(:/resources/icons/check.png);
+}
+
+/* =========================================================================
    [ ASSET LIBRARY LIST — "Assets" tab ]
    ========================================================================= */
 

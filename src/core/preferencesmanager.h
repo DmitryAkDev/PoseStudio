@@ -41,6 +41,12 @@ public:
     /// Updates the cache and immediately persists the new value to the database.
     void setValue(const QString& key, const QVariant& value);
 
+    /// The folder stored under `key` if it is set and still exists on disk, else `fallback`.
+    /// The one implementation of the "start the file dialog where the user was last time"
+    /// rule shared by File → Import, Add Asset Folder (both entry points), and pose save/load —
+    /// a remembered folder that was since moved or deleted must never leave a dialog stranded.
+    QString rememberedDirectory(const QString& key, const QString& fallback) const;
+
 private:
     PreferencesManager() = default;
     ~PreferencesManager() = default;
