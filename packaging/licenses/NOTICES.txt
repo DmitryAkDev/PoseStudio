@@ -53,6 +53,14 @@ under the Microsoft Software License Terms for the Windows SDK, which permit
 its distribution with applications.
 
 
+Microsoft Visual C++ runtime (msvcp140*.dll, vcruntime140*.dll)
+---------------------------------------------------------------
+The Visual C++ runtime libraries that PoseStudio and Qt are built against,
+taken from the Visual Studio redistributable package, Copyright (C) Microsoft
+Corporation. Distributed with applications as the Microsoft Visual Studio
+license terms permit (their "Distributable Code" section).
+
+
 Vulkan loader (vulkan-1.dll)
 ----------------------------
 The Khronos Vulkan loader, as built and distributed by LunarG,

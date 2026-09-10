@@ -123,7 +123,7 @@ jobs:
           Copy-Item -Recurse build\Release\shaders dist\app\shaders
           Copy-Item -Recurse build\Release\Maquettes dist\app\Maquettes
           & "$env:QT_ROOT_DIR\bin\windeployqt.exe" `
-            --release --no-translations --compiler-runtime dist\app\PoseStudio.exe
+            --release --no-translations --no-compiler-runtime dist\app\PoseStudio.exe
           if ($LASTEXITCODE -ne 0) { throw 'windeployqt failed.' }
           # The Vulkan loader (vulkan-1.dll). The exe imports it, and Windows normally
           # supplies it from the GPU driver — so a machine with no Vulkan-capable driver
@@ -147,6 +147,40 @@ jobs:
           }
           Copy-Item $loader dist\app\
           Write-Host "Bundled Vulkan loader $($loaderInfo.FileVersion)"
+          # The Visual C++ runtime, app-local. windeployqt's --compiler-runtime was a no-op
+          # here (it wants VCINSTALLDIR, which only a VS developer shell sets) and would
+          # only ever have dropped vc_redist.x64.exe into the folder - an installer that
+          # needs administrator rights, which the per-user setup deliberately never has,
+          # and which a portable user would have to find and run. So the runtime is
+          # deployed the way Microsoft documents for exactly this case: the DLLs from
+          # VC\Redist\MSVC\<ver>\x64\Microsoft.VC14x.CRT copied next to the exe, where they
+          # beat System32 in the DLL search. Only the ones the package's binaries actually
+          # import are copied - found by dumpbin over everything staged so far, so a Qt or
+          # toolset bump that adds a dependency picks it up on its own. The redist comes
+          # from the same Visual Studio that just compiled the app, so it can never be
+          # older than what the exe was linked against. The UCRT (api-ms-win-crt-*,
+          # ucrtbase) is part of Windows 10 and 11 and is not shipped. Without this, a
+          # machine lacking the runtime failed at launch with "VCRUNTIME140.dll not found".
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw 'vswhere found no Visual Studio with the C++ toolset.' }
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          $crtDir = Get-ChildItem "$vs\VC\Redist\MSVC\*\x64\Microsoft.VC14*.CRT" -Directory |
+            Sort-Object { [version]$_.Parent.Parent.Name } -Descending | Select-Object -First 1
+          if (-not $dumpbin -or -not $crtDir) { throw "dumpbin.exe or the VC redist CRT folder is missing under $vs." }
+          $crtNeeded = Get-ChildItem dist\app -Recurse -Include *.exe, *.dll | ForEach-Object {
+            & $dumpbin.FullName /nologo /dependents $_.FullName | ForEach-Object {
+              if ($_ -match '^\s+((?:msvcp|vcruntime|concrt|vccorlib)\d+\w*\.dll)\s*$') { $Matches[1].ToLower() }
+            }
+          } | Sort-Object -Unique
+          if (-not $crtNeeded) { throw 'No Visual C++ runtime imports found in the staged binaries - the dumpbin scan is broken.' }
+          foreach ($dll in $crtNeeded) {
+            $src = Join-Path $crtDir.FullName $dll
+            if (-not (Test-Path $src)) { throw "$dll is imported by the package but is not in $($crtDir.FullName)." }
+            Copy-Item $src dist\app\
+          }
+          Write-Host "Bundled Visual C++ runtime $($crtDir.Parent.Parent.Name): $($crtNeeded -join ', ')"
           # License texts. PoseStudio is GPL v3, and Qt is used under the LGPL v3, which asks
           # that every copy carry a prominent notice of that use, the LGPL and GPL texts, and
           # a way to relink against a modified Qt (the Qt DLLs are separate, replaceable files
