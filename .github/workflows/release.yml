@@ -116,7 +116,8 @@ jobs:
         run: |
           # Assemble the exact folder a user ends up with: the exe, the compiled
           # shaders and Maquettes library (mirrored next to the exe by the CMake
-          # post-build steps), then the Qt runtime via windeployqt.
+          # post-build steps), the Qt runtime via windeployqt, the Vulkan loader, and the
+          # license texts.
           New-Item -ItemType Directory -Force dist\app | Out-Null
           Copy-Item build\Release\PoseStudio.exe dist\app\
           Copy-Item -Recurse build\Release\shaders dist\app\shaders
@@ -124,6 +125,42 @@ jobs:
           & "$env:QT_ROOT_DIR\bin\windeployqt.exe" `
             --release --no-translations --compiler-runtime dist\app\PoseStudio.exe
           if ($LASTEXITCODE -ne 0) { throw 'windeployqt failed.' }
+          # The Vulkan loader (vulkan-1.dll). The exe imports it, and Windows normally
+          # supplies it from the GPU driver — so a machine with no Vulkan-capable driver
+          # (a VM, a fresh install still on the basic display adapter, a pre-2016 GPU)
+          # has none and refuses to START the exe, before main() and before the
+          # viewport's own "no Vulkan" fallback ever runs. Shipped next to the exe (the
+          # app folder wins the DLL search), the Khronos loader lets such a machine start
+          # normally with the viewport degraded — and still send the install ping. The
+          # SDK installer above also installs this loader into System32 (its VulkanRT
+          # helper), version-matched to the SDK the app was built against, so it is
+          # copied from there; if a future SDK stops doing that, ship it from LunarG's
+          # vulkan-runtime-components.zip instead (docs/RELEASING.md). Its license
+          # travels with it under licenses\.
+          $loader = Join-Path $env:SystemRoot 'System32\vulkan-1.dll'
+          if (-not (Test-Path $loader)) {
+            throw 'vulkan-1.dll is not in System32: the Vulkan SDK installer did not install the runtime (see docs/RELEASING.md).'
+          }
+          $loaderInfo = (Get-Item $loader).VersionInfo
+          if ($loaderInfo.FileDescription -ne 'Vulkan Loader') {
+            throw "System32\vulkan-1.dll is not the Khronos loader (FileDescription: '$($loaderInfo.FileDescription)')."
+          }
+          Copy-Item $loader dist\app\
+          Write-Host "Bundled Vulkan loader $($loaderInfo.FileVersion)"
+          # License texts. PoseStudio is GPL v3, and Qt is used under the LGPL v3, which asks
+          # that every copy carry a prominent notice of that use, the LGPL and GPL texts, and
+          # a way to relink against a modified Qt (the Qt DLLs are separate, replaceable files
+          # - that is the mechanism). LICENSE.txt is the GPL v3 both licenses need; licenses\
+          # holds the LGPL, the notices of the runtimes windeployqt ships beside Qt (ICU,
+          # Mesa's software OpenGL, Microsoft's D3D compiler), the Vulkan loader's, and
+          # NOTICES.txt, the index, rendered with the Qt version so it names exactly what
+          # was shipped and where its source lives.
+          Copy-Item LICENSE dist\app\LICENSE.txt
+          New-Item -ItemType Directory -Force dist\app\licenses | Out-Null
+          Copy-Item packaging\licenses\*.txt dist\app\licenses\
+          $qtMajorMinor = $env:QT_VERSION -replace '\.\d+$', ''
+          (Get-Content packaging\licenses\NOTICES.txt -Raw).Replace('{{QT_VERSION}}', $env:QT_VERSION).Replace('{{QT_MAJOR_MINOR}}', $qtMajorMinor) |
+            Out-File dist\app\licenses\NOTICES.txt -Encoding utf8
 
       - name: Download stock HDRI content pack
         shell: pwsh

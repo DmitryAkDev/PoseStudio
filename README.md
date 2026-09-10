@@ -166,6 +166,8 @@ Building a powerful tool requires a powerful community.
 
 PoseStudio is open-source software licensed under the **[GNU General Public License v3.0](https://github.com/PoseStudio/PoseStudio/blob/main/LICENSE)**.
 
+The binary releases also ship the [Qt framework](https://www.qt.io) under the LGPL v3, together with a few other open-source runtime components; their license texts and notices are in the `licenses\` folder next to the app (sources in [`packaging/licenses/`](packaging/licenses/)), and Help → About Qt shows Qt's own notice.
+
 ## Tech Stack & Resources
 
 This project is built using the following core technologies and design resources:

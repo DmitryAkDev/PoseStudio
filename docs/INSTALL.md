@@ -11,7 +11,7 @@ Welcome! This guide walks you through downloading, installing, and running PoseS
 | | Requirement |
 |---|---|
 | **Operating system** | 64-bit Windows 10 or 11 |
-| **Graphics card** | Any Vulkan-capable GPU — virtually every graphics card from 2016 onward (NVIDIA GTX 600+, AMD GCN+, Intel Skylake+) — with reasonably current drivers |
+| **Graphics card** | Any Vulkan-capable GPU — virtually every graphics card from 2016 onward (NVIDIA GTX 600+, AMD GCN+, Intel Skylake+) — with reasonably current drivers. Without one, PoseStudio still opens, but the 3D viewport shows an error instead of the scene |
 | **Disk space** | About 500 MB |
 | **Administrator rights** | **Not needed** — PoseStudio installs into your own user account |
 

@@ -276,6 +276,15 @@ void MenuManager::setupMenus() {
         SplashOverlay *splash = new SplashOverlay(mainWindow);
         splash->show();
     });
+
+    // Qt is used under the LGPL v3, which asks that a program showing copyright notices at
+    // runtime include Qt's, with a pointer to the license texts. QApplication::aboutQt() is
+    // Qt's own such notice; the texts themselves ship in licenses\ next to the executable
+    // (see packaging/licenses/NOTICES.txt).
+    QAction *aboutQtAction = helpMenu->addAction("About Qt");
+    QObject::connect(aboutQtAction, &QAction::triggered, mainWindow, []() {
+        QApplication::aboutQt();
+    });
 }
 
 void MenuManager::setAssetManagerWidget(AssetManagerWidget *widget) {

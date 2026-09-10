@@ -1,0 +1,60 @@
+PoseStudio - licenses of the software shipped in this package
+=============================================================
+
+PoseStudio itself is free software under the GNU General Public License v3;
+its text is LICENSE.txt, one folder up, and its source code is at
+https://github.com/PoseStudio/PoseStudio. This folder holds the licenses and
+notices of the other software that ships next to it in this package.
+
+
+Qt {{QT_VERSION}}
+-----------------
+The Qt6*.dll libraries and the plugin folders (generic, iconengines,
+imageformats, networkinformation, platforms, sqldrivers, styles, tls) are the
+Qt framework, Copyright (C) The Qt Company Ltd. and other contributors,
+https://www.qt.io - used under the GNU Lesser General Public License v3
+(LGPL-3.0.txt, a supplement to the GNU GPL v3 in ../LICENSE.txt). Qt and the
+Qt logo are trademarks of The Qt Company Ltd.
+
+PoseStudio links Qt dynamically. The Qt libraries are separate files that you
+may replace with your own build of the same Qt version - a modified one
+included - and PoseStudio will run against it. The complete source code of
+the Qt version shipped here is available from The Qt Company at
+  https://download.qt.io/archive/qt/{{QT_MAJOR_MINOR}}/{{QT_VERSION}}/single/
+and from Qt's public repositories at
+  https://code.qt.io/cgit/qt/qt5.git/tag/?h=v{{QT_VERSION}}
+
+Qt in turn contains third-party components (among them FreeType, HarfBuzz,
+libjpeg, libpng, libwebp, libtiff, PCRE2, SQLite and zlib); their licenses and
+copyright notices are listed at https://doc.qt.io/qt-6/licenses-used-in-qt.html
+and in the qt_attribution.json files of the Qt source tree.
+
+Help -> About Qt in PoseStudio shows Qt's own copyright and license notice.
+
+
+ICU (icuuc.dll)
+---------------
+International Components for Unicode, Copyright (C) 1991-2026 Unicode, Inc.
+and others, https://icu.unicode.org - shipped with Qt, which uses it for
+Unicode text handling. Unicode License v3: ICU-LICENSE.txt.
+
+
+Mesa (opengl32sw.dll)
+---------------------
+The software OpenGL renderer of the Mesa 3-D graphics library,
+https://www.mesa3d.org - shipped with Qt as a fallback for systems without
+OpenGL drivers. MIT license: Mesa-LICENSE.txt.
+
+
+Microsoft Direct3D shader compiler (D3DCompiler_47.dll)
+------------------------------------------------------
+A component of the Microsoft Windows SDK, shipped with Qt and redistributed
+under the Microsoft Software License Terms for the Windows SDK, which permit
+its distribution with applications.
+
+
+Vulkan loader (vulkan-1.dll)
+----------------------------
+The Khronos Vulkan loader, as built and distributed by LunarG,
+Copyright (C) The Khronos Group Inc., LunarG, Inc. and Valve Corporation.
+Apache License 2.0 and MIT: VulkanRT-License.txt.

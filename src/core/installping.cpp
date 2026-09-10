@@ -19,6 +19,7 @@
 #include <QLibraryInfo>
 #include <QMessageAuthenticationCode>
 #include <QNetworkAccessManager>
+#include <QNetworkProxyFactory>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QSysInfo>
@@ -137,6 +138,13 @@ void InstallPing::send() {
         body, QByteArrayLiteral(POSESTUDIO_PING_KEY), QCryptographicHash::Sha256).toHex();
 
     if (!m_network) {
+        // Route through the platform's proxy settings (Windows: the IE/WinHTTP configuration,
+        // auto-detect and PAC included) so a corporate-network install still reaches the
+        // endpoint. Official Qt binaries already default to this (QT_FEATURE_system_proxies), but
+        // the default is a Qt CONFIGURE flag — a distro-packaged or custom-built Qt may have it off
+        // — so it is asserted here rather than assumed. Safe to set app-wide: this is the app's
+        // only network user, so there is no application proxy or factory to override.
+        QNetworkProxyFactory::setUseSystemConfiguration(true);
         m_network = new QNetworkAccessManager(this);
     }
 
