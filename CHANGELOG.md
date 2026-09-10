@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > public repository; this changelog and `CMakeLists.txt` (whose `project(VERSION)` stamps
 > `Constants::APP_VERSION` at build time) are the authoritative version record, and releases are tagged from 0.3.0 onward.
 
+## [Unreleased]
+### Added
+* **`PoseStudio.exe` now carries a Windows version resource.** Right-click → Properties → Details shows the file and product version, description, and copyright (they were blank), Task Manager names the process properly, and antivirus/SmartScreen heuristics have the metadata they weigh. (Developer: `resources/version.rc.in`, stamped from `project(VERSION)` by `configure_file()` into the build tree and compiled beside the icon `.rc` — there is still only one copy of the version number to edit.)
+
 ## [0.3.13] - 2026-09-10
 ### Added
 * **The packages now carry their license texts, and Help → About Qt shows Qt's notice.** PoseStudio is GPL v3 and is built on the Qt framework under the LGPL v3, which asks that every copy say so and include the license texts. The installer and the portable zip now place `LICENSE.txt` (GPL v3) next to the app, and a `licenses\` folder with the LGPL v3, the notices of the open-source runtimes shipped alongside Qt (ICU, Mesa's software OpenGL renderer), the Vulkan loader's license, and `NOTICES.txt` — an index naming each component, its license, and where to get the source of the exact Qt version shipped. Help → **About Qt** opens Qt's own copyright and license notice. (Developer: the texts live in `packaging/licenses/`; `release.yml` copies them and renders the Qt version into `NOTICES.txt` from `QT_VERSION`. Add a file there whenever a new redistributable joins the package.)

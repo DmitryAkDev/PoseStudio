@@ -1,0 +1,39 @@
+// Windows VERSIONINFO resource for PoseStudio.exe - the numbers Explorer shows under
+// Properties -> Details, Task Manager's process name, and what AV/SmartScreen heuristics read.
+//
+// This is a TEMPLATE: CMake's configure_file() stamps the @...@ fields from project(VERSION)
+// (and the build year) into <build>/version.rc, which compiles beside resources/PoseStudio.rc
+// (the icon) into the executable. Edit the version in CMakeLists.txt only - never here, and
+// never in the generated file.
+
+#include <windows.h>
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION    @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+ PRODUCTVERSION @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+ FILEFLAGSMASK  VS_FFI_FILEFLAGSMASK
+ FILEFLAGS      0x0L
+ FILEOS         VOS_NT_WINDOWS32
+ FILETYPE       VFT_APP
+ FILESUBTYPE    VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        // 0409 = U.S. English, 04B0 = Unicode; must match the Translation value below.
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName",      "PoseStudio"
+            VALUE "FileDescription",  "PoseStudio"
+            VALUE "FileVersion",      "@PROJECT_VERSION@"
+            VALUE "InternalName",     "PoseStudio"
+            VALUE "LegalCopyright",   "Copyright (C) @POSESTUDIO_BUILD_YEAR@ the PoseStudio contributors. Licensed under the GNU GPL v3."
+            VALUE "OriginalFilename", "PoseStudio.exe"
+            VALUE "ProductName",      "PoseStudio"
+            VALUE "ProductVersion",   "@PROJECT_VERSION@"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

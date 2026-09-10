@@ -410,11 +410,17 @@ add_executable(
 # unconditionally breaks configuration there — add it only on Windows. The .manifest forces
 # the process ANSI code page to UTF-8 (see the comment inside the file): without it, model/
 # figure/HDRI imports from folders with non-ASCII characters fail through every narrow-char
-# file API. CMake merges it into the executable via mt.exe automatically.
+# file API. CMake merges it into the executable via mt.exe automatically. The VERSIONINFO
+# resource (Explorer's Properties -> Details, Task Manager, AV/SmartScreen heuristics) is a
+# configure_file() template so the number is still stamped from project(VERSION) alone: it
+# is generated into the build tree and compiled as a second .rc beside the icon's.
 if(WIN32)
+    string(TIMESTAMP POSESTUDIO_BUILD_YEAR "%Y")
+    configure_file(resources/version.rc.in "${CMAKE_CURRENT_BINARY_DIR}/version.rc" @ONLY)
     target_sources(PoseStudio PRIVATE
-        resources/PoseStudio.rc       # Injects the .exe icon
-        resources/PoseStudio.manifest # UTF-8 process code page (non-ASCII import paths)
+        resources/PoseStudio.rc                   # Injects the .exe icon
+        "${CMAKE_CURRENT_BINARY_DIR}/version.rc"  # VERSIONINFO, stamped from project(VERSION)
+        resources/PoseStudio.manifest             # UTF-8 process code page (non-ASCII import paths)
     )
 endif()
 
