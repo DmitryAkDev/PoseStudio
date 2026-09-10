@@ -8,10 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > **Note on early release numbering:** the commits for two of the releases below were pushed
 > with mislabeled titles — `ba4033f` ("Release 0.4.0") and `83cb038` ("Release 0.5.0") are the
 > releases recorded here as **[0.3.3]** and **[0.3.4]**. Commit messages can't be rewritten on a
-> public repository; this changelog, `CMakeLists.txt`, and `src/constants.h` are the
-> authoritative version record, and releases are tagged from 0.3.0 onward.
+> public repository; this changelog and `CMakeLists.txt` (whose `project(VERSION)` stamps
+> `Constants::APP_VERSION` at build time) are the authoritative version record, and releases are tagged from 0.3.0 onward.
 
-## [Unreleased]
+## [0.3.12] - 2026-09-09
 ### Added
 * **An anonymous install ping, so we can see how many people run PoseStudio and which versions.** Each time it starts, the app sends one small signed request to posestudio.io carrying a random install ID, the app version, the operating system and CPU type, whether it was installed or runs portable, the Qt version it was built with, and the time of the ping — nothing else: no names, no files, no usage data. It fires a few seconds after launch, never delays anything, and ignores failures. Switch it off in Edit → Preferences → **General**, where the exact contents and your install ID are shown. (Developer: `src/core/installping.*`; the request is HMAC-signed with a key that only official release builds carry — passed from the `POSESTUDIO_PING_KEY` repository secret — so local builds and forks never ping; `POSESTUDIO_NO_PING=1` disables it for a run, and `POSESTUDIO_PING_URL` overrides the endpoint. The server side — the PHP handler, its MySQL schema, a signed test-ping script, and the stats queries — lives in `server/ping/`.)
 ### Changed

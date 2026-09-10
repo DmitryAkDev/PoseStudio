@@ -37,7 +37,7 @@ body:
     attributes:
       label: PoseStudio version
       description: Shown in Help → About, or the installer file name.
-      placeholder: "0.3.11"
+      placeholder: "0.3.12"
     validations:
       required: false
   - type: input
