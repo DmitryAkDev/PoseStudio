@@ -14,6 +14,14 @@
 // zero inside the object, (1 − coverage) on its anti-aliased fringe (so outline and object blend
 // exactly like the object blends with the background), full within the width, and softened by
 // the mask's bilinear filtering along the outer edge.
+//
+// Pass:    the swapchain present pass (single-sample), the frame's only draw there.
+// Inputs:  set 0.0 the (SSS-diffused) HDR resolve, 0.1 the bloom target, 0.2 the outline mask;
+//          push: params (tonemap, bloom strength, bloom on, outline width px) + the outline colour.
+// Outputs: location 0 -> the swapchain image (the sRGB store gamma-encodes).
+
+#extension GL_GOOGLE_include_directive : enable
+#include "colour.glsl" // tonemapACES
 
 layout(set = 0, binding = 0) uniform sampler2D uHdr;
 layout(set = 0, binding = 1) uniform sampler2D uBloom;
@@ -27,11 +35,6 @@ layout(push_constant) uniform PC {
 
 layout(location = 0) in vec2 vUv;
 layout(location = 0) out vec4 outColor;
-
-vec3 tonemapACES(vec3 x) {
-    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
-    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
-}
 
 // The outline weight in [0,1] for this pixel: how much of the dilated selection mask exceeds
 // the pixel's own coverage. Two rings of taps (16 at the full width, 8 at half) approximate the

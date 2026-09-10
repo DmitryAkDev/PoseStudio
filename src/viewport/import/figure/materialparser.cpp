@@ -5,6 +5,8 @@
 
 #include "materialparser.h"
 
+#include "figureutils.h" // channelScalar / channelBool / channelColor — the DIALED-value readers
+
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -15,22 +17,10 @@ namespace pose {
 
 namespace {
 
-// Reads a float_color channel's colour (the tint multiplier) into an RGB vector, if present.
-// "current_value" is the *dialed* colour and must win over "value", which is only the channel's
-// default — the same convention channelScalar() follows. Reading "value" alone rendered every
-// zone with the channel default (a 0.75 grey): textures came out ~25% too dark, and a pupil
-// whose material dials its diffuse to black (common across figure generations) drew as a bright
-// grey/white dot in the eye instead.
-bool readColorValue(const nlohmann::json& channel, glm::vec3& out) {
-    for (const char* key : {"current_value", "value"}) {
-        const auto it = channel.find(key);
-        if (it != channel.end() && it->is_array() && it->size() >= 3) {
-            out = glm::vec3((*it)[0].get<float>(), (*it)[1].get<float>(), (*it)[2].get<float>());
-            return true;
-        }
-    }
-    return false;
-}
+// Every channel value below is read with figureutils' "current_value wins" readers: a scene
+// material's current_value is the DIALED state, "value" only the channel default. Reading "value"
+// alone once rendered every zone with the 0.75-grey default (textures ~25% too dark) and drew
+// black-dialed pupils as bright dots — the readers document the convention once.
 
 // The texture URI a channel references. Two conventions across figure generations: a direct
 // "image_file" path, or an "image" index into the document's image_library whose first map layer
@@ -51,38 +41,16 @@ std::string channelImageUri(const nlohmann::json& channel, const nlohmann::json&
     return std::string();
 }
 
-// A channel's scalar value ("current_value", else "value"), defaulting to @p fallback.
-float channelScalar(const nlohmann::json& channel, float fallback) {
-    for (const char* key : {"current_value", "value"}) {
-        const auto it = channel.find(key);
-        if (it != channel.end() && it->is_number()) {
-            return it->get<float>();
-        }
-    }
-    return fallback;
-}
-
-// A channel's boolean value ("current_value", else "value"; numbers tolerated), else @p fallback.
-bool channelBool(const nlohmann::json& channel, bool fallback) {
-    for (const char* key : {"current_value", "value"}) {
-        const auto it = channel.find(key);
-        if (it != channel.end()) {
-            if (it->is_boolean()) {
-                return it->get<bool>();
-            }
-            if (it->is_number()) {
-                return it->get<float>() != 0.0f;
-            }
-        }
-    }
-    return fallback;
-}
-
-// Finds the channel with @p id in a material's "extra" studio_material_channels blocks.
-const nlohmann::json* findChannelIn(const nlohmann::json& mat, const std::string& id) {
+// The channels of a material's "extra" studio_material_channels blocks, indexed by id. A material
+// is queried ~30 times (several of them for the same id); walking the blocks per query was a
+// linear scan each time, so each material builds this map once. The FIRST channel carrying an id
+// wins, exactly as the walk's first match did.
+using ChannelIndex = std::unordered_map<std::string, const nlohmann::json*>;
+ChannelIndex indexChannels(const nlohmann::json& mat) {
+    ChannelIndex index;
     const auto ex = mat.find("extra");
     if (ex == mat.end() || !ex->is_array()) {
-        return nullptr;
+        return index;
     }
     for (const auto& block : *ex) {
         if (block.value("type", std::string()) != "studio_material_channels" ||
@@ -91,16 +59,22 @@ const nlohmann::json* findChannelIn(const nlohmann::json& mat, const std::string
         }
         for (const auto& wrapper : block["channels"]) {
             const auto ch = wrapper.find("channel");
-            if (ch != wrapper.end() && ch->value("id", std::string()) == id) {
-                return &(*ch);
+            if (ch != wrapper.end()) {
+                index.emplace(ch->value("id", std::string()), &(*ch));
             }
         }
     }
-    return nullptr;
+    return index;
+}
+
+// Finds the channel with @p id in a material's indexed channels.
+const nlohmann::json* findChannelIn(const ChannelIndex& index, const std::string& id) {
+    const auto it = index.find(id);
+    return it != index.end() ? it->second : nullptr;
 }
 
 // The effective channel for @p id: the scene material's override if it has one, else the base's.
-const nlohmann::json* effectiveChannel(const nlohmann::json& scene, const nlohmann::json* base,
+const nlohmann::json* effectiveChannel(const ChannelIndex& scene, const ChannelIndex* base,
                                        const std::string& id) {
     if (const nlohmann::json* c = findChannelIn(scene, id)) {
         return c;
@@ -131,7 +105,8 @@ const nlohmann::json* diffuseChannel(const nlohmann::json& scene, const nlohmann
 
 std::unordered_map<std::string, MaterialRefs> parseMaterials(const nlohmann::json& materials,
                                                              const nlohmann::json& materialLibrary,
-                                                             const nlohmann::json& imageLibrary) {
+                                                             const nlohmann::json& imageLibrary,
+                                                             const MaterialBaseOverrides* overrides) {
     std::unordered_map<std::string, MaterialRefs> out;
     if (!materials.is_array()) {
         return out;
@@ -144,24 +119,49 @@ std::unordered_map<std::string, MaterialRefs> parseMaterials(const nlohmann::jso
             library.emplace(base.value("id", std::string()), &base);
         }
     }
+    // Base materials are shared by many scene materials (every skin zone extends the same base),
+    // so their channel indexes are built once and reused.
+    std::unordered_map<const nlohmann::json*, ChannelIndex> baseIndexes;
 
     for (const auto& mat : materials) {
         // Resolve the base material this one extends. Same-file "#id" references resolve here
-        // directly; CROSS-FILE bases (newer skin materials' "/data/...#PBRSkin") are pre-resolved
-        // by the importer (applySceneMaterials), which appends the referenced base into
-        // @p materialLibrary and rewrites the url to this same-file form.
+        // directly; CROSS-FILE bases (newer skin materials' "/data/...#<SkinShaderBase>") are
+        // pre-resolved by the importer (applySceneMaterials), which hands the referenced base in
+        // through @p overrides and rewrites the url to this same-file form. The same-file library
+        // is consulted first, then the extra bases.
         const nlohmann::json* base = nullptr;
-        if (const std::string url = mat.value("url", std::string()); url.size() > 1 && url[0] == '#') {
-            const auto it = library.find(url.substr(1));
-            if (it != library.end()) {
-                base = it->second;
+        std::string url = mat.value("url", std::string());
+        if (overrides) {
+            if (const auto rw = overrides->urlRewrites.find(&mat); rw != overrides->urlRewrites.end()) {
+                url = rw->second;
             }
+        }
+        if (url.size() > 1 && url[0] == '#') {
+            const std::string fragment = url.substr(1);
+            if (const auto it = library.find(fragment); it != library.end()) {
+                base = it->second;
+            } else if (overrides) {
+                if (const auto ex = overrides->extraBases.find(fragment);
+                    ex != overrides->extraBases.end()) {
+                    base = ex->second;
+                }
+            }
+        }
+
+        const ChannelIndex sceneIndex = indexChannels(mat);
+        const ChannelIndex* baseIndex = nullptr;
+        if (base) {
+            auto bi = baseIndexes.find(base);
+            if (bi == baseIndexes.end()) {
+                bi = baseIndexes.emplace(base, indexChannels(*base)).first;
+            }
+            baseIndex = &bi->second;
         }
 
         MaterialRefs ref;
 
         if (const nlohmann::json* diffuse = diffuseChannel(mat, base)) {
-            readColorValue(*diffuse, ref.baseColor);
+            channelColor(*diffuse, ref.baseColor);
             ref.diffuseImageUri = channelImageUri(*diffuse, imageLibrary);
         }
         // --- Specular: interpret the material's LOBES, never a single channel. ------------------
@@ -175,7 +175,7 @@ std::unordered_map<std::string, MaterialRefs> parseMaterials(const nlohmann::jso
         // the glossy lobe, else the struct defaults (the no-channels case: minimal/legacy
         // materials). Channels carried as maps use the dialed scalar (maps aren't sampled here).
         const auto scalarChannel = [&](const char* id, float fallback, bool* present = nullptr) {
-            const nlohmann::json* c = effectiveChannel(mat, base, id);
+            const nlohmann::json* c = effectiveChannel(sceneIndex, baseIndex, id);
             if (present != nullptr) {
                 *present = (c != nullptr);
             }
@@ -184,7 +184,7 @@ std::unordered_map<std::string, MaterialRefs> parseMaterials(const nlohmann::jso
 
         // Whether a channel carries a texture map (whose texels multiply the dialed scalar).
         const auto channelHasMap = [&](const char* id) {
-            const nlohmann::json* c = effectiveChannel(mat, base, id);
+            const nlohmann::json* c = effectiveChannel(sceneIndex, baseIndex, id);
             return c != nullptr && !channelImageUri(*c, imageLibrary).empty();
         };
         // Folds a lobe's weight × reflectivity into the final F0 multiplier. Two corrections keep
@@ -210,14 +210,14 @@ std::unordered_map<std::string, MaterialRefs> parseMaterials(const nlohmann::jso
         };
         // The active lobe's map URI for a channel (used for the roughness + mask maps).
         const auto channelMapUri = [&](const char* id) {
-            const nlohmann::json* c = effectiveChannel(mat, base, id);
+            const nlohmann::json* c = effectiveChannel(sceneIndex, baseIndex, id);
             return c ? channelImageUri(*c, imageLibrary) : std::string();
         };
 
         bool dualPresent = false;
         const float dualWeight =
             std::clamp(scalarChannel("Dual Lobe Specular Weight", 0.0f, &dualPresent), 0.0f, 1.0f);
-        const nlohmann::json* dualEnable = effectiveChannel(mat, base, "Dual Lobe Specular Enable");
+        const nlohmann::json* dualEnable = effectiveChannel(sceneIndex, baseIndex, "Dual Lobe Specular Enable");
         if (dualPresent && dualWeight > 0.0f && (!dualEnable || channelBool(*dualEnable, true))) {
             const float lobe1 = scalarChannel("Specular Lobe 1 Roughness", 0.7f);
             bool lobe2Present = false;
@@ -281,7 +281,7 @@ std::unordered_map<std::string, MaterialRefs> parseMaterials(const nlohmann::jso
                 ref.specularWeightWithMap = 0.0f;
             }
         }
-        if (const nlohmann::json* c = effectiveChannel(mat, base, "Metallic Weight")) {
+        if (const nlohmann::json* c = effectiveChannel(sceneIndex, baseIndex, "Metallic Weight")) {
             ref.metallic = std::clamp(channelScalar(*c, 0.0f), 0.0f, 1.0f);
         }
 
@@ -290,7 +290,7 @@ std::unordered_map<std::string, MaterialRefs> parseMaterials(const nlohmann::jso
         // weight (0.5 = the standard 4% coat F0, same convention as the base lobes).
         bool tcPresent = false;
         const float tcWeightRaw = scalarChannel("Top Coat Weight", 0.0f, &tcPresent);
-        const nlohmann::json* tcEnable = effectiveChannel(mat, base, "Top Coat Enable");
+        const nlohmann::json* tcEnable = effectiveChannel(sceneIndex, baseIndex, "Top Coat Enable");
         if (tcPresent && tcWeightRaw > 0.0f && (!tcEnable || channelBool(*tcEnable, true))) {
             const float tcReflectivity =
                 std::clamp(scalarChannel("Top Coat Reflectivity", 0.5f), 0.0f, 1.0f);
@@ -301,8 +301,8 @@ std::unordered_map<std::string, MaterialRefs> parseMaterials(const nlohmann::jso
             // at the physical 0..1. A map on the weight is discounted by the same assumed
             // dark-mask average as the spec-mask fold (maps aren't sampled at import).
             glm::vec3 tcColor(1.0f);
-            if (const nlohmann::json* c = effectiveChannel(mat, base, "Top Coat Color")) {
-                readColorValue(*c, tcColor);
+            if (const nlohmann::json* c = effectiveChannel(sceneIndex, baseIndex, "Top Coat Color")) {
+                channelColor(*c, tcColor);
             }
             const float tcColorLum = glm::dot(tcColor, glm::vec3(0.2126f, 0.7152f, 0.0722f));
             float tcW = std::min(tcWeightRaw, 1.0f);
@@ -324,7 +324,7 @@ std::unordered_map<std::string, MaterialRefs> parseMaterials(const nlohmann::jso
         // The color map carries the tint skin authors for transmitted light; the grayscale weight
         // map localizes strength (ears/nose high, over bone low). Materials without the channel
         // keep the 0.5 default (the old uniform-dial behaviour).
-        if (const nlohmann::json* c = effectiveChannel(mat, base, "Translucency Weight")) {
+        if (const nlohmann::json* c = effectiveChannel(sceneIndex, baseIndex, "Translucency Weight")) {
             ref.translucencyWeight = std::clamp(channelScalar(*c, 0.5f), 0.0f, 1.0f);
         }
         ref.translucencyImageUri = channelMapUri("Translucency Color");
@@ -350,11 +350,11 @@ std::unordered_map<std::string, MaterialRefs> parseMaterials(const nlohmann::jso
         // by it at render. Ignoring it flattened strongly-authored skins (the surface stayed near
         // mirror-coherent, so the broad specular sheen read as wet plastic). Clamped to the
         // push-constant packing range (mesh.record packs mode + strength/8 into one float).
-        if (const nlohmann::json* c = effectiveChannel(mat, base, "Normal Map")) {
+        if (const nlohmann::json* c = effectiveChannel(sceneIndex, baseIndex, "Normal Map")) {
             ref.normalImageUri = channelImageUri(*c, imageLibrary);
             ref.normalStrength = std::clamp(channelScalar(*c, 1.0f), 0.0f, 7.9f);
         }
-        if (const nlohmann::json* c = effectiveChannel(mat, base, "Bump Strength")) {
+        if (const nlohmann::json* c = effectiveChannel(sceneIndex, baseIndex, "Bump Strength")) {
             ref.bumpImageUri = channelImageUri(*c, imageLibrary);
             ref.bumpStrength = std::clamp(channelScalar(*c, 1.0f), 0.0f, 7.9f);
         }
@@ -366,7 +366,7 @@ std::unordered_map<std::string, MaterialRefs> parseMaterials(const nlohmann::jso
         // shells); the mask URI is carried out for the decode layer to bake into the diffuse alpha.
         float cutout = 1.0f;
         float refraction = 0.0f;
-        if (const nlohmann::json* c = effectiveChannel(mat, base, "Cutout Opacity")) {
+        if (const nlohmann::json* c = effectiveChannel(sceneIndex, baseIndex, "Cutout Opacity")) {
             cutout = channelScalar(*c, 1.0f);
             ref.opacityImageUri = channelImageUri(*c, imageLibrary);
         } else if (const nlohmann::json* legacy = topLevelChannel(mat, base, "transparency")) {
@@ -378,7 +378,7 @@ std::unordered_map<std::string, MaterialRefs> parseMaterials(const nlohmann::jso
             cutout = channelScalar(*legacy, 1.0f);
             ref.opacityImageUri = channelImageUri(*legacy, imageLibrary);
         }
-        if (const nlohmann::json* c = effectiveChannel(mat, base, "Refraction Weight")) {
+        if (const nlohmann::json* c = effectiveChannel(sceneIndex, baseIndex, "Refraction Weight")) {
             refraction = channelScalar(*c, 0.0f);
         }
         ref.opacity = cutout;

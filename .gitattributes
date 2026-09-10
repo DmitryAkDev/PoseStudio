@@ -1,0 +1,20 @@
+# Line-ending policy. The repository stores text as LF and lets git convert on checkout
+# (CRLF on Windows working trees, LF elsewhere), so contributors on any platform can commit
+# without "every line changed" diffs. Binary assets are declared explicitly so no tool ever
+# "normalizes" them.
+* text=auto
+
+# Shell scripts must stay LF even on Windows checkouts (bash rejects CRLF); PowerShell is
+# happy either way but keeps the Windows convention.
+*.sh  text eol=lf
+*.ps1 text eol=crlf
+
+# Binary content — never converted, never diffed as text.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.ico  binary
+*.pdf  binary
+*.hdr  binary
+*.exr  binary
+*.spv  binary

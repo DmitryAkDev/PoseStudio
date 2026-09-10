@@ -37,8 +37,10 @@ namespace {
 
 // Identity key for a texture source: external files share by path — the point of the whole decode
 // cache, since figure zones commonly reference the same atlas files (face/lips/ears share the face
-// maps, torso/arms/legs the body maps). Embedded bytes are keyed by their address, i.e. unique to
-// their own mesh. Empty key = no source.
+// maps, torso/arms/legs the body maps). Embedded bytes are keyed by their ADDRESS, i.e. unique to
+// their own mesh — valid only because data.meshes is never reallocated while the decode runs (the
+// keys are built and consumed inside one decodeModelTextures call over a fixed mesh list). Empty
+// key = no source.
 std::string sourceKey(const TextureSource& src) {
     if (!src.path.empty()) {
         return src.path;
@@ -337,6 +339,82 @@ void ModelImportService::decodeModelTextures(ModelData& data) {
     }
 }
 
+// --- ImportProgress ---------------------------------------------------------------------------
+
+ModelImportService::ImportProgress::ImportProgress(bool show, const QString& windowTitle,
+                                                   const QString& readingLabel) {
+    m_clock.start();
+    if (!show) {
+        return;
+    }
+    m_dialog = std::make_unique<QProgressDialog>(readingLabel, QString() /*no cancel button*/, 0, 0,
+                                                 QApplication::activeWindow());
+    m_dialog->setWindowTitle(windowTitle);
+    m_dialog->setWindowModality(Qt::ApplicationModal);
+    m_dialog->setMinimumDuration(0); // don't wait for the default ~4s estimate before showing
+    m_dialog->setValue(0);           // range 0,0 => a busy indicator while the file parses
+    // Force it on-screen and paint it NOW, before the parse blocks the GUI thread (see the class
+    // comment for why QProgressDialog's own auto-show would come too late).
+    m_dialog->show();
+    QApplication::processEvents();
+}
+
+ModelImportService::ImportProgress::~ImportProgress() = default;
+
+void ModelImportService::ImportProgress::parsed() {
+    m_parseMs = m_clock.elapsed();
+    if (m_dialog) {
+        m_dialog->setRange(0, kSteps); // switch the busy indicator to a determinate bar
+        m_dialog->setValue(++m_step);  // parse complete
+    }
+}
+
+void ModelImportService::ImportProgress::phase(const QString& label) {
+    if (m_dialog) {
+        m_dialog->setLabelText(label);
+        m_dialog->setValue(++m_step);
+    }
+}
+
+void ModelImportService::ImportProgress::done() {
+    if (m_dialog) {
+        m_dialog->setValue(kSteps); // complete -> dialog closes
+    }
+}
+
+// --- The shared post-parse pipeline -----------------------------------------------------------
+
+void ModelImportService::uploadModelData(VulkanRenderer& renderer, ModelData& data,
+                                         ImportProgress& progress, const char* kindPrefix,
+                                         const QString& path, const QString& logSuffix) {
+    // Decode every unique texture once — shared across the meshes that sample it — with the
+    // decodes running across cores (see decodeModelTextures). Qt layer, so the importers and
+    // the renderer stay codec-free.
+    progress.phase(QStringLiteral("Decoding textures…"));
+    decodeModelTextures(data);
+    const qint64 msDecode = progress.elapsedMs();
+
+    // Bake per-vertex ambient occlusion (skipped internally for very large meshes; parallel
+    // across cores) + UV tangents on the FINAL render mesh — post-morph, post-subdivision, all
+    // zones together. See aobaker.h / tangentgen.h.
+    progress.phase(QStringLiteral("Baking ambient occlusion…"));
+    bakeVertexAO(data);
+    computeTangents(data);
+
+    // Show "Uploading…" below the max so the dialog stays up during the blocking GPU upload,
+    // then jump to the max afterwards to auto-close it.
+    progress.phase(QStringLiteral("Uploading to GPU…"));
+    renderer.addModel(data);
+    const qint64 msUpload = progress.elapsedMs();
+    progress.done();
+
+    // Per-phase import timing — for high-res maps the texture decode/upload dominates.
+    const qint64 msParse = progress.parseMs();
+    qDebug().nospace() << "[viewport] imported " << kindPrefix << path << " in " << msUpload
+                       << "ms (parse " << msParse << ", decode " << (msDecode - msParse)
+                       << ", upload " << (msUpload - msDecode) << ")" << qUtf8Printable(logSuffix);
+}
+
 bool ModelImportService::importInto(VulkanRenderer& renderer, const QString& path,
                                     bool showProgress) {
     // Pick the importer for this file up front — if the format is unsupported, bail before we put
@@ -347,75 +425,12 @@ bool ModelImportService::importInto(VulkanRenderer& renderer, const QString& pat
         return false;
     }
 
-    // Import runs synchronously on the GUI thread (parse -> texture decode -> GPU upload), so a
-    // large model would otherwise freeze the UI with no feedback. Drive a modal staged progress
-    // dialog through those phases. It lives entirely in this Qt-facing layer; the importers and the
-    // renderer core stay Qt-free. No cancel button: each phase is a short, atomic, blocking operation
-    // that can't be safely interrupted partway through. A modal QProgressDialog pumps the event loop
-    // on setValue(), so the bar/label repaint between phases.
-    std::unique_ptr<QProgressDialog> progress;
-    if (showProgress) {
-        progress = std::make_unique<QProgressDialog>(
-            QStringLiteral("Reading model file…"), QString() /*no cancel button*/, 0, 0,
-            QApplication::activeWindow());
-        progress->setWindowTitle(QStringLiteral("Importing Model"));
-        progress->setWindowModality(Qt::ApplicationModal);
-        progress->setMinimumDuration(0); // don't wait for the default ~4s estimate before showing
-        progress->setValue(0);           // range 0,0 => a busy indicator while the file parses
-        // QProgressDialog's auto-show is driven by setValue() estimating the remaining time, which
-        // can't see the upcoming blocking load() — so it would otherwise first appear mid-import.
-        // Force it on-screen and paint it NOW, before the parse blocks the GUI thread.
-        progress->show();
-        QApplication::processEvents();
-    }
-
-    QElapsedTimer timer;
-    timer.start();
+    ImportProgress progress(showProgress, QStringLiteral("Importing Model"),
+                            QStringLiteral("Reading model file…"));
     try {
         ModelData data = importer->load(path.toStdString()); // geometry + resolved texture sources
-        const qint64 msParse = timer.elapsed();
-
-        const int total = 5; // parse, decode, bake, upload, done
-        int step = 0;
-        if (progress) {
-            progress->setRange(0, total); // switch the busy indicator to a determinate bar
-            progress->setValue(++step);   // parse complete
-        }
-
-        // Decode every unique texture once — shared across the meshes that sample it — with the
-        // decodes running across cores (see decodeModelTextures). Qt layer, so the importers and
-        // the renderer stay codec-free.
-        if (progress) {
-            progress->setLabelText(QStringLiteral("Decoding textures…"));
-            progress->setValue(++step);
-        }
-        decodeModelTextures(data);
-
-        const qint64 msDecode = timer.elapsed();
-
-        // Bake per-vertex ambient occlusion (skipped internally for very large meshes) + tangents.
-        if (progress) {
-            progress->setLabelText(QStringLiteral("Baking ambient occlusion…"));
-            progress->setValue(++step);
-        }
-        bakeVertexAO(data);
-        computeTangents(data);
-
-        // Show "Uploading…" below the max so the dialog stays up during the blocking GPU upload,
-        // then jump to the max afterwards to auto-close it.
-        if (progress) {
-            progress->setLabelText(QStringLiteral("Uploading to GPU…"));
-            progress->setValue(++step);
-        }
-        renderer.addModel(data);
-        const qint64 msUpload = timer.elapsed();
-        if (progress) {
-            progress->setValue(total); // complete -> dialog closes
-        }
-        // Per-phase import timing — for high-res maps the texture decode/upload dominates.
-        qDebug().nospace() << "[viewport] imported " << path << " in " << msUpload
-                           << "ms (parse " << msParse << ", decode " << (msDecode - msParse)
-                           << ", upload " << (msUpload - msDecode) << ")";
+        progress.parsed();
+        uploadModelData(renderer, data, progress, "", path);
         return true;
     } catch (const std::exception& e) {
         qWarning() << "[viewport] Model import failed:" << path << "-" << e.what();

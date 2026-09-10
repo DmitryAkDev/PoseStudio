@@ -1,25 +1,28 @@
 /**
  * @file postprocess.h
- * @brief The post-processing chain over the HDR scene target: bloom + the fullscreen composite
- *        that tonemaps into the swapchain.
+ * @brief The post-processing chain over the HDR scene target: screen-space subsurface
+ *        scattering, bloom, and the fullscreen composite that tonemaps into the swapchain.
  *
- * Bloom is the classic three small passes at half resolution — bright-extract (soft threshold on
- * the resolved HDR), then a separable Gaussian blur (H into a second target, V back into the
- * first) — and the composite adds it over the HDR image and applies ACES (PBR mode with the
- * tonemap dial on; every other mode passes through untouched, since the stylized modes still
- * author display-ready values). The composite draws through the existing swapchain MSAA render
- * pass (a fully-covered fullscreen triangle — MSAA is a no-op on it), so VulkanSwapchain needed
- * no changes. All four passes share one fullscreen-triangle vertex shader. Resolution-dependent
- * images/descriptors rebuild on resize(); the render pass + pipelines are format-only and stay.
- * Pure Vulkan + std, no Qt.
+ * Six fullscreen passes share one fullscreen-triangle vertex shader (fullscreen.vert) and one
+ * three-sampler descriptor layout: the SSS blur (two full-resolution masked passes, H into a
+ * scratch target and V back INTO the HDR resolve, so everything downstream sees diffused skin —
+ * the V pass adds the scene's separately-rendered specular back over the blur), the classic
+ * three-pass half-resolution bloom (bright-extract with a soft threshold, then a separable
+ * Gaussian: H into a second target, V back into the first), and the composite, which adds the
+ * bloom over the HDR image, applies ACES (PBR mode with the tonemap dial on; every other mode
+ * passes through untouched, since the stylized modes still author display-ready values) and
+ * paints the selection outline. The composite draws through the swapchain's single-sample
+ * present pass; the other five share one single-sample RGBA16F "bloom" render pass that is
+ * size-agnostic. Resolution-dependent images/descriptors rebuild on resize(); the render pass +
+ * pipelines are format-only and stay. Pure Vulkan + std, no Qt.
  */
 
 #ifndef POSTPROCESS_H
 #define POSTPROCESS_H
 
-#include "vulkancommon.h" // kSelectionAccentLinear
+#include "attachmentimage.h"
+#include "vulkanhandles.h"
 
-#include <vk_mem_alloc.h>
 #include <vulkan/vulkan.h>
 
 #include <memory>
@@ -30,9 +33,19 @@ namespace pose {
 class VulkanContext;
 class VulkanPipeline;
 
+/// The viewport's selection accent: the app's QSS accent blue #5b87cc (hover borders, the
+/// DragNumberBox glyphs), sRGB-decoded to LINEAR — the swapchain's sRGB store re-encodes it
+/// exactly. The one colour for everything the engine draws as "selected": the selection outline
+/// (pushed to composite.frag by PostProcess) and the selected-part highlight in mesh.frag, whose
+/// copy lives in shaders/include/colour.glsl (kSelectionAccent) — change both together. The
+/// darker selection FILL blue (#314D7A) is deliberately not used: against the viewport grey it
+/// doesn't read as a line.
+inline constexpr float kSelectionAccentLinear[3] = {0.1046f, 0.2423f, 0.6038f};
+
 class PostProcess {
 public:
-    /// @param swapchainRenderPass The pass the composite draws through (the swapchain's MSAA pass).
+    /// @param swapchainRenderPass The pass the composite draws through (the swapchain's
+    ///                            single-sample present pass).
     /// @param hdrResolve          The HDR target's resolved-texture descriptor (re-fed on resize).
     /// @param hdrSpecResolve      The HDR target's resolved SPECULAR descriptor — sampled by the
     ///                            SSS V-pass, which adds it back after diffusing (the blur must
@@ -47,7 +60,7 @@ public:
                 const std::vector<char>& brightFragSpirv, const std::vector<char>& blurFragSpirv,
                 const std::vector<char>& compositeFragSpirv,
                 const std::vector<char>& sssBlurFragSpirv);
-    ~PostProcess();
+    ~PostProcess(); // out of line: VulkanPipeline is incomplete here
 
     PostProcess(const PostProcess&) = delete;
     PostProcess& operator=(const PostProcess&) = delete;
@@ -75,15 +88,11 @@ public:
     /// (the mask's contents are then stale).
     void recordComposite(VkCommandBuffer cmd, bool tonemap, bool bloom, float outlineWidthPx);
 
-    /// The selection outline's colour, LINEAR rgb. Defaults to the app's accent blue.
-    void setOutlineColor(float r, float g, float b) { m_outlineColor[0] = r; m_outlineColor[1] = g; m_outlineColor[2] = b; }
-
 private:
-    struct BloomTarget {
-        VkImage       image = VK_NULL_HANDLE;
-        VmaAllocation alloc = VK_NULL_HANDLE;
-        VkImageView   view = VK_NULL_HANDLE;
-        VkFramebuffer framebuffer = VK_NULL_HANDLE;
+    /// One single-sample RGBA16F render target + the framebuffer that draws into it.
+    struct Target {
+        AttachmentImage   image;
+        UniqueFramebuffer framebuffer;
     };
 
     void createTargets();
@@ -95,35 +104,37 @@ private:
                            const VulkanPipeline& pipeline, VkDescriptorSet set,
                            const float params[4]);
 
+    // Declaration order = reverse destruction order: the pipelines and sets go first, the
+    // targets/framebuffers before the pass they were built for.
     VulkanContext& m_context;
     VkExtent2D     m_extent{};      // full resolution; bloom runs at half
     VkExtent2D     m_bloomExtent{}; // max(extent/2, 1)
     VkImageView    m_hdrResolveView = VK_NULL_HANDLE; // for the SSSSS V pass's framebuffer
 
-    VkRenderPass m_bloomPass = VK_NULL_HANDLE; // single RGBA16F attachment -> SHADER_READ_ONLY
-    VkSampler    m_sampler = VK_NULL_HANDLE;   // clamp+linear, shared by the bloom targets
-    BloomTarget  m_bloomA; // bright output, then final (post blur-V) bloom
-    BloomTarget  m_bloomB; // blur-H intermediate
+    UniqueRenderPass m_bloomPass; // single RGBA16F attachment -> SHADER_READ_ONLY
+    VkSampler        m_sampler = VK_NULL_HANDLE; // clamp+linear, borrowed from the SamplerCache
+    Target           m_bloomA; // bright output, then final (post blur-V) bloom
+    Target           m_bloomB; // blur-H intermediate
 
     // SSSSS: a full-res scratch target for the H pass, and a framebuffer ON the HDR resolve image
     // so the V pass writes the diffused result back in place (the bloom render pass is reused —
     // same format/structure, size-agnostic).
-    BloomTarget   m_sssScratch;               // full resolution
-    VkFramebuffer m_sssResolveFb = VK_NULL_HANDLE; // targets the HDR resolve view
+    Target            m_sssScratch;   // full resolution
+    UniqueFramebuffer m_sssResolveFb; // targets the HDR resolve view
 
     // One three-sampler set layout serves every pass (a pass's unused bindings = its binding-0
     // image again, so every declared binding is valid).
-    VkDescriptorSetLayout m_setLayout = VK_NULL_HANDLE;
-    VkDescriptorPool      m_pool = VK_NULL_HANDLE;
-    VkDescriptorSet       m_brightSet = VK_NULL_HANDLE;    // 0 = HDR resolve
-    VkDescriptorSet       m_blurHSet = VK_NULL_HANDLE;     // 0 = bloom A
-    VkDescriptorSet       m_blurVSet = VK_NULL_HANDLE;     // 0 = bloom B
-    VkDescriptorSet       m_compositeSet = VK_NULL_HANDLE; // 0 = HDR resolve, 1 = bloom A, 2 = outline mask
-    VkDescriptorSet       m_sssHSet = VK_NULL_HANDLE;      // 0 = HDR resolve
-    VkDescriptorSet       m_sssVSet = VK_NULL_HANDLE;      // 0 = SSS scratch, 1 = spec resolve
+    UniqueDescriptorSetLayout m_setLayout;
+    UniqueDescriptorPool      m_pool;
+    VkDescriptorSet           m_brightSet = VK_NULL_HANDLE;    // 0 = HDR resolve
+    VkDescriptorSet           m_blurHSet = VK_NULL_HANDLE;     // 0 = bloom A
+    VkDescriptorSet           m_blurVSet = VK_NULL_HANDLE;     // 0 = bloom B
+    VkDescriptorSet           m_compositeSet = VK_NULL_HANDLE; // 0 = HDR resolve, 1 = bloom A, 2 = outline mask
+    VkDescriptorSet           m_sssHSet = VK_NULL_HANDLE;      // 0 = HDR resolve
+    VkDescriptorSet           m_sssVSet = VK_NULL_HANDLE;      // 0 = SSS scratch, 1 = spec resolve
 
-    // Selection-outline colour (linear rgb), pushed to the composite. Default: the app's accent
-    // blue (kSelectionAccentLinear) — the composite paints it after tonemapping and the sRGB
+    // Selection-outline colour (linear rgb), pushed to the composite: the app's accent blue
+    // (kSelectionAccentLinear) — the composite paints it after tonemapping and the sRGB
     // swapchain re-encodes it exactly.
     float m_outlineColor[3] = {kSelectionAccentLinear[0], kSelectionAccentLinear[1],
                                kSelectionAccentLinear[2]};

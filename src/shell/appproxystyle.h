@@ -4,7 +4,10 @@
  *
  * Intercepts a few style hints/metrics globally so they apply everywhere without per-widget
  * code: custom tooltip wake/sleep delays, a tighter submenu overlap, and 30%-opacity disabled
- * icons. Installed once in main.cpp via QApplication::setStyle(new AppProxyStyle("Fusion")).
+ * icons. Installed once by AppTheme::install (shell/apptheme.cpp) via
+ * QApplication::setStyle(new AppProxyStyle("Fusion")) — "Fusion" explicitly, because a bare
+ * AppProxyStyle() would wrap the platform DEFAULT style and silently defeat the forced theme.
+ * Header-only on purpose: three trivial overrides.
  */
 
 #ifndef APPPROXYSTYLE_H

@@ -63,33 +63,7 @@ data point. No code required.
 
 ---
 
-## 3. Add a View → Show Skeleton toggle for the posing overlay
-
-**Labels:** `enhancement`, `help wanted`, `good first issue`
-
-The viewport can draw a colored skeleton overlay (joint→parent line segments) over a
-posable figure, but it's currently hidden with no way to turn it on: the renderer-side
-plumbing (`Scene::setShowSkeleton` in `src/viewport/scene/scene.h`, forwarded through
-`VulkanRenderer`/`VulkanWindow`/`ViewportWidget`) already exists and is deliberately
-retained for exactly this feature — nothing in the UI sets it yet.
-
-**Scope for a first pass**
-1. Add a **View** menu to the menu bar (`src/shell/menumanager.cpp`) with a checkable
-   "Show Skeleton" action.
-2. Route it through `ViewportWidget` to the existing `setShowSkeleton` plumbing (see
-   how the shade-mode setter travels the same path), and make sure the viewport
-   repaints on toggle (`requestUpdate()` — see the event-driven-rendering note in
-   `src/viewport/vulkanwindow.cpp`).
-3. Optionally persist the choice via `PreferencesManager::instance()` so it survives
-   restarts.
-
-A small, well-bounded feature where every layer you need already has a worked example
-to copy from — good if you want your first change to touch the real rendering path
-without writing any Vulkan.
-
----
-
-## 4. Design and build an in-app Help/Documentation subsystem
+## 3. Design and build an in-app Help/Documentation subsystem
 
 **Labels:** `enhancement`, `help wanted`, `discussion`
 

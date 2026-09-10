@@ -1,6 +1,13 @@
 /**
  * @file preferencespanel.h
  * @brief Base class for a single page in the Preferences dialog.
+ *
+ * Promoting a placeholder tab to a real page: create <name>preferencespanel.{h,cpp} with a
+ * PreferencesPanel subclass whose constructor builds its rows through contentLayout() and
+ * addDescription() (never a hand-rolled QLabel with inline font sizes — the helpers are what keep
+ * the pages looking alike), add the two files to CMakeLists.txt, and in PreferencesDialog's
+ * constructor replace that tab's PlaceholderPreferencesPanel line with the new class. The tab
+ * label stays the same, so MenuManager::openPreferencesDialog(initialTab) callers are unaffected.
  */
 
 #ifndef PREFERENCESPANEL_H
@@ -17,8 +24,9 @@ class QLabel;
  *
  * Provides the chrome every preferences page needs — a heading plus a top-aligned content
  * area — so concrete panels only append their own setting rows via contentLayout(). Each
- * tab lives in its own subclass/file (e.g. GeneralPreferencesPanel) so the areas can be
- * built out independently without touching the dialog or each other.
+ * real tab lives in its own subclass/file (e.g. GeneralPreferencesPanel) so the areas can be
+ * built out independently without touching the dialog or each other; tabs that have no
+ * settings yet share PlaceholderPreferencesPanel.
  */
 class PreferencesPanel : public QWidget {
     Q_OBJECT

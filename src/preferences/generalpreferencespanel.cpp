@@ -22,10 +22,15 @@ GeneralPreferencesPanel::GeneralPreferencesPanel(QWidget* parent)
     addDescription(
         "Each time it starts, PoseStudio lets posestudio.io know that this installation exists, so we can "
         "see how many people use it and which versions are out there. The ping carries a random "
-        "install ID, the app version, your operating system and CPU type, and whether the app was "
-        "installed or is running portable — nothing else: no names, no files, no usage data, "
-        "and the ID isn't linked to you in any way.");
-    addDescription(QStringLiteral("Install ID: %1").arg(InstallPing::installId()));
+        "install ID, the app version, your operating system and CPU type, whether the app was "
+        "installed or is running portable, the Qt library version, and the time of the ping — "
+        "nothing else: no names, no files, no usage data, and the ID isn't linked to you in any way.");
+    // Shown, never minted here: opening Preferences must not create and persist an identifier
+    // (in a keyless build, or with the toggle off, one may legitimately never exist).
+    const QString id = InstallPing::existingInstallId();
+    addDescription(id.isEmpty()
+                       ? QStringLiteral("Install ID: not created yet (assigned when the first ping is sent)")
+                       : QStringLiteral("Install ID: %1").arg(id));
 
     if (!InstallPing::isBuiltIn()) {
         // Local builds carry no signing key (it comes from the release pipeline's secret), so

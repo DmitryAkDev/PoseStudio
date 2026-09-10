@@ -4,9 +4,10 @@
  *        consumes — a Model made of per-material Meshes.
  *
  * This is the contract between the import/ subsystem and scene/: importers (import/meshimporter.h,
- * import/obj/…) fill a ModelData; VulkanWindow's import service decodes its textures; Scene turns it
- * into device buffers (scene/mesh.h). Pure data + std + GLM — no Vulkan, no Qt — so importers stay
- * trivially testable and the type carries no format identity of its own.
+ * import/obj/…, and the figure service's FigureData conversion) fill a ModelData; the Qt-facing
+ * ModelImportService::decodeModelTextures decodes its textures; Scene turns it into device buffers
+ * (scene/mesh.h). Pure data + std + GLM — no Vulkan, no Qt — so importers stay trivially testable
+ * and the type carries no format identity of its own.
  */
 
 #ifndef MODELDATA_H
@@ -126,8 +127,11 @@ struct MeshData {
 // --- Pose correctives (joint-driven corrective morphs) ----------------------------------------
 // A rigged figure ships corrective shapes that fire as a function of joint rotation to fix the mesh
 // crumpling at bent elbows/shoulders/hips/knees ("candy-wrapper"). Each is a sparse morph whose blend
-// weight is driven by one or more joint-rotation angles through a tiny driver formula. The engine keeps
-// the base mesh on the CPU and re-morphs it (position += weight · delta) whenever the pose changes.
+// weight is driven by one or more joint-rotation angles through a tiny driver formula. The engine
+// blends them LIVE on the GPU: at upload the Model packs every corrective's deltas into one static
+// delta table (each vertex's run referenced through Vertex::correctiveRange), re-evaluates the
+// weights whenever the pose moves, and the vertex shaders sum weight · delta before skinning — so a
+// pose change costs a few hundred bytes of weights per frame, never a geometry re-upload.
 
 /// One knot of a corrective's driver spline: at driver angle `x` (degrees) the weight is `y`. The
 /// source authors these as TCB knots with tension/continuity/bias ~0, so the evaluator interpolates

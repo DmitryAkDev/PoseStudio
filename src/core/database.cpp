@@ -20,6 +20,8 @@
 #include <QStandardPaths>
 #include <QStringList>
 
+#include <algorithm>
+
 namespace {
 
 /// True if `table` already has a column named `column`.
@@ -60,20 +62,23 @@ QSqlDatabase appDatabase() {
 }
 
 /**
- * @brief Opens (or rebuilds) the SQLite database and returns the active connection.
+ * @brief Opens (or rebuilds) the SQLite database; see database.h for the return contract.
  * @param mode Normal opens the existing file, building the schema only if this is the first
  *             launch (no file yet). FactoryReset deletes the existing file first and always
  *             rebuilds the schema from initialize.sql.
  */
-QSqlDatabase initializeDatabase(DbInitMode mode) {
+bool initializeDatabase(DbInitMode mode) {
     const QString connectionName = QLatin1String(kDatabaseConnectionName);
 
     // Writable per-user data belongs in the platform's app-data location, not next to the
     // executable: an installed app's directory is read-only on macOS (.app bundle) and Linux
     // (e.g. /usr/bin), and writing there also breaks code signing. AppDataLocation resolves
     // per-platform (Roaming/<App> on Windows, ~/Library/Application Support/<App> on macOS,
-    // ~/.local/share/<App> on Linux) — derived from the app/org name set in main(). Create it
-    // on first use since the directory may not exist yet.
+    // ~/.local/share/<App> on Linux) from the APPLICATION name set in main() — and only that:
+    // no organization name is ever set, deliberately. Adding setOrganizationName later would
+    // insert an <Org>/ segment into this path, move AppDataLocation, and orphan every existing
+    // posestudio.db (the legacy-location migration below covers only the next-to-the-exe
+    // layout). Create the directory on first use since it may not exist yet.
     const QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QDir().mkpath(dataDir);
     const QString dbPath = QDir(dataDir).filePath(QStringLiteral("posestudio.db"));
@@ -133,7 +138,7 @@ QSqlDatabase initializeDatabase(DbInitMode mode) {
     if (!db.open()) {
         qCritical() << "Database Error [initializeDatabase]: Connection failed.";
         qCritical() << "Reason:" << db.lastError().text();
-        return db;
+        return false;
     }
 
     // Fallback wipe for a reset whose file delete failed: drop every user table in place, then
@@ -161,15 +166,26 @@ QSqlDatabase initializeDatabase(DbInitMode mode) {
         QFile sqlFile(QStringLiteral(":/resources/database/initialize.sql"));
         if (!sqlFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
             qCritical() << "Fatal Error: Missing initialize.sql blueprint in resources.";
-            return db;
+            return false;
         }
 
         const QString sqlData = sqlFile.readAll();
         sqlFile.close();
 
-        // The schema file has no semicolons inside string literals or trigger bodies,
-        // so a naive split is sufficient — no need for a real SQL statement parser here.
-        const QStringList sqlStatements = sqlData.split(QLatin1Char(';'), Qt::SkipEmptyParts);
+        // Statements are split on ';' — a naive split, not a SQL parser, which is sufficient
+        // because the schema file keeps semicolons out of string literals and trigger bodies.
+        // Whole-line "--" comments are dropped FIRST: a semicolon in the 0.3.6 header comment
+        // once became a statement boundary and corrupted CREATE TABLE Preferences on every fresh
+        // install (see the repair migration below). Trailing comments on a statement line are
+        // still not supported — keep them on their own lines.
+        QStringList sqlLines = sqlData.split(QLatin1Char('\n'));
+        sqlLines.erase(std::remove_if(sqlLines.begin(), sqlLines.end(),
+                                      [](const QString& line) {
+                                          return line.trimmed().startsWith(QLatin1String("--"));
+                                      }),
+                       sqlLines.end());
+        const QStringList sqlStatements =
+            sqlLines.join(QLatin1Char('\n')).split(QLatin1Char(';'), Qt::SkipEmptyParts);
 
         QSqlQuery query(db);
         for (const QString& statement : sqlStatements) {
@@ -228,6 +244,12 @@ QSqlDatabase initializeDatabase(DbInitMode mode) {
     // Flags the single "Maquettes" row (synced below) as shipped-with-the-app rather than
     // user-added, so the UI knows not to offer removing it.
     ensureColumn(db, "AssetLibraries", "AssetLibraryIsBuiltIn", "INTEGER NOT NULL DEFAULT 0");
+
+    // Every library reader filters on AssetLibraryEnabled = 1 (see core/assetlibraries.h). The
+    // column has been in initialize.sql since the first schema, so this guard is belt and braces
+    // for a database whose table predates it — without it that first query fails and every
+    // library silently vanishes from the UI.
+    ensureColumn(db, "AssetLibraries", "AssetLibraryEnabled", "INTEGER NOT NULL DEFAULT 1");
 
     // One-time default user library: "My PoseStudio Library" in the user's Documents — the
     // writable, user-facing home for personal content, including the hdri/ folder the Environment
@@ -302,5 +324,5 @@ QSqlDatabase initializeDatabase(DbInitMode mode) {
         }
     }
 
-    return db;
+    return true;
 }

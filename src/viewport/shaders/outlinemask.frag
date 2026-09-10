@@ -5,6 +5,10 @@
 // covered edge pixels into fractional values, which the composite (composite.frag) dilates by
 // the outline width and blends against — so the outline's inner edge matches the object's own
 // anti-aliased fringe. Skinned + camera-projected by shadow.vert.
+//
+// Pass:    the outline-mask pass (OutlineMask; the context's MSAA count, no depth).
+// Inputs:  none of its own (shadow.vert consumes the joint/corrective set + push block).
+// Outputs: location 0 -> the R8 coverage attachment (resolved for the composite).
 
 layout(location = 0) out float outCoverage;
 

@@ -49,10 +49,13 @@ void PreferencesManager::setValue(const QString& key, const QVariant& value) {
 
     QSqlDatabase db = appDatabase();
     QSqlQuery query(db);
+    // The upsert also refreshes PreferenceStamp: the column's DEFAULT only fires on the INSERT
+    // path, so without this a row's stamp froze at its first write.
     query.prepare(
         "INSERT INTO Preferences (PreferenceName, PreferenceValue) "
         "VALUES (:key, :val) "
-        "ON CONFLICT(PreferenceName) DO UPDATE SET PreferenceValue = excluded.PreferenceValue"
+        "ON CONFLICT(PreferenceName) DO UPDATE SET PreferenceValue = excluded.PreferenceValue, "
+        "PreferenceStamp = CURRENT_TIMESTAMP"
     );
     query.bindValue(":key", key);
     query.bindValue(":val", value);

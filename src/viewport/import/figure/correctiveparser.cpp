@@ -5,9 +5,10 @@
 
 #include "correctiveparser.h"
 
+#include "figureutils.h" // parseChannelRef, valuesArray
+
 #include <nlohmann/json.hpp>
 
-#include <cctype>
 #include <cmath>
 #include <string>
 #include <utility>
@@ -16,39 +17,12 @@ namespace pose {
 
 namespace {
 
-// Splits a channel-driver URL into (nodeId, property). Forms:
-//   "lForeArm:/data/…/basefigure.dsf#lForeArm?rotation/y"     -> ("lForeArm", "rotation/y")
-//   "figure:/data/…/charShape.dsf#charShape?value"            -> ("charShape", "value")
-// Takes the fragment after '#', then splits on '?'.
-void splitChannel(const std::string& url, std::string& node, std::string& prop) {
-    const auto hash = url.rfind('#');
-    const std::string frag = (hash == std::string::npos) ? url : url.substr(hash + 1);
-    const auto q = frag.find('?');
-    if (q == std::string::npos) {
-        node = frag;
-        prop.clear();
-        return;
-    }
-    node = frag.substr(0, q);
-    prop = frag.substr(q + 1);
-}
-
-// Minimal percent-decoding for output-channel id comparison ("CCrow%20Base%20Female%20Body%201"
-// must compare equal to the modifier id "CCrow Base Female Body 1").
-std::string urlDecodeLocal(const std::string& s) {
-    std::string out;
-    out.reserve(s.size());
-    for (std::size_t i = 0; i < s.size(); ++i) {
-        if (s[i] == '%' && i + 2 < s.size() && std::isxdigit(static_cast<unsigned char>(s[i + 1])) &&
-            std::isxdigit(static_cast<unsigned char>(s[i + 2]))) {
-            out.push_back(static_cast<char>(std::stoi(s.substr(i + 1, 2), nullptr, 16)));
-            i += 2;
-        } else {
-            out.push_back(s[i]);
-        }
-    }
-    return out;
-}
+// Channel-driver URLs here take the forms
+//   "lForeArm:/data/…/basefigure.dsf#lForeArm?rotation/y"     -> (node "lForeArm", "rotation/y")
+//   "figure:/data/…/charShape.dsf#charShape?value"            -> (node "charShape", "value")
+// and are split by figureutils' parseChannelRef: the node is the id after '#' (rawKey — as
+// written; decodedKey when it must compare against a modifier id, see parseCorrective) and the
+// property is the part after '?'.
 
 // "rotation/x|y|z" -> 0/1/2, else -1.
 int rotationAxis(const std::string& prop) {
@@ -82,17 +56,15 @@ void translateFormula(const nlohmann::json& formula, const CorrectiveContext& ct
 
         if (name == "push") {
             if (const auto url = op.find("url"); url != op.end() && url->is_string()) {
-                std::string node;
-                std::string prop;
-                splitChannel(url->get<std::string>(), node, prop);
-                const int axis = rotationAxis(prop);
+                const ChannelRef ref = parseChannelRef(url->get<std::string>());
+                const int axis = rotationAxis(ref.property);
                 if (axis >= 0) {
-                    if (ctx.boneNames && ctx.boneNames->find(node) == ctx.boneNames->end()) {
+                    if (ctx.boneNames && ctx.boneNames->find(ref.rawKey) == ctx.boneNames->end()) {
                         unknownDriver = true;
                     }
                     CorrectiveOp o;
                     o.kind = CorrectiveOp::Kind::PushRotation;
-                    o.bone = node;
+                    o.bone = ref.rawKey;
                     o.axis = axis;
                     out.ops.push_back(std::move(o));
                     hasRotation = true;
@@ -113,7 +85,10 @@ void translateFormula(const nlohmann::json& formula, const CorrectiveContext& ct
                     pendingKnots.push_back(k);
                 } else if (val->is_number()) {
                     // A bare number is either the spline knot-count (immediately before a spline op,
-                    // discard) or a real multiplicand.
+                    // discard) or a real multiplicand. This heuristic is specific to the op ORDERING
+                    // the spline_tcb / spline_linear vocabulary writes: the knots are pushed, then
+                    // their count as a bare number, then the spline op that consumes them — so a
+                    // number directly preceding a "spline*" op is always that count.
                     const bool isCount = (i + 1 < ops.size()) &&
                                          ops[i + 1].value("op", std::string()).rfind("spline", 0) == 0;
                     if (!isCount) {
@@ -217,10 +192,11 @@ bool parseCorrective(const nlohmann::json& modifier, const CorrectiveContext& ct
         // morphs. Summing those into the weight produced garbage (and their gate stages zeroed
         // it); they are simply skipped here (per-morph bone adjustments are transient, tiny, and
         // not modeled — the identity-morph path handles the character's static ones).
-        std::string outNode;
-        std::string outProp;
-        splitChannel(formula.value("output", std::string()), outNode, outProp);
-        if (outProp != "value" || urlDecodeLocal(outNode) != out.id) {
+        // The output id is compared DECODED: a vendor morph id with spaces is written
+        // percent-encoded in the url ("Some%20Character%20Body%201") but plain in the modifier's
+        // own "id" ("Some Character Body 1").
+        const ChannelRef outRef = parseChannelRef(formula.value("output", std::string()));
+        if (outRef.property != "value" || outRef.decodedKey != out.id) {
             continue;
         }
         const std::string stage = formula.value("stage", std::string("sum"));
@@ -245,17 +221,12 @@ bool parseCorrective(const nlohmann::json& modifier, const CorrectiveContext& ct
     }
 
     // Sparse deltas: values = [[baseVertexIndex, dx, dy, dz], …].
-    const nlohmann::json* values = &(*deltas);
-    if (deltas->is_object()) {
-        if (const auto v = deltas->find("values"); v != deltas->end()) {
-            values = &(*v);
-        }
-    }
-    if (!values->is_array()) {
+    const nlohmann::json& values = valuesArray(*deltas);
+    if (!values.is_array()) {
         return false;
     }
-    out.deltas.reserve(values->size());
-    for (const auto& d : *values) {
+    out.deltas.reserve(values.size());
+    for (const auto& d : values) {
         if (d.is_array() && d.size() >= 4) {
             out.deltas.emplace_back(d[0].get<uint32_t>(),
                                     glm::vec3(d[1].get<float>(), d[2].get<float>(), d[3].get<float>()));

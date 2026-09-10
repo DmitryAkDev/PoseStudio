@@ -1,10 +1,12 @@
-/* ============================================================================
- * _environment.qss — the Environment properties tab (see src/properties/environmentpanel.*)
- * Concatenated after global.qss (main.cpp loadStylesheets), so these rules override the base.
- * Everything is scoped under #EnvironmentPanel so it can't leak into other widgets.
- * Palette matches the app: pane #252627, inputs #2a2b2d, borders #3a3b3d/#4a4b4d,
- * accent #5b87cc, hover #314D7A, text #e0e0e0.
- * ==========================================================================*/
+/**
+ * @file _environment.qss
+ * @brief The Environment properties tab (src/properties/environmentpanel.* and hdriselector.*).
+ *
+ * Concatenated after global.qss (shell/apptheme.cpp), so these rules override the base.
+ * Everything is scoped under #EnvironmentPanel or the tab's own object names so it can't leak
+ * into other widgets. Palette matches the app: pane #252627, inputs #2a2b2d, borders
+ * #3a3b3d/#4a4b4d, accent #5b87cc, hover #314D7A, text #e0e0e0.
+ */
 
 #EnvironmentPanel,
 #EnvironmentContent {
@@ -40,9 +42,11 @@
     color: #8b9096;
 }
 
-/* HDRI selector: a button showing the current environment's name; clicking drops a menu hosting a
- * scrollable thumbnail list (#HdriList) + a footer link. The menu chrome ("HdriMenu") inherits the
- * app-wide QMenu look from _menumanager.qss, exactly like the viewport's shader-mode menu. */
+/* HDRI selector (HdriSelector, hdriselector.cpp): a button showing the current environment's name;
+ * clicking drops a menu hosting a scrollable thumbnail list (#HdriList) + a footer link. The menu
+ * chrome inherits the app-wide QMenu look from _menumanager.qss, exactly like the viewport's
+ * shader-mode menu. The Backdrop tab's Mode picker deliberately shares this object name, so the
+ * two fields look identical. */
 #EnvironmentHdriButton {
     background-color: #2a2b2d;
     color: #e0e0e0;
@@ -61,8 +65,9 @@
 
 /* The thumbnail list inside the HDRI menu: tight rows, menu-style hover/selection, dark scroll bar.
  * Category headings (one per hdri/ subfolder) are disabled QListWidgetItems painted by a delegate in
- * code (environmentpanel.cpp HdriHeadingDelegate: a top gap, bold #e0e0e0 text, a #4a4b4d rule under
- * it) — QSS can't address individual items, so no rule here. */
+ * code (hdriselector.cpp HdriHeadingDelegate: a top gap, bold #e0e0e0 text, and a rule under it in
+ * the app-wide separator grey #6a6b6e — Constants::COLOR_SEPARATOR, the same value as
+ * QMenu::separator below in _menumanager.qss) — QSS can't address individual items, so no rule here. */
 #HdriList {
     background-color: #252627;
     color: #e0e0e0;
@@ -119,26 +124,12 @@
 #EnvironmentRowRestore:hover   { background-color: #314D7A; }
 #EnvironmentRowRestore:pressed { background-color: #2f3f5c; }
 
-/* Tonemap checkbox. Checked = an accent check glyph in the dark well (not a solid fill — the
- * filled square read as a button); hover echoes the DragNumberBox hover border. */
+/* The toggles (tonemap, shadows): the label matches the row labels; the indicator itself is the
+ * app-wide QCheckBox::indicator rule in global.qss. */
 #EnvironmentPanel QCheckBox {
     color: #c7c8cb;
     font-size: 12px;
     spacing: 6px;
-}
-#EnvironmentPanel QCheckBox::indicator {
-    width: 15px;
-    height: 15px;
-    border: 1px solid #4a4b4d;
-    border-radius: 3px;
-    background: #2a2b2d;
-}
-#EnvironmentPanel QCheckBox::indicator:hover {
-    border-color: #5b87cc; /* same hover accent as the HDRI button and the DragNumberBoxes */
-}
-#EnvironmentPanel QCheckBox::indicator:checked {
-    background: #2a2b2d;
-    image: url(:/resources/icons/check.png);
 }
 
 /* Reset button: quiet, secondary. */

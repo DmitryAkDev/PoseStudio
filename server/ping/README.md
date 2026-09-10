@@ -107,7 +107,7 @@ logs `[ping] no signing key in this build; skipped` (see "Test it").
 | `empty_body`, `too_large` | no body, or over 1 KB |
 | `no_key_configured` | the server has no `POSESTUDIO_PING_KEY`; fail closed |
 | `no_signature`, `bad_signature` | header missing / malformed, or the HMAC doesn't verify |
-| `bad_json`, `bad_field:<name>` | body isn't the documented shape (the CI test build's `0.0.0-dev` version lands here) |
+| `bad_json`, `bad_field:<name>` | body isn't the documented shape (a hand-crafted or tampered request; official builds always pass) |
 | `unknown_version` | only when `PING_ALLOWED_VERSIONS` in `ping.php` is non-empty |
 | `stale_ts` | client clock more than 6 h from the server's: replay protection with room for wrong clocks |
 | `ip_new_install_limit` | more than 25 NEW install ids from one address in a day (a leaked key generating ids) |

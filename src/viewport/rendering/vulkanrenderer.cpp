@@ -8,6 +8,7 @@
 #include "hdrtarget.h"
 #include "outlinemask.h"
 #include "postprocess.h"
+#include "shaderlibrary.h"
 #include "vulkancontext.h"
 #include "vulkanswapchain.h"
 
@@ -17,19 +18,45 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
-#include <fstream>
 #include <limits>
 
 namespace pose {
 
+namespace {
+
+UniqueSemaphore makeSemaphore(VkDevice device) {
+    VkSemaphoreCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    VkSemaphore semaphore = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateSemaphore(device, &info, nullptr, &semaphore));
+    return UniqueSemaphore(device, semaphore);
+}
+
+UniqueFence makeSignalledFence(VkDevice device) {
+    VkFenceCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    info.flags = VK_FENCE_CREATE_SIGNALED_BIT; // so the first wait doesn't block forever
+    VkFence fence = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateFence(device, &info, nullptr, &fence));
+    return UniqueFence(device, fence);
+}
+
+} // namespace
+
 VulkanRenderer::VulkanRenderer(VulkanContext& context, VkExtent2D initialExtent,
                                std::string shaderDir)
-    : m_context(context), m_shaderDir(std::move(shaderDir)), m_windowExtent(initialExtent) {
+    : m_context(context), m_windowExtent(initialExtent) {
+    // Every compiled shader is read up front: a missing .spv fails here with one clear message
+    // (the usual cause is the shader-compile build step not having run) rather than partway
+    // through pipeline construction. The blobs are only needed while the pipelines are built.
+    ShaderLibrary shaders(std::move(shaderDir));
+    shaders.preload();
+
     m_swapchain = std::make_unique<VulkanSwapchain>(m_context, m_windowExtent);
 
-    // The scene renders offscreen into the HDR target (linear RGBA16F, same MSAA structure as the
-    // swapchain pass); scene pipelines are built against ITS render pass. The swapchain pass then
-    // only ever runs the tonemapping composite.
+    // The scene renders offscreen into the HDR target (linear RGBA16F at the context's MSAA
+    // count, resolved); scene pipelines are built against ITS render pass. The swapchain pass —
+    // single-sample, no depth — then only ever runs the tonemapping composite.
     m_hdrTarget = std::make_unique<HdrTarget>(m_context, m_swapchain->extent());
     // The selection-outline mask is screen-sized too; the Scene's silhouette pipeline builds
     // against its pass, so it exists before the Scene.
@@ -37,25 +64,25 @@ VulkanRenderer::VulkanRenderer(VulkanContext& context, VkExtent2D initialExtent,
 
     m_scene = std::make_unique<Scene>(m_context, m_hdrTarget->renderPass(),
                                       m_outlineMask->renderPass(),
-                                      loadSpirv("mesh.vert.spv"), loadSpirv("mesh.frag.spv"),
-                                      loadSpirv("skeleton.vert.spv"), loadSpirv("skeleton.frag.spv"),
-                                      loadSpirv("shadow.vert.spv"), loadSpirv("shadow.frag.spv"),
-                                      loadSpirv("background.vert.spv"),
-                                      loadSpirv("background.frag.spv"),
-                                      loadSpirv("outlinemask.frag.spv"));
+                                      shaders.get("mesh.vert"), shaders.get("mesh.frag"),
+                                      shaders.get("skeleton.vert"), shaders.get("skeleton.frag"),
+                                      shaders.get("shadow.vert"), shaders.get("shadow.frag"),
+                                      shaders.get("background.vert"),
+                                      shaders.get("background.frag"),
+                                      shaders.get("outlinemask.frag"));
 
     // The grid samples the scene's shadow map (ground/contact shadow) through the scene-wide
     // set 3, so its pipeline is built against that layout — Scene must exist first.
     m_grid = std::make_unique<Grid>(m_context, m_hdrTarget->renderPass(),
-                                    loadSpirv("grid.vert.spv"), loadSpirv("grid.frag.spv"),
+                                    shaders.get("grid.vert"), shaders.get("grid.frag"),
                                     m_scene->iblSetLayout());
 
     m_postProcess = std::make_unique<PostProcess>(
         m_context, m_swapchain->renderPass(), m_hdrTarget->resolveInfo(),
         m_hdrTarget->specResolveInfo(), m_outlineMask->descriptorInfo(), m_swapchain->extent(),
-        loadSpirv("fullscreen.vert.spv"), loadSpirv("bloombright.frag.spv"),
-        loadSpirv("bloomblur.frag.spv"), loadSpirv("composite.frag.spv"),
-        loadSpirv("sssblur.frag.spv"));
+        shaders.get("fullscreen.vert"), shaders.get("bloombright.frag"),
+        shaders.get("bloomblur.frag"), shaders.get("composite.frag"),
+        shaders.get("sssblur.frag"));
 
     createCommandPool();
     createCommandBuffers();
@@ -66,13 +93,12 @@ VulkanRenderer::VulkanRenderer(VulkanContext& context, VkExtent2D initialExtent,
 }
 
 VulkanRenderer::~VulkanRenderer() {
-    // Nothing in flight may reference these objects when we destroy them.
+    // Nothing in flight may reference these objects when we destroy them. The sync objects and
+    // the command pool are RAII members, released after this body; the surface-dependent objects
+    // are released here in dependency order (consumers before the targets/passes they sample or
+    // were built against).
     vkDeviceWaitIdle(m_context.device());
 
-    destroySyncObjects();
-    if (m_commandPool != VK_NULL_HANDLE) {
-        vkDestroyCommandPool(m_context.device(), m_commandPool, nullptr);
-    }
     m_postProcess.reset();
     m_grid.reset();
     m_scene.reset();
@@ -93,10 +119,6 @@ void VulkanRenderer::notifyResize(VkExtent2D newExtent) {
 
 void VulkanRenderer::addModel(const ModelData& data) {
     m_scene->addModel(data);
-}
-
-int VulkanRenderer::pickModel(const Ray& ray) const {
-    return m_scene->pickModel(ray);
 }
 
 void VulkanRenderer::deleteModel(std::size_t index) {
@@ -120,160 +142,10 @@ bool VulkanRenderer::frameSelected() {
     return true;
 }
 
-int VulkanRenderer::selectedModelIndex() const {
-    return m_scene ? m_scene->selectedModelIndex() : -1;
-}
-
-void VulkanRenderer::setSelectedModel(int index) {
-    if (m_scene) {
-        m_scene->setSelectedModel(index);
-    }
-}
-
-bool VulkanRenderer::hasPosableFigure() const { return m_scene && m_scene->hasPosableFigure(); }
-
-int VulkanRenderer::activeFigureIndex() const {
-    return m_scene ? m_scene->activeFigureIndex() : -1;
-}
-
-void VulkanRenderer::setActiveFigure(int index) {
-    if (m_scene) {
-        m_scene->setActiveFigure(index);
-    }
-}
-
-void VulkanRenderer::setShowSkeleton(bool on) {
-    if (m_scene) {
-        m_scene->setShowSkeleton(on);
-    }
-}
-
-bool VulkanRenderer::showSkeleton() const { return m_scene && m_scene->showSkeleton(); }
-
-void VulkanRenderer::setShadeMode(int mode) {
-    if (m_scene) {
-        m_scene->setShadeMode(mode);
-    }
-}
-
 void VulkanRenderer::applyBakedEnvironment(const BakedEnvironment& baked) {
     if (m_scene) {
         m_scene->applyBakedEnvironment(baked);
     }
-}
-
-void VulkanRenderer::setLightingSettings(const LightingSettings& settings) {
-    if (m_scene) {
-        m_scene->setLightingSettings(settings);
-    }
-}
-
-int VulkanRenderer::shadeMode() const { return m_scene ? m_scene->shadeMode() : 0; }
-
-int VulkanRenderer::selectBoneAt(float px, float py, float vpW, float vpH) {
-    return m_scene ? m_scene->selectBoneAt(px, py, vpW, vpH, m_camera) : -1;
-}
-
-bool VulkanRenderer::hasSelectedBone() const { return m_scene && m_scene->hasSelectedBone(); }
-
-int VulkanRenderer::selectBoneByName(const std::string& name) {
-    return m_scene ? m_scene->selectBoneByName(name) : -1;
-}
-
-void VulkanRenderer::nudgeSelectedBone(const glm::vec3& deltaEulerDegrees) {
-    if (m_scene) {
-        m_scene->nudgeSelectedBone(deltaEulerDegrees);
-    }
-}
-
-void VulkanRenderer::finalizePose() {
-    if (m_scene) {
-        m_scene->finalizePose();
-    }
-}
-
-bool VulkanRenderer::beginBoneIkDrag() { return m_scene && m_scene->beginBoneIkDrag(); }
-
-bool VulkanRenderer::dragBoneIkTo(const glm::vec3& targetWorld) {
-    return m_scene && m_scene->dragBoneIkTo(targetWorld);
-}
-
-bool VulkanRenderer::settleBoneIkTick() {
-    return m_scene && m_scene->settleBoneIkTick();
-}
-
-void VulkanRenderer::endBoneIkDrag() {
-    if (m_scene) {
-        m_scene->endBoneIkDrag();
-    }
-}
-
-bool VulkanRenderer::selectedBoneWorldPosition(glm::vec3& out) const {
-    return m_scene && m_scene->selectedBoneWorldPosition(out);
-}
-
-bool VulkanRenderer::togglePinSelectedBone() { return m_scene && m_scene->togglePinSelectedBone(); }
-
-bool VulkanRenderer::selectedBonePinned() const { return m_scene && m_scene->selectedBonePinned(); }
-
-bool VulkanRenderer::hasPinnedBones() const { return m_scene && m_scene->hasPinnedBones(); }
-
-void VulkanRenderer::unpinAllBones() {
-    if (m_scene) {
-        m_scene->unpinAllBones();
-    }
-}
-
-bool VulkanRenderer::resetSelectedJoint(bool subtree) {
-    return m_scene && m_scene->resetSelectedJoint(subtree);
-}
-
-void VulkanRenderer::resetPose() {
-    if (m_scene) {
-        m_scene->resetPose();
-    }
-}
-
-void VulkanRenderer::mirrorPose() {
-    if (m_scene) {
-        m_scene->mirrorPose();
-    }
-}
-
-bool VulkanRenderer::mirrorSelectedLimb() {
-    return m_scene && m_scene->mirrorSelectedLimb();
-}
-
-bool VulkanRenderer::groundFigure() {
-    return m_scene ? m_scene->groundFigure() : false;
-}
-
-bool VulkanRenderer::figureGroundGap(float& lowestY) const {
-    return m_scene && m_scene->figureGroundGap(lowestY);
-}
-
-void VulkanRenderer::translateFigureY(float dy) {
-    if (m_scene) {
-        m_scene->translateFigureY(dy);
-    }
-}
-
-std::vector<std::pair<std::string, glm::vec3>> VulkanRenderer::capturePose() const {
-    return m_scene ? m_scene->capturePose() : std::vector<std::pair<std::string, glm::vec3>>{};
-}
-
-void VulkanRenderer::applyPose(const std::vector<std::pair<std::string, glm::vec3>>& pose) {
-    if (m_scene) {
-        m_scene->applyPose(pose);
-    }
-}
-
-bool VulkanRenderer::savePose(const std::string& path) const {
-    return m_scene && m_scene->savePose(path);
-}
-
-bool VulkanRenderer::loadPose(const std::string& path) {
-    return m_scene && m_scene->loadPose(path);
 }
 
 void VulkanRenderer::createCommandPool() {
@@ -281,14 +153,16 @@ void VulkanRenderer::createCommandPool() {
     ci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     ci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT; // we reset+rerecord each frame
     ci.queueFamilyIndex = m_context.graphicsFamily();
-    VK_CHECK(vkCreateCommandPool(m_context.device(), &ci, nullptr, &m_commandPool));
+    VkCommandPool pool = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateCommandPool(m_context.device(), &ci, nullptr, &pool));
+    m_commandPool.reset(m_context.device(), pool);
 }
 
 void VulkanRenderer::createCommandBuffers() {
     m_commandBuffers.resize(kMaxFramesInFlight);
     VkCommandBufferAllocateInfo ai{};
     ai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    ai.commandPool = m_commandPool;
+    ai.commandPool = m_commandPool.get();
     ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     ai.commandBufferCount = static_cast<uint32_t>(m_commandBuffers.size());
     VK_CHECK(vkAllocateCommandBuffers(m_context.device(), &ai, m_commandBuffers.data()));
@@ -296,39 +170,16 @@ void VulkanRenderer::createCommandBuffers() {
 
 void VulkanRenderer::createSyncObjects() {
     VkDevice device = m_context.device();
-    m_imageAvailableSemaphores.resize(kMaxFramesInFlight);
-    m_inFlightFences.resize(kMaxFramesInFlight);
-    m_renderFinishedSemaphores.resize(m_swapchain->imageCount());
-
-    VkSemaphoreCreateInfo semInfo{};
-    semInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-    VkFenceCreateInfo fenceInfo{};
-    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT; // so the first wait doesn't block forever
-
-    for (int i = 0; i < kMaxFramesInFlight; ++i) {
-        VK_CHECK(vkCreateSemaphore(device, &semInfo, nullptr, &m_imageAvailableSemaphores[i]));
-        VK_CHECK(vkCreateFence(device, &fenceInfo, nullptr, &m_inFlightFences[i]));
-    }
-    for (auto& sem : m_renderFinishedSemaphores) {
-        VK_CHECK(vkCreateSemaphore(device, &semInfo, nullptr, &sem));
-    }
-}
-
-void VulkanRenderer::destroySyncObjects() {
-    VkDevice device = m_context.device();
-    for (VkSemaphore sem : m_imageAvailableSemaphores) {
-        vkDestroySemaphore(device, sem, nullptr);
-    }
-    for (VkSemaphore sem : m_renderFinishedSemaphores) {
-        vkDestroySemaphore(device, sem, nullptr);
-    }
-    for (VkFence fence : m_inFlightFences) {
-        vkDestroyFence(device, fence, nullptr);
-    }
     m_imageAvailableSemaphores.clear();
-    m_renderFinishedSemaphores.clear();
     m_inFlightFences.clear();
+    m_renderFinishedSemaphores.clear();
+    for (int i = 0; i < kMaxFramesInFlight; ++i) {
+        m_imageAvailableSemaphores.push_back(makeSemaphore(device));
+        m_inFlightFences.push_back(makeSignalledFence(device));
+    }
+    for (uint32_t i = 0; i < m_swapchain->imageCount(); ++i) {
+        m_renderFinishedSemaphores.push_back(makeSemaphore(device));
+    }
 }
 
 void VulkanRenderer::recreateSwapchain() {
@@ -355,14 +206,9 @@ void VulkanRenderer::recreateSwapchain() {
 
     // The per-image renderFinished semaphores must match the (possibly new) image count.
     if (m_swapchain->imageCount() != oldImageCount) {
-        for (VkSemaphore sem : m_renderFinishedSemaphores) {
-            vkDestroySemaphore(m_context.device(), sem, nullptr);
-        }
-        m_renderFinishedSemaphores.resize(m_swapchain->imageCount());
-        VkSemaphoreCreateInfo semInfo{};
-        semInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-        for (auto& sem : m_renderFinishedSemaphores) {
-            VK_CHECK(vkCreateSemaphore(m_context.device(), &semInfo, nullptr, &sem));
+        m_renderFinishedSemaphores.clear();
+        for (uint32_t i = 0; i < m_swapchain->imageCount(); ++i) {
+            m_renderFinishedSemaphores.push_back(makeSemaphore(m_context.device()));
         }
     }
 
@@ -383,12 +229,13 @@ bool VulkanRenderer::drawFrame() {
     }
 
     VkDevice device = m_context.device();
-    VK_CHECK(vkWaitForFences(device, 1, &m_inFlightFences[m_currentFrame], VK_TRUE, UINT64_MAX));
+    const VkFence inFlight = m_inFlightFences[m_currentFrame].get();
+    const VkSemaphore imageAvailable = m_imageAvailableSemaphores[m_currentFrame].get();
+    VK_CHECK(vkWaitForFences(device, 1, &inFlight, VK_TRUE, UINT64_MAX));
 
     uint32_t imageIndex = 0;
     VkResult acquire = vkAcquireNextImageKHR(device, m_swapchain->handle(), UINT64_MAX,
-                                             m_imageAvailableSemaphores[m_currentFrame],
-                                             VK_NULL_HANDLE, &imageIndex);
+                                             imageAvailable, VK_NULL_HANDLE, &imageIndex);
     if (acquire == VK_ERROR_OUT_OF_DATE_KHR) {
         recreateSwapchain();
         return true; // this frame was skipped; the caller must schedule one at the new size
@@ -404,25 +251,26 @@ bool VulkanRenderer::drawFrame() {
     // Reset the fence only once we're committing to a submit that will re-signal it: an early-out
     // above — or a throw during recording — must leave it signalled, because an unsignalled fence
     // with no pending submit deadlocks the next frame's infinite vkWaitForFences.
-    VK_CHECK(vkResetFences(device, 1, &m_inFlightFences[m_currentFrame]));
+    VK_CHECK(vkResetFences(device, 1, &inFlight));
 
+    const VkSemaphore renderFinished = m_renderFinishedSemaphores[imageIndex].get();
     const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkSubmitInfo submit{};
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit.waitSemaphoreCount = 1;
-    submit.pWaitSemaphores = &m_imageAvailableSemaphores[m_currentFrame];
+    submit.pWaitSemaphores = &imageAvailable;
     submit.pWaitDstStageMask = &waitStage;
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &cmd;
     submit.signalSemaphoreCount = 1;
-    submit.pSignalSemaphores = &m_renderFinishedSemaphores[imageIndex];
-    VK_CHECK(vkQueueSubmit(m_context.graphicsQueue(), 1, &submit, m_inFlightFences[m_currentFrame]));
+    submit.pSignalSemaphores = &renderFinished;
+    VK_CHECK(vkQueueSubmit(m_context.graphicsQueue(), 1, &submit, inFlight));
 
     VkSwapchainKHR swapchain = m_swapchain->handle();
     VkPresentInfoKHR present{};
     present.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
     present.waitSemaphoreCount = 1;
-    present.pWaitSemaphores = &m_renderFinishedSemaphores[imageIndex];
+    present.pWaitSemaphores = &renderFinished;
     present.swapchainCount = 1;
     present.pSwapchains = &swapchain;
     present.pImageIndices = &imageIndex;
@@ -441,6 +289,25 @@ bool VulkanRenderer::drawFrame() {
     return needsRedraw;
 }
 
+/**
+ * @brief THE FRAME GRAPH: records every pass of one frame, in order, into @p cmd.
+ *
+ *   1. Key-light SHADOW map (Scene::recordShadowPass — depth-only, its own pass on the ShadowMap;
+ *      skipped with no casters, the light matrix then parked on an always-lit projection).
+ *   2. Selection OUTLINE mask (Scene::recordOutlinePass — the selected model's silhouette into the
+ *      OutlineMask; skipped with no selection).
+ *   3. Offscreen HDR SCENE pass (HdrTarget, at the context's MSAA count, in LINEAR HDR):
+ *      the HDRI backdrop -> opaque meshes -> transparent meshes (+ wire/hidden-line variants per
+ *      shade mode) -> the floor grid -> the line overlays (skeleton, pins, ortho floor line);
+ *      resolved into the sampleable colour + specular images.
+ *   4. Screen-space SSS blur (H into a scratch target, V back into the HDR resolve) and then BLOOM
+ *      (half-res bright-extract + separable blur) — PBR mode only.
+ *   5. Swapchain pass (single-sample, no depth): the fullscreen COMPOSITE — HDR + bloom, ACES
+ *      when tonemapping, the selection outline over the top — into the acquired swapchain image.
+ *
+ * Every pass's inter-pass synchronisation is expressed by its render pass's external
+ * dependencies (renderpassbuilder.h), not by barriers here.
+ */
 void VulkanRenderer::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex) {
     VkCommandBufferBeginInfo begin{};
     begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -468,7 +335,8 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageInde
     // --- Offscreen HDR scene pass: backdrop + meshes + grid, in LINEAR HDR. --------------------
     // Five clear slots cover every attachment layout the HDR target uses (MSAA:
     // colourMS/depth/resolve/specMS/specResolve; single-sample: colour/depth/spec) — the
-    // SPECULAR attachments clear to zero (no specular where nothing draws).
+    // SPECULAR attachments clear to zero (no specular where nothing draws). The swapchain pass
+    // below needs none: its one attachment loads DONT_CARE.
     std::array<VkClearValue, 5> clears{};
     // Viewport background #3E4042 = (62, 64, 66) as LINEAR values (sRGB->linear of each channel).
     // The HDR target is a linear format and the composite's sRGB swapchain store does the final
@@ -508,14 +376,16 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageInde
         m_postProcess->recordBloom(cmd); // then blooms the diffused image
     }
 
-    // --- Swapchain pass: the fullscreen composite (tonemap + bloom add). -----------------------
+    // --- Swapchain pass: the fullscreen composite (tonemap + bloom add + outline). -------------
+    // No clear values: the pass's single colour attachment loads DONT_CARE, since the composite's
+    // fullscreen triangle overwrites every pixel.
     VkRenderPassBeginInfo presentPass{};
     presentPass.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     presentPass.renderPass = m_swapchain->renderPass();
     presentPass.framebuffer = m_swapchain->framebuffer(imageIndex);
     presentPass.renderArea.extent = extent;
-    presentPass.clearValueCount = static_cast<uint32_t>(clears.size());
-    presentPass.pClearValues = clears.data(); // the composite overwrites every pixel anyway
+    presentPass.clearValueCount = 0;
+    presentPass.pClearValues = nullptr;
     vkCmdBeginRenderPass(cmd, &presentPass, VK_SUBPASS_CONTENTS_INLINE);
     vkCmdSetViewport(cmd, 0, 1, &viewport);
     vkCmdSetScissor(cmd, 0, 1, &scissor);
@@ -527,20 +397,6 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageInde
     vkCmdEndRenderPass(cmd);
 
     VK_CHECK(vkEndCommandBuffer(cmd));
-}
-
-std::vector<char> VulkanRenderer::loadSpirv(const std::string& fileName) const {
-    const std::string path = m_shaderDir + "/" + fileName;
-    std::ifstream file(path, std::ios::ate | std::ios::binary);
-    if (!file.is_open()) {
-        throw VulkanError("Could not open SPIR-V file: " + path +
-                          " (was the shader-compile build step run?)");
-    }
-    const std::streamsize size = file.tellg();
-    std::vector<char> buffer(static_cast<size_t>(size));
-    file.seekg(0);
-    file.read(buffer.data(), size);
-    return buffer;
 }
 
 } // namespace pose

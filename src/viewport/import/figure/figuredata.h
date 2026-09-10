@@ -16,6 +16,7 @@
 
 #include <glm/glm.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -60,13 +61,13 @@ struct FigureMesh {
     std::vector<uint32_t> indices;
     std::vector<uint32_t> baseVertex;         ///< Source base-vertex index per render vertex (for correctives).
     std::string           materialZone;      ///< polygon_material_groups name this mesh came from.
-    int                   materialIndex = -1; ///< Index into the zone list (and the material list).
     FigureMaterial        material;
 };
 
 /// One skeleton joint. `parent` indexes into FigureData::bones (-1 for the figure root). `origin` is
 /// the joint's absolute rest position (the node's center_point) and `orientation` its rest Euler
-/// orientation in degrees — together they give the bind transform linear-blend skinning needs.
+/// orientation in degrees — together they give the bind transform GPU (dual-quaternion) skinning
+/// needs.
 struct FigureBone {
     std::string name;
     int         parent = -1;
@@ -98,6 +99,11 @@ struct FigureData {
     std::vector<FigureBone>     bones;
     std::vector<VertexSkin>     vertexSkins;
     std::vector<PoseCorrective> correctives;      ///< Pose-driven corrective morphs; base-vertex space.
+    /// Size of the base-vertex space the meshes' `baseVertex` and the correctives' deltas index:
+    /// the (subdivided) cage's vertex count — every cage vertex, referenced by a face or not. A
+    /// merged follower's vertices are offset past it (see mergeAddonFigure), and it grows by the
+    /// follower's own count so the next follower lands past both.
+    std::size_t                 baseVertexCount = 0;
     float                       figureScale = 1.0f; ///< Overall uniform scale (character height), from the driver formulas.
     /// True when the geometry declares a POPULATED graft (non-empty hidden_polys/vertex_pairs) —
     /// a surface replacement authored in exact correspondence with a specific target shape. Used by

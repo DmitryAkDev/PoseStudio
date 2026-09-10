@@ -27,9 +27,16 @@ enum class DbInitMode {
 };
 
 /**
- * @brief Opens (or rebuilds) the application's SQLite database and returns the connection.
+ * @brief Opens (or rebuilds) the application's SQLite database; the connection is then
+ *        available through appDatabase().
  * @param mode Normal to just connect, FactoryReset to wipe and rebuild the schema.
+ * @return false when nothing usable came up: the connection could not be opened, or the schema
+ *         had to be built and the embedded initialize.sql is missing. main() treats that as
+ *         fatal. Individual schema statements that fail are logged but do NOT fail the launch —
+ *         the additive migrations that follow them are the designed repair path (they rebuilt
+ *         the Preferences table for every install the 0.3.6 schema regression broke), and a
+ *         degraded launch beats locking the user out.
  */
-QSqlDatabase initializeDatabase(DbInitMode mode);
+bool initializeDatabase(DbInitMode mode);
 
 #endif // DATABASE_H

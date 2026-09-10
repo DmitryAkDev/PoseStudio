@@ -8,8 +8,14 @@
  *   3. decodes each mesh's texture maps via QImage — from external paths OR embedded bytes — into
  *      tightly-packed shared RGBA8 images (all six material slots), baking opacity masks into the
  *      diffuse alpha and gutter-filling UV seams, so the renderer never needs an image codec,
- *   4. uploads it (VulkanRenderer::addModel),
+ *   4. bakes per-vertex ambient occlusion + tangents on the final mesh, and
+ *   5. uploads it (VulkanRenderer::addModel),
  * optionally driving a modal staged progress dialog through those phases.
+ *
+ * Steps 3-5 — everything after the format-specific parse — are the SAME for every source, so
+ * they live here once (uploadModelData + the ImportProgress dialog/clock) and the figure path
+ * (FigureImportService) calls them after its own parse: any new import path must go through
+ * them too, or the decode-once texture sharing and the seam-killing gutter fill are lost.
  *
  * All the Qt (QImage decode, progress UI) lives here so both the importers and the renderer stay
  * Qt-free. VulkanWindow just forwards to it. Import runs synchronously on the GUI thread.
@@ -18,7 +24,12 @@
 #ifndef MODELIMPORTSERVICE_H
 #define MODELIMPORTSERVICE_H
 
+#include <QElapsedTimer>
 #include <QString>
+
+#include <memory>
+
+class QProgressDialog;
 
 namespace pose {
 
@@ -31,6 +42,51 @@ struct ModelData;
  */
 class ModelImportService {
 public:
+    /**
+     * @class ImportProgress
+     * @brief One import's modal staged progress dialog (optional) and its phase clock.
+     *
+     * Import runs synchronously on the GUI thread (parse -> texture decode -> bake -> GPU
+     * upload), so a large model would otherwise freeze the UI with no feedback. Shown, the
+     * dialog is ApplicationModal with no cancel button: each phase is a short, atomic, blocking
+     * operation that can't be safely interrupted partway through. It pumps the event loop on
+     * setValue(), so the bar/label repaint between phases. Not shown (the startup/command-line
+     * drain, called from inside the expose/init path where that pump could re-enter it), the
+     * object still keeps the clock so the timing log is identical either way. The dialog closes
+     * when done() reaches the maximum, or with the object on an exception path.
+     */
+    class ImportProgress {
+    public:
+        /// @p show drives the dialog; @p windowTitle / @p readingLabel are its title and the
+        /// busy-indicator label shown while the file parses. The dialog is forced on-screen and
+        /// painted NOW: QProgressDialog's own auto-show is driven by a remaining-time estimate
+        /// that can't see the upcoming blocking parse, so it would otherwise first appear
+        /// mid-import.
+        ImportProgress(bool show, const QString& windowTitle, const QString& readingLabel);
+        ~ImportProgress();
+        ImportProgress(const ImportProgress&) = delete;
+        ImportProgress& operator=(const ImportProgress&) = delete;
+
+        /// The parse finished: records its time and turns the busy indicator into a determinate
+        /// bar at step 1 of kSteps.
+        void parsed();
+        /// Advances the bar one step under @p label (decode / bake / upload).
+        void phase(const QString& label);
+        /// Jumps the bar to its maximum, which closes the dialog.
+        void done();
+
+        qint64 elapsedMs() const { return m_clock.elapsed(); }
+        qint64 parseMs() const { return m_parseMs; }
+
+    private:
+        static constexpr int kSteps = 5; // parse, decode, bake, upload, done
+
+        std::unique_ptr<QProgressDialog> m_dialog; // null when not shown
+        QElapsedTimer                    m_clock;
+        qint64                           m_parseMs = 0;
+        int                              m_step = 0;
+    };
+
     /**
      * Loads @p path into @p renderer's scene. Logs and returns false on unsupported format or
      * parse/decode failure (a bad file drops only that import, never the app).
@@ -49,6 +105,16 @@ public:
     /// both decode textures identically — keep every import path behind this choke point, or the
     /// mip-bleed seams the gutter fill prevents come back.
     static void decodeModelTextures(ModelData& data);
+
+    /// The post-parse half of every import: decodes @p data's textures (decodeModelTextures),
+    /// bakes per-vertex AO + tangents on the final mesh, uploads it to @p renderer, and logs the
+    /// per-phase timing as "[viewport] imported <kindPrefix><path> in ... (parse, decode,
+    /// upload)<logSuffix>" — @p kindPrefix is "" for a model, "figure " for a figure; @p logSuffix
+    /// trails the line (the figure's zone/corrective counts). @p progress must have had parsed()
+    /// called. Throws on Vulkan failure (the caller's catch logs it).
+    static void uploadModelData(VulkanRenderer& renderer, ModelData& data, ImportProgress& progress,
+                                const char* kindPrefix, const QString& path,
+                                const QString& logSuffix = QString());
 };
 
 } // namespace pose

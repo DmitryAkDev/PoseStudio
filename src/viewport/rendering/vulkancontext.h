@@ -5,12 +5,14 @@
  *
  * One VulkanContext is created per window once a VkSurfaceKHR exists. It picks a
  * physical device with a queue family that can both render and present to that
- * surface, creates the logical device + queues, and stands up a VMA allocator for
- * the rest of the subsystem to allocate buffers/images through.
+ * surface, creates the logical device + queues, stands up a VMA allocator for the
+ * rest of the subsystem to allocate buffers/images through, and owns the shared
+ * SamplerCache (every texture and render target borrows its sampler from it).
  *
  * Everything here is created once and torn down only when the viewport is destroyed.
- * Per-resolution objects (swapchain, depth buffer, framebuffers) live in
- * VulkanSwapchain; per-frame objects (command buffers, sync) live in VulkanRenderer.
+ * Per-resolution objects (swapchain images/framebuffers, the offscreen targets) live in
+ * VulkanSwapchain and the target classes; per-frame objects (command buffers, sync)
+ * live in VulkanRenderer.
  */
 
 #ifndef VULKANCONTEXT_H
@@ -21,9 +23,13 @@
 #include <vk_mem_alloc.h>
 
 #include <cstdint>
+#include <memory>
+#include <unordered_map>
 #include <vector>
 
 namespace pose {
+
+class SamplerCache;
 
 /**
  * @class VulkanContext
@@ -48,28 +54,35 @@ public:
     VulkanContext& operator=(const VulkanContext&) = delete;
 
     // --- Accessors (handles are owned by this object; callers must not destroy them) ---
-    VkInstance       instance()        const { return m_instance; }
     VkSurfaceKHR     surface()         const { return m_surface; }
     VkPhysicalDevice physicalDevice()  const { return m_physicalDevice; }
     VkDevice         device()          const { return m_device; }
     VkQueue          graphicsQueue()   const { return m_graphicsQueue; }
     VkQueue          presentQueue()    const { return m_presentQueue; }
     uint32_t         graphicsFamily()  const { return m_graphicsFamily; }
-    uint32_t         presentFamily()   const { return m_presentFamily; }
     VmaAllocator     allocator()       const { return m_allocator; }
+
+    /// The shared sampler cache (see samplercache.h): textures and targets borrow their
+    /// VkSampler from here instead of creating one each.
+    SamplerCache& samplers() { return *m_samplers; }
+
+    /// The physical device's format properties, queried once per format and cached (the texture
+    /// upload path asks for every map whether the format supports linear blits for mip generation).
+    const VkFormatProperties& formatProperties(VkFormat format) const;
 
     /// The MSAA sample count the viewport renders at — min(4x, device max) supported for both colour
     /// and depth attachments. VK_SAMPLE_COUNT_1_BIT when the device can't multisample (then the
-    /// swapchain uses the plain single-sample path). Chosen once at device creation.
+    /// offscreen scene target uses its plain single-sample path). Chosen once at device creation.
     VkSampleCountFlagBits sampleCount() const { return m_sampleCount; }
 
     /// Whether the device rasterizes LINE polygon mode (the fillModeNonSolid feature, enabled at
     /// device creation when present). False on an exotic device: no wireframe pipelines then.
     bool supportsWireframe() const { return m_supportsWireframe; }
 
-    /// Picks the first format the device supports for the depth/stencil attachment,
-    /// preferring a pure 32-bit depth format. Throws if none are available.
-    VkFormat findDepthFormat() const;
+    /// Whether the device supports per-attachment blend/write-mask state (the independentBlend
+    /// feature, enabled at device creation when present). VulkanPipeline consults it: without
+    /// the feature every colour attachment of a pipeline must share one blend state.
+    bool supportsIndependentBlend() const { return m_supportsIndependentBlend; }
 
 private:
     void pickPhysicalDevice();
@@ -87,10 +100,14 @@ private:
     VkQueue          m_graphicsQueue  = VK_NULL_HANDLE;
     VkQueue          m_presentQueue   = VK_NULL_HANDLE;
     uint32_t         m_graphicsFamily = 0;
-    uint32_t         m_presentFamily  = 0;
+    uint32_t         m_presentFamily  = 0; // == m_graphicsFamily today (single-family selection)
     VmaAllocator     m_allocator      = VK_NULL_HANDLE;
     VkSampleCountFlagBits m_sampleCount = VK_SAMPLE_COUNT_1_BIT; // MSAA level (see sampleCount())
-    bool             m_supportsWireframe = false; // fillModeNonSolid enabled (see supportsWireframe())
+    bool             m_supportsWireframe = false;        // fillModeNonSolid enabled (see supportsWireframe())
+    bool             m_supportsIndependentBlend = false; // independentBlend enabled (see supportsIndependentBlend())
+
+    std::unique_ptr<SamplerCache> m_samplers; // destroyed explicitly before the device
+    mutable std::unordered_map<VkFormat, VkFormatProperties> m_formatProperties; // see formatProperties()
 };
 
 } // namespace pose

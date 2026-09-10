@@ -1,11 +1,15 @@
 /**
  * @file scene.h
- * @brief Owns the lit mesh pipeline, the per-frame camera/lighting UBO + descriptors, and the
- *        list of imported models. The mesh analogue of Grid.
+ * @brief Owns the scene's shared GPU plumbing (ScenePipelines), its passes (shadow, outline,
+ *        line overlay), the lighting environment, and the list of imported models. The mesh
+ *        analogue of Grid.
  *
  * Kept self-contained so VulkanRenderer doesn't accumulate per-feature pipeline/descriptor code:
- * the renderer just constructs a Scene, forwards imports to addModel(), and calls record() inside
- * the render pass (before the transparent grid). Qt-free (Vulkan + std + GLM).
+ * the renderer just constructs a Scene, forwards imports to addModel(), and calls the three
+ * record entry points in order each frame — recordShadowPass() and recordOutlinePass() before
+ * the main render pass, record() inside it (before the transparent grid). The posing API is a
+ * set of thin forwarders to the ACTIVE figure (sceneposing.cpp); the heavy lifting lives in
+ * Model/Armature. Qt-free (Vulkan + std + GLM).
  */
 
 #ifndef SCENE_H
@@ -14,7 +18,6 @@
 #include "environment.h"
 #include "lightingsettings.h"
 #include "shademode.h"
-#include "vulkanbuffer.h"
 
 #include <glm/glm.hpp>
 #include <vulkan/vulkan.h>
@@ -26,14 +29,16 @@
 
 namespace pose {
 
-class VulkanContext;
-class VulkanPipeline;
-class VulkanTexture;
 class Camera;
-class Model;
 class IblMaps;
+class LineOverlay;
+class Mesh;
+class Model;
 class OutlineMask;
-class ShadowMap;
+class OutlinePass;
+class ScenePipelines;
+class ShadowPass;
+class VulkanContext;
 struct ModelData;
 struct Ray;
 
@@ -74,9 +79,6 @@ public:
     /// cleared, so nothing posing-related lingers on an unselected model.
     void setSelectedModel(int index);
 
-    /// Number of models currently in the scene.
-    std::size_t modelCount() const { return m_models.size(); }
-
     /// Uploads a CPU-baked environment (SH irradiance + prefiltered specular; see bakeEnvironment) and
     /// points the IBL descriptor set at it. Waits for the GPU to idle first, since it swaps the maps the
     /// mesh pipeline samples. The heavy CPU bake is done by the caller (off the render thread for
@@ -102,9 +104,12 @@ public:
     void removeModel(std::size_t index);
 
     /// Records the key light's depth-only shadow pass (its own render pass on the shadow map).
-    /// Call BEFORE the main render pass each frame: it also (re)fits the light's ortho frustum
-    /// around the scene + its floor projections, which record() then feeds to the shaders via the
-    /// UBO. Skipped (leaving the map fully lit) while the scene has no casters.
+    /// Call BEFORE the main render pass each frame — it is also where this frame's key-light
+    /// direction is computed, and it (re)fits the light's ortho frustum around the scene + its
+    /// floor projections, which record() then feeds to the shaders via the UBO. Skipped while
+    /// shadows are off or the scene has no casters: the map then keeps its previous contents,
+    /// harmless because the parked (degenerate) light matrix makes every lookup read lit
+    /// without consulting it (see ShadowPass::fit).
     void recordShadowPass(VkCommandBuffer cmd, uint32_t frameIndex);
 
     /// Records the selection-outline mask pass — the selected model's silhouette, skinned and
@@ -114,19 +119,23 @@ public:
     bool recordOutlinePass(VkCommandBuffer cmd, const Camera& camera, uint32_t frameIndex,
                            const OutlineMask& mask);
 
-    /// Updates this frame's camera UBO, binds the pipeline + camera set, and records every model.
-    /// The caller has begun the render pass and set the dynamic viewport/scissor.
+    /// Updates this frame's camera UBO, then records in order: the HDRI backdrop (PBR mode),
+    /// the surface passes (opaque, then every model's transparent meshes sorted back-to-front
+    /// together, or the hidden-line depth fill), the wireframe overlay, and the line overlay
+    /// (skeleton / pins / the orthographic floor line — always, even with no models). The caller
+    /// has begun the render pass and set the dynamic viewport/scissor.
     void record(VkCommandBuffer cmd, const Camera& camera, uint32_t frameIndex);
 
     // The grid's ground shadow samples the scene's shadow map through the scene-wide set 3 (the
     // IBL set — binding 2 is the shadow map). Grid's pipeline is built against this layout and
     // binds this set at record time, with the matching light matrix from lightViewProj().
-    VkDescriptorSetLayout iblSetLayout() const { return m_iblSetLayout; }
-    VkDescriptorSet       iblSet() const { return m_iblSet; }
-    const glm::mat4&      lightViewProj() const { return m_lightViewProj; }
+    VkDescriptorSetLayout iblSetLayout() const;
+    VkDescriptorSet       iblSet() const;
+    const glm::mat4&      lightViewProj() const;
 
     // --- Posing UI ---
-    /// Whether the scene holds a posable figure (a model with a skeleton).
+    /// Whether there is a figure to pose: an ACTIVE figure that is also the selection (or
+    /// nothing else is selected) — see figureModel().
     bool hasPosableFigure() const;
     /// The ACTIVE figure — the one every posing call (selection, IK, FK, pins, pose
     /// snapshot, ground) addresses: the figure whose joint was last clicked (selectBoneAt
@@ -138,15 +147,17 @@ public:
     void setActiveFigure(int index);
     /// Show/hide the skeleton overlay (drawn over the figure so the joints — always grabbable,
     /// drawn or not — can be seen).
-    void setShowSkeleton(bool on) { m_showSkeleton = on; }
-    bool showSkeleton() const { return m_showSkeleton; }
+    void setShowSkeleton(bool on);
+    bool showSkeleton() const;
 
     // --- Shading ---
     /// Selects the viewport shade mode: an index into the picker's table (scene/shademode.h),
     /// whose row says which mesh.frag mode shades the surface (written into the per-frame camera
     /// UBO — no pipeline swap for that) and whether record() draws the surface at all, a
-    /// hidden-line depth fill, and/or a wireframe overlay.
-    void setShadeMode(int mode) { m_shadeMode = mode; }
+    /// hidden-line depth fill, and/or a wireframe overlay. Clamped into the table's range.
+    void setShadeMode(int mode) {
+        m_shadeMode = mode < 0 ? 0 : (mode >= kShadeModeCount ? kShadeModeCount - 1 : mode);
+    }
     int  shadeMode() const { return m_shadeMode; }
     /// The current mode's table row, and whether it is in the PBR family (PBR Shaded and its
     /// specular-only view) — the modes that render linear HDR through the image-based path, so
@@ -154,7 +165,8 @@ public:
     const ShadeMode& shadeModeSpec() const { return shadeModeAt(m_shadeMode); }
     bool             isPbr() const { return fragModeIsHdr(shadeModeSpec().fragMode); }
     /// Selects the figure joint nearest the pixel (@p px, @p py) in a @p vpW × @p vpH viewport (only
-    /// if within a small radius). Returns the selected bone index, or -1 if none is selected.
+    /// if within a small radius; see bonepicker.h). Returns the selected bone index, or -1 if
+    /// none is selected.
     int selectBoneAt(float px, float py, float vpW, float vpH, const Camera& camera);
     /// True if a joint is currently selected on the figure.
     bool hasSelectedBone() const;
@@ -162,11 +174,12 @@ public:
     int selectBoneByName(const std::string& name);
     /// Rotates the selected joint by @p deltaEulerDegrees (accumulated), re-posing the figure.
     void nudgeSelectedBone(const glm::vec3& deltaEulerDegrees);
-    /// Settles the figure after an interactive pose edit: applies pose correctives, which are
-    /// deferred during a drag (they re-upload geometry) and applied here on release.
+    /// The "pose settled" hook after an interactive pose edit: re-evaluates the figure's pose
+    /// corrective weights now (they blend live on the GPU during a drag anyway) and prints the
+    /// active ones under POSESTUDIO_DUMP_CORRECTIVES — see Model::refreshCorrectives.
     void finalizePose();
 
-    // --- Full-body IK (Ctrl+drag a joint; see scene/ik/) ---
+    // --- Full-body IK (a plain drag on a joint; Ctrl+drag is the single-joint FK rotate) ---
     /// Begins an FBIK drag of the figure's selected joint: ground contacts are detected and become
     /// the anchor/pins, and the balance support polygon is captured. Returns false without a
     /// figure or selection.
@@ -175,7 +188,7 @@ public:
     /// @p targetWorld (feet stay planted, CoM auto-balanced), then re-poses the figure. Returns
     /// true if the pose actually changed (false: deadband / settle-freeze — no redraw needed).
     bool dragBoneIkTo(const glm::vec3& targetWorld);
-    /// One animated release-settle step (see Model::settleIkTick): call at the drag tick rate
+    /// One animated release-settle step (see Armature::settleIkTick): call at the drag tick rate
     /// after release until it returns false, then endBoneIkDrag().
     bool settleBoneIkTick();
     /// Ends the FBIK drag (the pose stays; call finalizePose() to settle correctives, as with any
@@ -184,7 +197,7 @@ public:
     /// World-space position of the figure's selected joint (the IK drag plane's anchor point).
     /// Returns false when no joint is selected.
     bool selectedBoneWorldPosition(glm::vec3& out) const;
-    // --- User joint pins (forwarded to the figure; see Model::togglePinSelectedBone) ---
+    // --- User joint pins (forwarded to the figure; see Armature::togglePinSelectedBone) ---
     bool togglePinSelectedBone();
     bool selectedBonePinned() const;
     bool hasPinnedBones() const;
@@ -194,42 +207,57 @@ public:
     void resetPose();
     void mirrorPose();
     bool mirrorSelectedLimb();
-    /// Drops the posable figure onto the ground plane: translates it so the CURRENT pose's lowest
-    /// point rests at y = 0 (the viewport's "move to ground" button). Returns true if it moved.
-    bool groundFigure();
     /// The posable figure's current lowest world height (see Model::groundGap); false without one.
+    /// The viewport's ground button animates the drop from this through translateModelY.
     bool figureGroundGap(float& lowestY) const;
-    /// Translates the posable figure along world Y (the animated ground drop's per-frame step).
-    void translateFigureY(float dy);
+    /// Translates model @p index along world Y — the animated ground drop addresses the model it
+    /// STARTED on by index, since undo can switch the active figure mid-fall. No-op for a bad index.
+    void translateModelY(int index, float dy);
 
     // --- Pose snapshot (for undo/redo) ---
     std::vector<std::pair<std::string, glm::vec3>> capturePose() const;
     void applyPose(const std::vector<std::pair<std::string, glm::vec3>>& pose);
 
-    /// Saves / loads the figure's pose (per-joint rotations) to/from a plain-text file. Returns false
-    /// if there's no figure or the file can't be opened.
+    /// Saves / loads the figure's pose snapshot (rotations + the @trans:/@pin: rows) to/from a
+    /// plain-text file (posefile.h). Returns false if there's no figure, the file can't be
+    /// opened, or (load) the file is malformed — in which case the pose is left untouched.
     bool savePose(const std::string& path) const;
     bool loadPose(const std::string& path);
 
 private:
-    void createDescriptorResources();
-    Model*    figureModel() const; // first model with a skeleton, or nullptr
-    glm::vec3 keyLightDir() const; // normalized world dir TO the key light (azimuth/elevation dials)
+    /// The figure the posing API addresses: the ACTIVE figure (activeFigureIndex — the last
+    /// clicked, else the first), but ONLY while it is the selection or nothing is selected.
+    /// With a different model selected (an OBJ next to a figure) it is null, so every pose
+    /// utility no-ops and hasPosableFigure() greys the actions — they must never edit a figure
+    /// that isn't the outlined selection.
+    Model*       figureModel();
+    const Model* figureModel() const;
 
-    VulkanContext&                  m_context;
-    std::unique_ptr<VulkanPipeline> m_pipeline;            // opaque pass (depth write on)
-    std::unique_ptr<VulkanPipeline> m_transparentPipeline; // alpha-blended pass (depth write off)
-    std::unique_ptr<VulkanPipeline> m_skeletonPipeline;    // line overlay for the posing skeleton
-    std::unique_ptr<VulkanPipeline> m_backgroundPipeline;  // HDRI backdrop (PBR mode; drawn first)
-    std::unique_ptr<VulkanPipeline> m_outlinePipeline;     // selected model -> the outline mask (its own pass)
-    std::unique_ptr<VulkanPipeline> m_wirePipeline;        // wireframe modes: triangle EDGES (null: device can't)
-    std::unique_ptr<VulkanPipeline> m_hiddenLinePipeline;  // hidden-line modes: depth-only surface fill
-    // Host-mapped line vertices (pos+color), one buffer per frame-in-flight: record() rewrites the
-    // overlay every frame, so a single shared buffer would be CPU-written while the previous
-    // frame's GPU read of it is still in flight.
-    std::vector<VulkanBuffer>       m_skeletonVertexBuffers;
-    bool                            m_showSkeleton = false;
-    int                             m_shadeMode = kDefaultShadeMode; // picker-table index (shademode.h)
+    VulkanContext& m_context;
+
+    // Member order = reverse destruction order (after ~Scene's explicit model teardown): the
+    // shared layouts/pipelines outlive the passes built against them, which outlive the maps
+    // and models that bind through them.
+    // The layouts, camera sets, IBL/shadow set, fallbacks, and mesh pipelines (scenepipelines.h).
+    std::unique_ptr<ScenePipelines> m_pipelines;
+    // The scene's other passes/overlays (each owns its pipeline + targets/buffers): the key-light
+    // shadow pass (also the fitted light matrix + the shadow map bound as set 3 bindings 2/3),
+    // the selection-outline mask pass, and the line overlay (skeleton, pins, floor line).
+    std::unique_ptr<ShadowPass>     m_shadowPass;
+    std::unique_ptr<OutlinePass>    m_outlinePass;
+    std::unique_ptr<LineOverlay>    m_lineOverlay;
+    // Image-based lighting: the prefiltered specular cubemap + BRDF LUT the scene-wide set 3
+    // samples, (re)uploaded by applyBakedEnvironment() when the environment changes.
+    std::unique_ptr<IblMaps>        m_iblMaps;
+
+    std::vector<std::unique_ptr<Model>> m_models;
+    int m_activeFigure = -1; ///< See activeFigureIndex(): the posing target among the figures.
+    int m_selectedModel = -1; ///< See selectedModelIndex(): the outlined model (-1 = none).
+
+    int m_shadeMode = kDefaultShadeMode; // picker-table index (shademode.h)
+    // The key light's world direction this frame (keyLightDirection), computed once by
+    // recordShadowPass — which always precedes record() in a frame — and reused by the UBO fill.
+    glm::vec3 m_keyLightDir{0.0f, 1.0f, 0.0f};
 
     // Lighting environment: the baked diffuse-irradiance SH (feeds the per-frame camera UBO so the PBR
     // mode is image-based-lit) and the environment-independent split-sum BRDF LUT (integrated once,
@@ -239,44 +267,14 @@ private:
     BrdfLut          m_brdfLut;
     LightingSettings m_lighting; // live exposure/diffuse/specular/fill/key/rotation/tonemap dials (Environment panel)
 
-    // Per-frame camera/lighting UBO (set 0, binding 0): one buffer + one set per frame-in-flight.
-    VkDescriptorSetLayout        m_setLayout = VK_NULL_HANDLE;
-    VkDescriptorPool             m_descriptorPool = VK_NULL_HANDLE;
-    std::vector<VulkanBuffer>    m_cameraBuffers;
-    std::vector<VkDescriptorSet> m_cameraSets;
-
-    // Per-material textures (set 1), six samplers: binding 0 = diffuse (sRGB), 1 = detail
-    // normal/bump (linear), 2 = roughness map (linear), 3 = spec-mask map (linear),
-    // 4 = translucency map (sRGB), 5 = micro-detail (pore) normal (linear). The layout is shared;
-    // each Model owns the pool/sets for its meshes. Meshes without a given map point at a shared
-    // 1x1 fallback (white / flat normal) so the shader always samples and one pipeline serves
-    // textured and untextured meshes alike.
-    VkDescriptorSetLayout          m_materialSetLayout = VK_NULL_HANDLE;
-    std::unique_ptr<VulkanTexture> m_fallbackTexture; // 1x1 opaque white
-    std::unique_ptr<VulkanTexture> m_fallbackNormal;  // 1x1 flat normal (128,128,255), linear
-
-    // Per-model skinning joint matrices (set 2, binding 0): a storage buffer of skin matrices read
-    // in the vertex stage. The layout is shared; each Model owns its own buffer + set (see mesh.h).
-    VkDescriptorSetLayout m_jointSetLayout = VK_NULL_HANDLE;
-
-    // Image-based lighting (set 3): the prefiltered specular cubemap + BRDF LUT (owned by m_iblMaps),
-    // bound scene-wide. The diffuse half is the SH in m_environmentSH (fed via the camera UBO). One
-    // static set, its images (re)filled by applyBakedEnvironment() when the environment changes.
-    VkDescriptorSetLayout    m_iblSetLayout = VK_NULL_HANDLE;
-    VkDescriptorPool         m_iblPool = VK_NULL_HANDLE;
-    VkDescriptorSet          m_iblSet = VK_NULL_HANDLE;
-    std::unique_ptr<IblMaps> m_iblMaps;
-
-    // Key-light shadows: the depth-only map + its skinned depth pipeline, re-rendered each frame
-    // before the main pass (recordShadowPass). The map is bound scene-wide as set 3 binding 2; the
-    // fitted light matrix rides in the camera UBO (and to the grid via lightViewProj()).
-    std::unique_ptr<ShadowMap>      m_shadowMap;
-    std::unique_ptr<VulkanPipeline> m_shadowPipeline;
-    glm::mat4                       m_lightViewProj{1.0f};
-
-    std::vector<std::unique_ptr<Model>> m_models;
-    int m_activeFigure = -1; ///< See activeFigureIndex(): the posing target among the figures.
-    int m_selectedModel = -1; ///< See selectedModelIndex(): the outlined model (-1 = none).
+    // The transparent pass's per-frame sort list (every model's transparent meshes together,
+    // farthest first), kept as a member so the per-frame sort allocates nothing.
+    struct TransparentDraw {
+        float       distSq;
+        Model*      model;
+        const Mesh* mesh;
+    };
+    std::vector<TransparentDraw> m_transparentScratch;
 };
 
 } // namespace pose

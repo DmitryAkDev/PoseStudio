@@ -16,7 +16,7 @@ namespace pose {
 
 VulkanBuffer::VulkanBuffer(VulkanContext& context, VkDeviceSize size, VkBufferUsageFlags usage,
                            VmaMemoryUsage memoryUsage, VmaAllocationCreateFlags allocFlags)
-    : m_allocator(context.allocator()), m_size(size) {
+    : m_allocator(context.allocator()) {
     VkBufferCreateInfo bufferInfo{};
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bufferInfo.size = size;
@@ -49,16 +49,14 @@ void VulkanBuffer::destroy() {
     }
     m_buffer = VK_NULL_HANDLE;
     m_allocation = VK_NULL_HANDLE;
-    m_size = 0;
     m_mappedData = nullptr;
 }
 
 VulkanBuffer::VulkanBuffer(VulkanBuffer&& other) noexcept
     : m_allocator(other.m_allocator), m_buffer(other.m_buffer), m_allocation(other.m_allocation),
-      m_size(other.m_size), m_mappedData(other.m_mappedData) {
+      m_mappedData(other.m_mappedData) {
     other.m_buffer = VK_NULL_HANDLE;
     other.m_allocation = VK_NULL_HANDLE;
-    other.m_size = 0;
     other.m_mappedData = nullptr;
 }
 
@@ -68,11 +66,9 @@ VulkanBuffer& VulkanBuffer::operator=(VulkanBuffer&& other) noexcept {
         m_allocator = other.m_allocator;
         m_buffer = other.m_buffer;
         m_allocation = other.m_allocation;
-        m_size = other.m_size;
         m_mappedData = other.m_mappedData;
         other.m_buffer = VK_NULL_HANDLE;
         other.m_allocation = VK_NULL_HANDLE;
-        other.m_size = 0;
         other.m_mappedData = nullptr;
     }
     return *this;
@@ -109,6 +105,16 @@ VulkanBuffer createMappedUniformBuffer(VulkanContext& context, VkDeviceSize size
     return VulkanBuffer(context, size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO,
                         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
                             VMA_ALLOCATION_CREATE_MAPPED_BIT);
+}
+
+VulkanBuffer makeZeroedHostStorageBuffer(VulkanContext& context, VkDeviceSize bytes) {
+    VulkanBuffer buffer(context, bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO,
+                        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                            VMA_ALLOCATION_CREATE_MAPPED_BIT);
+    if (buffer.mappedData() != nullptr) {
+        std::memset(buffer.mappedData(), 0, static_cast<std::size_t>(bytes));
+    }
+    return buffer;
 }
 
 } // namespace pose

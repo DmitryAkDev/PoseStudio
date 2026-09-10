@@ -39,4 +39,6 @@ The scope of this security policy covers all core software developed by the Pose
 * File I/O parsers handling potentially malicious content — the Wavefront `.obj` importer, the native figure importer (`.duf`/`.dsf`: gzip + JSON + geometry/morph/skin data), image/texture decoding, and the `.hdr`/`.exr` environment loaders.
 * The local SQLite database and preferences handling.
 
-The application currently has no networking components. As future areas ship (plugin APIs, marketplace/network integrations), they will be added to this scope. Third-party plugins or scripts developed by the community will remain outside the scope of this policy and should be reported to their respective authors.
+* The anonymous install ping: the client (`src/core/installping.*` — a signed, fire-and-forget HTTPS POST sent once per launch, off by default in builds without a signing key) and the server-side handler in `server/ping/` (request validation, rate limiting, storage).
+
+That ping is the application's only networking component. As future areas ship (plugin APIs, marketplace/network integrations), they will be added to this scope. Third-party plugins or scripts developed by the community will remain outside the scope of this policy and should be reported to their respective authors.

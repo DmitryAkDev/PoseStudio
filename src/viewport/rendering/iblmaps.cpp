@@ -5,7 +5,9 @@
 
 #include "iblmaps.h"
 
-#include "environment.h"
+#include "attachmentimage.h"
+#include "ibldata.h"
+#include "samplercache.h"
 #include "vulkanbuffer.h"
 #include "vulkancommands.h"
 #include "vulkancommon.h"
@@ -29,23 +31,6 @@ constexpr VkFormat kLutFormat  = VK_FORMAT_R16G16_SFLOAT;
 void packRgba16f(const glm::vec4& c, uint32_t& lo, uint32_t& hi) {
     lo = glm::packHalf2x16(glm::vec2(c.r, c.g));
     hi = glm::packHalf2x16(glm::vec2(c.b, c.a));
-}
-
-// Full-subresource-range image barrier (all mips, all layers) between two layouts.
-void transitionAll(VkCommandBuffer cmd, VkImage image, uint32_t mips, uint32_t layers,
-                   VkImageLayout oldLayout, VkImageLayout newLayout, VkAccessFlags src,
-                   VkAccessFlags dst, VkPipelineStageFlags srcStage, VkPipelineStageFlags dstStage) {
-    VkImageMemoryBarrier b{};
-    b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    b.oldLayout = oldLayout;
-    b.newLayout = newLayout;
-    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.image = image;
-    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mips, 0, layers};
-    b.srcAccessMask = src;
-    b.dstAccessMask = dst;
-    vkCmdPipelineBarrier(cmd, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &b);
 }
 
 } // namespace
@@ -84,23 +69,6 @@ IblMaps::IblMaps(VulkanContext& context, const PrefilteredSpecular& specular, co
         }
     }
 
-    VkImageCreateInfo cubeInfo{};
-    cubeInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    cubeInfo.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
-    cubeInfo.imageType = VK_IMAGE_TYPE_2D;
-    cubeInfo.format = kSpecFormat;
-    cubeInfo.extent = {base, base, 1};
-    cubeInfo.mipLevels = mips;
-    cubeInfo.arrayLayers = 6;
-    cubeInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-    cubeInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-    cubeInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    cubeInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    cubeInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    VmaAllocationCreateInfo alloc{};
-    alloc.usage = VMA_MEMORY_USAGE_AUTO;
-    VK_CHECK(vmaCreateImage(allocator, &cubeInfo, &alloc, &m_specImage, &m_specAlloc, nullptr));
-
     // --- Pack the LUT (RG16F: one uint per texel).
     std::vector<uint32_t> lutStaging;
     lutStaging.reserve(lut.data.size());
@@ -109,110 +77,127 @@ IblMaps::IblMaps(VulkanContext& context, const PrefilteredSpecular& specular, co
     }
     const uint32_t lutSize = static_cast<uint32_t>(std::max(1, lut.size));
 
-    VkImageCreateInfo lutInfo{};
-    lutInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    lutInfo.imageType = VK_IMAGE_TYPE_2D;
-    lutInfo.format = kLutFormat;
-    lutInfo.extent = {lutSize, lutSize, 1};
-    lutInfo.mipLevels = 1;
-    lutInfo.arrayLayers = 1;
-    lutInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-    lutInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-    lutInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    lutInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    lutInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    VK_CHECK(vmaCreateImage(allocator, &lutInfo, &alloc, &m_lutImage, &m_lutAlloc, nullptr));
+    // A throw anywhere below leaves a half-built object whose destructor never runs, so the
+    // images allocated so far are freed here before the exception propagates (the views and the
+    // staging buffers are RAII and free themselves).
+    try {
+        VkImageCreateInfo cubeInfo{};
+        cubeInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        cubeInfo.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+        cubeInfo.imageType = VK_IMAGE_TYPE_2D;
+        cubeInfo.format = kSpecFormat;
+        cubeInfo.extent = {base, base, 1};
+        cubeInfo.mipLevels = mips;
+        cubeInfo.arrayLayers = 6;
+        cubeInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        cubeInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        cubeInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        cubeInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        cubeInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        VmaAllocationCreateInfo alloc{};
+        alloc.usage = VMA_MEMORY_USAGE_AUTO;
+        VK_CHECK(vmaCreateImage(allocator, &cubeInfo, &alloc, &m_specImage, &m_specAlloc, nullptr));
 
-    // --- One batch: stage both, copy, and transition to shader-read.
-    VulkanBuffer cubeBuf(context, cubeStaging.size() * sizeof(uint32_t), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                         VMA_MEMORY_USAGE_AUTO,
-                         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                             VMA_ALLOCATION_CREATE_MAPPED_BIT);
-    std::memcpy(cubeBuf.mappedData(), cubeStaging.data(), cubeStaging.size() * sizeof(uint32_t));
-    VulkanBuffer lutBuf(context, lutStaging.size() * sizeof(uint32_t), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                        VMA_MEMORY_USAGE_AUTO,
-                        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                            VMA_ALLOCATION_CREATE_MAPPED_BIT);
-    std::memcpy(lutBuf.mappedData(), lutStaging.data(), lutStaging.size() * sizeof(uint32_t));
+        VkImageCreateInfo lutInfo{};
+        lutInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        lutInfo.imageType = VK_IMAGE_TYPE_2D;
+        lutInfo.format = kLutFormat;
+        lutInfo.extent = {lutSize, lutSize, 1};
+        lutInfo.mipLevels = 1;
+        lutInfo.arrayLayers = 1;
+        lutInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        lutInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        lutInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        lutInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        lutInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        VK_CHECK(vmaCreateImage(allocator, &lutInfo, &alloc, &m_lutImage, &m_lutAlloc, nullptr));
 
-    ImmediateBatch batch(context);
-    VkCommandBuffer cmd = batch.commandBuffer();
-    transitionAll(cmd, m_specImage, mips, 6, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                  0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                  VK_PIPELINE_STAGE_TRANSFER_BIT);
-    vkCmdCopyBufferToImage(cmd, cubeBuf.handle(), m_specImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                           static_cast<uint32_t>(cubeCopies.size()), cubeCopies.data());
-    transitionAll(cmd, m_specImage, mips, 6, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
-                  VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+        // --- Views (created before any command references the images, so a failure here leaves
+        // nothing recorded against them).
+        m_specView = createImageView(context.device(), m_specImage, VK_IMAGE_VIEW_TYPE_CUBE, kSpecFormat,
+                                     VK_IMAGE_ASPECT_COLOR_BIT, mips, 6);
+        m_lutView = createImageView(context.device(), m_lutImage, VK_IMAGE_VIEW_TYPE_2D, kLutFormat,
+                                    VK_IMAGE_ASPECT_COLOR_BIT);
 
-    transitionAll(cmd, m_lutImage, 1, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
-                  VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                  VK_PIPELINE_STAGE_TRANSFER_BIT);
-    VkBufferImageCopy lutCopy{};
-    lutCopy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    lutCopy.imageExtent = {lutSize, lutSize, 1};
-    vkCmdCopyBufferToImage(cmd, lutBuf.handle(), m_lutImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
-                           &lutCopy);
-    transitionAll(cmd, m_lutImage, 1, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
-                  VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+        // --- One batch: stage both, copy, and transition to shader-read.
+        VulkanBuffer cubeBuf(context, cubeStaging.size() * sizeof(uint32_t), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                             VMA_MEMORY_USAGE_AUTO,
+                             VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                                 VMA_ALLOCATION_CREATE_MAPPED_BIT);
+        std::memcpy(cubeBuf.mappedData(), cubeStaging.data(), cubeStaging.size() * sizeof(uint32_t));
+        VulkanBuffer lutBuf(context, lutStaging.size() * sizeof(uint32_t), VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                            VMA_MEMORY_USAGE_AUTO,
+                            VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                                VMA_ALLOCATION_CREATE_MAPPED_BIT);
+        std::memcpy(lutBuf.mappedData(), lutStaging.data(), lutStaging.size() * sizeof(uint32_t));
 
-    batch.retain(std::move(cubeBuf));
-    batch.retain(std::move(lutBuf));
-    batch.submitAndWait();
+        ImmediateBatch batch(context);
+        VkCommandBuffer cmd = batch.commandBuffer();
+        const VkImageSubresourceRange cubeRange = wholeImageRange(VK_IMAGE_ASPECT_COLOR_BIT, mips, 6);
+        transitionImage(cmd, m_specImage, cubeRange, VK_IMAGE_LAYOUT_UNDEFINED,
+                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+        vkCmdCopyBufferToImage(cmd, cubeBuf.handle(), m_specImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                               static_cast<uint32_t>(cubeCopies.size()), cubeCopies.data());
+        transitionImage(cmd, m_specImage, cubeRange, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                        VK_ACCESS_SHADER_READ_BIT);
 
-    // --- Views + samplers.
-    VkImageViewCreateInfo cubeView{};
-    cubeView.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    cubeView.image = m_specImage;
-    cubeView.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
-    cubeView.format = kSpecFormat;
-    cubeView.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mips, 0, 6};
-    VK_CHECK(vkCreateImageView(context.device(), &cubeView, nullptr, &m_specView));
+        const VkImageSubresourceRange lutRange = wholeImageRange(VK_IMAGE_ASPECT_COLOR_BIT);
+        transitionImage(cmd, m_lutImage, lutRange, VK_IMAGE_LAYOUT_UNDEFINED,
+                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+        VkBufferImageCopy lutCopy{};
+        lutCopy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        lutCopy.imageExtent = {lutSize, lutSize, 1};
+        vkCmdCopyBufferToImage(cmd, lutBuf.handle(), m_lutImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                               &lutCopy);
+        transitionImage(cmd, m_lutImage, lutRange, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                        VK_ACCESS_SHADER_READ_BIT);
 
-    VkImageViewCreateInfo lutView{};
-    lutView.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    lutView.image = m_lutImage;
-    lutView.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    lutView.format = kLutFormat;
-    lutView.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    VK_CHECK(vkCreateImageView(context.device(), &lutView, nullptr, &m_lutView));
+        batch.retain(std::move(cubeBuf));
+        batch.retain(std::move(lutBuf));
+        batch.submitAndWait();
+    } catch (...) {
+        destroyImages();
+        throw;
+    }
 
-    VkSamplerCreateInfo samp{};
-    samp.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    samp.magFilter = VK_FILTER_LINEAR;
-    samp.minFilter = VK_FILTER_LINEAR;
-    samp.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    samp.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samp.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samp.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samp.minLod = 0.0f;
-    samp.maxLod = static_cast<float>(mips);
-    VK_CHECK(vkCreateSampler(context.device(), &samp, nullptr, &m_specSampler));
-    samp.maxLod = 0.0f;
-    VK_CHECK(vkCreateSampler(context.device(), &samp, nullptr, &m_lutSampler));
+    // --- Samplers (shared): trilinear clamp for the cube (mip = roughness; the cache's
+    // VK_LOD_CLAMP_NONE limit is clamped to the view's mip range by the hardware, so it is
+    // equivalent to maxLod = mips). The single-level LUT needs no mip filtering at all — with one
+    // level every mipmap mode selects level 0, so the plain linear-clamp sampler is exact.
+    m_specSampler = context.samplers().get(SamplerDesc::linearClampMipmapped());
+    m_lutSampler = context.samplers().get(SamplerDesc::linearClamp());
 }
 
-IblMaps::~IblMaps() {
-    VkDevice device = m_context.device();
+IblMaps::~IblMaps() { destroyImages(); }
+
+void IblMaps::destroyImages() {
     const VmaAllocator allocator = m_context.allocator();
-    if (m_specSampler) vkDestroySampler(device, m_specSampler, nullptr);
-    if (m_lutSampler) vkDestroySampler(device, m_lutSampler, nullptr);
-    if (m_specView) vkDestroyImageView(device, m_specView, nullptr);
-    if (m_lutView) vkDestroyImageView(device, m_lutView, nullptr);
-    if (m_specImage) vmaDestroyImage(allocator, m_specImage, m_specAlloc);
-    if (m_lutImage) vmaDestroyImage(allocator, m_lutImage, m_lutAlloc);
+    m_specView.reset();
+    m_lutView.reset();
+    if (m_specImage) {
+        vmaDestroyImage(allocator, m_specImage, m_specAlloc);
+        m_specImage = VK_NULL_HANDLE;
+        m_specAlloc = VK_NULL_HANDLE;
+    }
+    if (m_lutImage) {
+        vmaDestroyImage(allocator, m_lutImage, m_lutAlloc);
+        m_lutImage = VK_NULL_HANDLE;
+        m_lutAlloc = VK_NULL_HANDLE;
+    }
 }
 
 VkDescriptorImageInfo IblMaps::specularInfo() const {
-    return {m_specSampler, m_specView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    return {m_specSampler, m_specView.get(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 }
 
 VkDescriptorImageInfo IblMaps::brdfInfo() const {
-    return {m_lutSampler, m_lutView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    return {m_lutSampler, m_lutView.get(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 }
 
 } // namespace pose

@@ -4,7 +4,7 @@ This describes how downloadable Windows builds are produced and published. The s
 
 ## Cutting a release
 
-1. **Bump the version** in `CMakeLists.txt` (`project(PoseStudio VERSION x.y.z …)`) and add the `## [x.y.z]` section to `CHANGELOG.md`. Merge to `main`.
+1. **Bump the version** in `CMakeLists.txt` (`project(PoseStudio VERSION x.y.z …)`) and add the `## [x.y.z]` section to `CHANGELOG.md`. Merge to `main`. (The title bar, the About overlay and the install ping all read `Constants::APP_VERSION`, which CMake stamps from that `project()` line — there is no second copy of the number to edit.)
 2. **Tag and push:**
 
    ```bash
@@ -30,9 +30,9 @@ Run the workflow manually: **Actions → Build Release → Run workflow**. A man
 
 1. Installs Qt (version pinned in the workflow's `QT_VERSION` env — includes the `qtimageformats` module for webp/tiff thumbnail support) and the latest LunarG Vulkan SDK (silent install; CMake finds it via its `C:/VulkanSDK/*` fallback glob).
 2. Builds Release with CMake/MSVC, passing the install-ping signing key from the `POSESTUDIO_PING_KEY` repository secret (see below). The existing post-build steps mirror `shaders/` and `Maquettes/` next to the exe.
-3. Stages a deployable folder: exe + shaders + Maquettes, then `windeployqt --release --no-translations --compiler-runtime` adds the Qt runtime, plugins (platforms, sqldrivers, imageformats, styles), and the MSVC CRT DLLs.
+3. Stages a deployable folder: exe + shaders + Maquettes, then `windeployqt --release --no-translations --compiler-runtime` adds the Qt runtime, plugins (platforms, sqldrivers, imageformats, styles, and `tls` — the Schannel backend the install ping's HTTPS request needs; check it is present in the staged folder whenever the Qt version changes), and the MSVC CRT DLLs.
 4. Downloads the **stock HDRI content pack** (see below) — the installer places it in the user's `Documents\My PoseStudio Library\hdri`; the portable zip carries it as `stock-content\hdri` with copy-me instructions.
-5. Compiles `packaging/PoseStudio.iss` with Inno Setup (preinstalled on the runner), zips the portable variant, generates `SHA256SUMS.txt`, and publishes the GitHub Release.
+5. Compiles `packaging/PoseStudio.iss` with Inno Setup (preinstalled on the GitHub runner image; the workflow falls back to `choco install innosetup` if it is missing), zips the portable variant, generates `SHA256SUMS.txt`, and publishes the GitHub Release. Only a tag build carries the install-ping signing key — a manual pipeline-test build ships keyless, so downloading and running its artifacts never counts as an install.
 
 ## The install-ping signing key
 

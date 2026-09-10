@@ -1,8 +1,18 @@
+/**
+ * @file _menumanager.qss
+ * @brief The menu bar and EVERY QMenu in the app: the menu-bar dropdowns (src/shell/menumanager.*),
+ *        context menus, and the picker menus (the viewport's shader/view pickers, the Environment
+ *        tab's HDRI and backdrop pickers) all inherit this one look.
+ *
+ * Concatenated after global.qss (shell/apptheme.cpp). Keep menu styling here and only here — a
+ * per-menu override anywhere else is how the pickers stop matching the File/Edit menus.
+ */
+
 /* =========================================================================
    [ MENU BAR ]
    ========================================================================= */
 
-QMenuBar { 
+QMenuBar {
     padding: 4px; 
     border-bottom: 1px solid #313131;
     background-color: #191a1b; 
@@ -30,7 +40,8 @@ QMenuBar::item:selected {
 
 /* Rounded corners make a QMenu a *translucent* popup window, which on Windows gets a heavy native drop
    shadow. We keep the rounded corners and instead strip that shadow app-wide via MenuShadowFilter in
-   main.cpp (it sets Qt::NoDropShadowWindowHint on every menu). Result: rounded corners, no shadow. */
+   shell/apptheme.cpp (it sets Qt::NoDropShadowWindowHint on every menu and masks the popup to the
+   4px radius below). Result: rounded corners, no shadow. Change the radius here and there together. */
 QMenu {
     padding: 4px;
     border: 1px solid #555555;

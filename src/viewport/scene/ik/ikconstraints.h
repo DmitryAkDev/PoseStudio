@@ -10,7 +10,7 @@
  * min/max/locked data the engine already enforces): the oriented axis most parallel to the child
  * segment is the twist axis, the other two are swing — one free swing axis makes a hinge, two make
  * a cone, none locks the segment. Twist ranges aren't modeled at position level; the engine's
- * per-axis Euler clamp (Model::clampBoneEuler) remains the authoritative constraint pass after
+ * per-axis Euler clamp (Armature::clampBoneEuler) remains the authoritative constraint pass after
  * rotation extraction — these position-level limits keep FABRIK from ever PROPOSING a broken pose
  * (a knee folding backwards) so the extraction has something anatomical to fit.
  *
@@ -63,7 +63,7 @@ struct JointConstraint {
     // swing-only from the root — so a limb could fold only in the plane its drag-start twist
     // left it in: a hand pulled in front of the chest stopped 10cm short of a plainly reachable
     // point, and no damping or prior tuning could touch that (IkRig::build derives it; the
-    // Model's extraction realizes the chosen twist through the TWIST WITNESS, see
+    // Armature's extraction realizes the chosen twist through the TWIST WITNESS, see
     // dominantBendTangent).
     glm::vec3 twistAxis{0.0f, 1.0f, 0.0f};
     float     twistMin = 0.0f;
@@ -99,11 +99,11 @@ bool bendIsHingeLike(const JointConstraint& constraint);
 
 /// Derives one segment's constraint from its parent joint's authored per-axis Euler limits.
 /// @param orientAxes   The joint's oriented rotation axes (columns; rest/model space) — the frame
-///                     its Euler channels rotate about (Model's `orient` rotation part).
+///                     its Euler channels rotate about (Armature's `orient` rotation part).
 /// @param restChildDir Rest direction of the segment (joint -> child, unit, rest/model space);
 ///                     classifies which oriented axis is twist (most parallel) vs swing.
 /// @param rotMinDeg / rotMaxDeg / rotLimited  The joint's per-axis limits (degrees) and which axes
-///                     carry them — the same data Model::clampBoneEuler enforces.
+///                     carry them — the same data Armature::clampBoneEuler enforces.
 JointConstraint deriveJointConstraint(const glm::mat3& orientAxes, const glm::vec3& restChildDir,
                                       const glm::vec3& rotMinDeg, const glm::vec3& rotMaxDeg,
                                       const glm::bvec3& rotLimited);

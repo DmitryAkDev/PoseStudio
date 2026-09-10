@@ -27,8 +27,10 @@ Before creating bug reports, please check the existing issues list to see if the
 
 ### Pull Requests
 1. Fork the repo and create your branch from `main`.
-2. Build the project and verify your change works in the running application (there is no
-   automated test suite yet — manual verification in the viewport/UI is the current bar).
+2. Build the project and verify your change works in the running application. The one
+   automated test is the full-body-IK harness (`ctest -C Release` from the build folder, or run
+   `PoseStudioIkHarness` directly); its real-figure phases need a skeleton dump — see the FBIK
+   section of `CLAUDE.md`. Everything else is manual verification in the viewport/UI.
 3. If you've changed APIs or user-facing features, update the documentation
    (README.md, and CHANGELOG.md under an "Unreleased" heading if appropriate).
 4. Issue that pull request!

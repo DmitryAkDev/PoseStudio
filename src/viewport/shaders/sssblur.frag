@@ -6,6 +6,12 @@
 // every tap, so light diffuses within skin and never bleeds across the silhouette onto the
 // background. Red diffuses farthest, then green, then blue — the diffusion profile that makes
 // skin read as flesh (soft red shadow edges) instead of painted plastic.
+//
+// Pass:    the bloom render pass at FULL resolution, twice: H into the SSS scratch target, V
+//          back into the HDR resolve image (in place).
+// Inputs:  set 0.0 the source (the HDR resolve for H, the scratch for V); 0.1 the scene's
+//          SPECULAR resolve (read by the V pass only); push: texel size + blur direction.
+// Outputs: location 0 -> the pass's single RGBA16F attachment (alpha carries the mask through).
 
 layout(set = 0, binding = 0) uniform sampler2D uSrc;
 layout(set = 0, binding = 1) uniform sampler2D uSpec; // scene SPECULAR (V pass only; H binds uSrc)

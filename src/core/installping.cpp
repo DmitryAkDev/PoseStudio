@@ -89,12 +89,15 @@ bool InstallPing::isBuiltIn() {
     return !QByteArrayLiteral(POSESTUDIO_PING_KEY).isEmpty();
 }
 
+QString InstallPing::existingInstallId() {
+    return PreferencesManager::instance().getValue(Constants::PREF_INSTALL_ID).toString();
+}
+
 QString InstallPing::installId() {
-    auto& prefs = PreferencesManager::instance();
-    QString id = prefs.getValue(Constants::PREF_INSTALL_ID).toString();
+    QString id = existingInstallId();
     if (id.isEmpty()) {
         id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-        prefs.setValue(Constants::PREF_INSTALL_ID, id);
+        PreferencesManager::instance().setValue(Constants::PREF_INSTALL_ID, id);
     }
     return id;
 }

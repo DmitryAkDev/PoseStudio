@@ -1,18 +1,18 @@
 /**
  * @file geometryparser.h
- * @brief Parses a figure geometry definition and assembles it into renderable per-zone meshes.
+ * @brief Parses a figure geometry definition (the base cage) into the importer's GeometryData.
  *
  * The figure format stores geometry as a shared vertex pool plus a polygon list of quads/tris, each
- * tagged with a material-zone index. parseGeometry() lifts that into a GeometryData; assembleFigure-
- * Meshes() then triangulates it, de-indexes unique (position, uv) pairs — splitting at UV seams —
- * generates smooth normals over the whole surface (so shading is seamless across zone boundaries),
- * and emits one FigureMesh per material zone. Pure std + GLM + nlohmann — no Qt.
+ * tagged with a material-zone index. parseGeometry() lifts that into a GeometryData — the cage the
+ * rest of the pipeline morphs, skins, subdivides and assembles (subdivision.h does the
+ * triangulation / seam split / smooth normals for every level, including level 0). Each face
+ * remembers its index in the SOURCE polylist: the UV set's seam overrides are keyed by that index,
+ * and a polygon skipped as degenerate must not shift every later face's key. Pure std + GLM +
+ * nlohmann — no Qt.
  */
 
 #ifndef GEOMETRYPARSER_H
 #define GEOMETRYPARSER_H
-
-#include "figuredata.h"
 
 #include <glm/glm.hpp>
 
@@ -25,8 +25,6 @@
 
 namespace pose {
 
-struct UvSet;
-
 /// Raw geometry lifted from a geometry_library entry: the shared vertex pool, the polygon list
 /// (each face 3 or 4 vertices + its material-zone index), and the zone names.
 struct GeometryData {
@@ -35,24 +33,28 @@ struct GeometryData {
         int                      material = 0;
         int                      count    = 0; ///< 3 or 4.
         std::array<uint32_t, 4>  v{};
+        /// The polygon's index in the source polylist — the key the UV set's seam overrides
+        /// (UvSet::uvIndexFor) use. Differs from the face's position in `faces` once a preceding
+        /// polygon was skipped as degenerate/out-of-range.
+        uint32_t                 sourceIndex = 0;
     };
 
     std::vector<glm::vec3>   positions;
     std::vector<Face>        faces;
     std::vector<std::string> materialZones;   ///< polygon_material_groups (indexed by Face::material).
     std::string              defaultUvSetUri; ///< URI of the UV-set file, or empty.
+    /// True when the geometry declares a POPULATED graft (non-empty hidden_polys/vertex_pairs) —
+    /// a surface replacement authored in exact correspondence with a specific target shape. The
+    /// follower-addon path reads it: such addons are vendor-fitted in place and must NOT be
+    /// shape-follow projected. A generic follower carries an EMPTY graft object, which doesn't count.
+    bool                     graftPopulated = false;
 };
 
-/// Parses one geometry_library entry (its `vertices`, `polylist`, `polygon_material_groups`, and
-/// `default_uv_set`). Throws std::runtime_error if the required arrays are missing/malformed.
+/// Parses one geometry_library entry (its `vertices`, `polylist`, `polygon_material_groups`,
+/// `default_uv_set`, and `graft`). Degenerate or out-of-range polygons are skipped (their source
+/// index is preserved on the faces that follow). Throws std::runtime_error if the required arrays
+/// are missing/malformed.
 GeometryData parseGeometry(const nlohmann::json& geometryEntry);
-
-/// Triangulates @p geo, de-indexes it against @p uv (splitting at seams), generates smooth normals
-/// over the whole surface, attaches per-vertex skin weights from @p skins (indexed by base vertex;
-/// pass an empty vector for an unrigged mesh), and returns one FigureMesh per material zone (empty
-/// zones included so the index lines up with the material list). If @p uv is empty, UVs are (0,0).
-std::vector<FigureMesh> assembleFigureMeshes(const GeometryData& geo, const UvSet& uv,
-                                             const std::vector<VertexSkin>& skins);
 
 } // namespace pose
 

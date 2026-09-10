@@ -6,6 +6,7 @@
 #include "assetlibraries.h"
 
 #include "database.h"
+#include "librarypaths.h"
 
 #include <QDebug>
 #include <QDir>
@@ -81,7 +82,9 @@ AddResult add(const QString& path) {
         return AddResult::Failed;
     }
     // INSERT OR IGNORE "succeeds" with zero rows on the UNIQUE(AssetLibraryPath) conflict.
-    return query.numRowsAffected() == 0 ? AddResult::AlreadyRegistered : AddResult::Added;
+    if (query.numRowsAffected() == 0) return AddResult::AlreadyRegistered;
+    LibraryPaths::invalidateCache(); // the user-library root may now resolve differently
+    return AddResult::Added;
 }
 
 bool remove(int id) {
@@ -92,6 +95,7 @@ bool remove(int id) {
         qWarning() << "[!] Failed to remove asset library:" << query.lastError().text();
         return false;
     }
+    LibraryPaths::invalidateCache(); // the removed row may have been the user-library root
     return true;
 }
 

@@ -5,10 +5,10 @@
 
 #include "uriresolver.h"
 
+#include "figureutils.h"
 #include "parallelfor.h"
 
 #include <algorithm>
-#include <cctype>
 #include <filesystem>
 #include <stdexcept>
 #include <utility>
@@ -18,27 +18,27 @@ namespace pose {
 namespace fs = std::filesystem;
 
 std::string UriResolver::urlDecode(const std::string& s) {
-    std::string out;
-    out.reserve(s.size());
-    for (std::size_t i = 0; i < s.size(); ++i) {
-        if (s[i] == '%' && i + 2 < s.size()) {
-            auto hexVal = [](char c) -> int {
-                if (c >= '0' && c <= '9') return c - '0';
-                if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-                if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-                return -1;
-            };
-            const int hi = hexVal(s[i + 1]);
-            const int lo = hexVal(s[i + 2]);
-            if (hi >= 0 && lo >= 0) {
-                out.push_back(static_cast<char>((hi << 4) | lo));
-                i += 2;
-                continue;
-            }
-        }
-        out.push_back(s[i]);
+    return pose::urlDecode(s);
+}
+
+UriResolver::UriResolver(std::vector<std::string> contentRoots) : m_roots(std::move(contentRoots)) {}
+
+const std::unordered_map<std::string, std::string>&
+UriResolver::directoryListing(const std::string& dir) const {
+    const auto it = m_listings.find(dir);
+    if (it != m_listings.end()) {
+        return it->second;
     }
-    return out;
+    // First visit: list the directory once. emplace keeps the FIRST entry per lowercased name, in
+    // iteration order — the same match the original per-miss scan returned. A directory that
+    // can't be listed (missing, not a directory) memoizes as empty, so it misses cheaply next time.
+    std::unordered_map<std::string, std::string> listing;
+    std::error_code dirEc;
+    for (const auto& entry : fs::directory_iterator(fs::path(dir), dirEc)) {
+        const std::string name = entry.path().filename().string();
+        listing.emplace(toLowerAscii(name), name);
+    }
+    return m_listings.emplace(dir, std::move(listing)).first->second;
 }
 
 // Resolves `base / tail` tolerating case differences in any path component. Linux/macOS filesystems
@@ -46,7 +46,7 @@ std::string UriResolver::urlDecode(const std::string& s) {
 // would absorb for free — so when the exact-case path is missing we re-derive it component by
 // component, matching each name case-insensitively. Returns the actual on-disk path, or an empty
 // string if it can't be found.
-static std::string resolveCaseTolerant(const fs::path& base, const std::string& tail) {
+std::string UriResolver::resolveCaseTolerant(const std::string& base, const std::string& tail) const {
     std::error_code ec;
     fs::path current = base;
     for (const fs::path component : fs::path(tail)) {
@@ -55,25 +55,13 @@ static std::string resolveCaseTolerant(const fs::path& base, const std::string& 
             current = exact;
             continue;
         }
-        // Exact case missing: search this component case-insensitively within `current`.
-        std::string lower = component.string();
-        std::transform(lower.begin(), lower.end(), lower.begin(),
-                       [](unsigned char c) { return std::tolower(c); });
-        fs::path found;
-        std::error_code dirEc;
-        for (const auto& entry : fs::directory_iterator(current, dirEc)) {
-            std::string name = entry.path().filename().string();
-            std::transform(name.begin(), name.end(), name.begin(),
-                           [](unsigned char c) { return std::tolower(c); });
-            if (name == lower) {
-                found = entry.path();
-                break;
-            }
-        }
-        if (found.empty()) {
+        // Exact case missing: look the component up case-insensitively in `current`'s listing.
+        const std::unordered_map<std::string, std::string>& listing = directoryListing(current.string());
+        const auto found = listing.find(toLowerAscii(component.string()));
+        if (found == listing.end()) {
             return std::string(); // a component didn't match at all
         }
-        current = found;
+        current /= found->second;
     }
     std::error_code existsEc;
     if (!fs::exists(current, existsEc)) {
@@ -81,8 +69,6 @@ static std::string resolveCaseTolerant(const fs::path& base, const std::string& 
     }
     return current.lexically_normal().string();
 }
-
-UriResolver::UriResolver(std::vector<std::string> contentRoots) : m_roots(std::move(contentRoots)) {}
 
 ResolvedUri UriResolver::resolve(const std::string& uri, const std::string& referringFileDir) const {
     // Split off the "#fragment" (asset id) first, then URL-decode each half independently.
@@ -101,9 +87,11 @@ ResolvedUri UriResolver::resolve(const std::string& uri, const std::string& refe
     std::error_code ec;
     if (!relPath.empty() && (relPath.front() == '/' || relPath.front() == '\\')) {
         // Root-relative: try each content root. The leading slash makes it absolute within a root,
-        // so we strip it before joining. First existing file wins: the exact-case path first (free on
-        // NTFS), then resolveCaseTolerant() re-derives it case-insensitively for the case-sensitive
-        // filesystems (Linux/macOS) where the URIs' mixed case would otherwise miss.
+        // so we strip it before joining. First existing file wins. Two passes, ALL roots each: the
+        // exact-case path first (free on NTFS — and with several roots a file under root[1] must
+        // not pay a directory walk of root[0] first), then resolveCaseTolerant() re-derives it
+        // case-insensitively for the case-sensitive filesystems (Linux/macOS) where the URIs'
+        // mixed case would otherwise miss.
         const std::string tail = relPath.substr(1);
         for (const std::string& root : m_roots) {
             fs::path candidate = fs::path(root) / fs::path(tail);
@@ -111,9 +99,9 @@ ResolvedUri UriResolver::resolve(const std::string& uri, const std::string& refe
                 result.path = candidate.lexically_normal().string();
                 return result;
             }
-            // Exact case missing: retry tolerating case differences (Linux/macOS are case-sensitive,
-            // the URIs' "one One" vs the on-disk "ONE One").
-            const std::string tolerant = resolveCaseTolerant(fs::path(root), tail);
+        }
+        for (const std::string& root : m_roots) {
+            const std::string tolerant = resolveCaseTolerant(root, tail);
             if (!tolerant.empty()) {
                 result.path = tolerant;
                 return result;
@@ -128,7 +116,7 @@ ResolvedUri UriResolver::resolve(const std::string& uri, const std::string& refe
         if (fs::exists(candidate, ec)) {
             result.path = candidate.lexically_normal().string();
         } else {
-            const std::string tolerant = resolveCaseTolerant(fs::path(referringFileDir), relPath);
+            const std::string tolerant = resolveCaseTolerant(referringFileDir, relPath);
             if (!tolerant.empty()) {
                 result.path = tolerant;
             }
@@ -143,13 +131,25 @@ std::shared_ptr<const FigureDocument> UriResolver::loadDocument(const std::strin
     if (!r.resolved()) {
         throw std::runtime_error("Could not resolve figure reference to a file: " + uri);
     }
-    auto cached = m_cache.find(r.path);
+    return loadDocument(r);
+}
+
+std::shared_ptr<const FigureDocument> UriResolver::loadDocument(const ResolvedUri& resolved) {
+    if (!resolved.resolved()) {
+        throw std::runtime_error("Could not resolve figure reference to a file (unresolved reference)");
+    }
+    auto cached = m_cache.find(resolved.path);
     if (cached != m_cache.end()) {
         return cached->second;
     }
-    auto doc = std::make_shared<FigureDocument>(FigureDocument::loadFromFile(r.path));
-    m_cache.emplace(r.path, doc);
+    auto doc = std::make_shared<FigureDocument>(FigureDocument::loadFromFile(resolved.path));
+    m_cache.emplace(resolved.path, doc);
     return doc;
+}
+
+std::shared_ptr<const FigureDocument> UriResolver::cached(const std::string& path) const {
+    const auto it = m_cache.find(path);
+    return it != m_cache.end() ? it->second : nullptr;
 }
 
 void UriResolver::prefetchDocuments(const std::vector<std::string>& uris,

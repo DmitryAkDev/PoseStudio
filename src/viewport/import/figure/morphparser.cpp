@@ -5,50 +5,19 @@
 
 #include "morphparser.h"
 
+#include "figureutils.h"
+
 #include <nlohmann/json.hpp>
 
 namespace pose {
-
-namespace {
-// A morph's deltas are stored either as {"count":N,"values":[...]} or a bare array.
-const nlohmann::json& valuesArray(const nlohmann::json& node) {
-    if (node.is_object()) {
-        const auto it = node.find("values");
-        if (it != node.end()) {
-            return *it;
-        }
-    }
-    return node;
-}
-} // namespace
 
 std::vector<MorphDelta> parseMorphDeltas(const nlohmann::json& morphDoc,
                                          const std::string& fragment) {
     std::vector<MorphDelta> out;
 
-    const auto lib = morphDoc.find("modifier_library");
-    if (lib == morphDoc.end() || !lib->is_array()) {
-        return out;
-    }
-
-    // Prefer the modifier whose id matches the URI fragment; else the first one carrying a morph.
-    const nlohmann::json* mod = nullptr;
-    if (!fragment.empty()) {
-        for (const auto& m : *lib) {
-            if (m.value("id", std::string()) == fragment && m.contains("morph")) {
-                mod = &m;
-                break;
-            }
-        }
-    }
-    if (!mod) {
-        for (const auto& m : *lib) {
-            if (m.contains("morph")) {
-                mod = &m;
-                break;
-            }
-        }
-    }
+    // The modifier whose id matches the URI fragment (and carries a morph), else the first one
+    // carrying a morph at all.
+    const nlohmann::json* mod = findMorphModifier(morphDoc, fragment);
     if (!mod) {
         return out; // no shape here (e.g. a formula-only driver modifier)
     }

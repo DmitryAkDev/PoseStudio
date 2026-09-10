@@ -1,6 +1,6 @@
 /**
  * @file ikmath.h
- * @brief Small shared rotation math for the IK module (and the Model's IK pose extraction):
+ * @brief Small shared rotation math for the IK module (and the Armature's IK pose extraction):
  *        shortest-arc quaternions, signed angles about an axis, and Euler decomposition for the
  *        figure format's arbitrary per-joint rotation orders.
  *

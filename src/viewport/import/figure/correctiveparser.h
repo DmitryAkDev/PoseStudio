@@ -31,6 +31,10 @@ struct CorrectiveContext {
     /// Resolves a value-channel driver URL ("…dsf#Channel?value") to its constant weight: the dialed
     /// weight if the preset dials that channel, else the channel's own default (0 = off).
     std::function<float(const std::string& url)> resolveValue;
+    /// The document the modifier being parsed came from. A gate written as a same-file reference
+    /// ("#Toggle?value" — no file part) names a channel in THIS document, which the resolver can't
+    /// load by URI; resolveValue reads its default here instead. Set by the scan per document.
+    const nlohmann::json* ownerDoc = nullptr;
 };
 
 /// If @p modifier (one modifier_library entry) is a *live* pose corrective — it carries sparse morph

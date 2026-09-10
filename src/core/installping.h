@@ -55,6 +55,12 @@ public:
 
     /// Arms the startup ping: send() runs once, a few seconds after this call, on an InstallPing
     /// owned by `parent`. Call after the main window is shown so it never competes with startup.
+    /// Pass the MAIN WINDOW (or any object that dies before the QApplication), never the
+    /// application object itself: a QApplication's children are deleted by QObject's destructor
+    /// AFTER QCoreApplication's own destructor body has torn down the event dispatcher, and the
+    /// QNetworkAccessManager created under the ping on first send dying that late is a
+    /// use-after-teardown. Owned by the window, the ping is destroyed while the event system is
+    /// still alive; an in-flight reply is simply aborted — the fire-and-forget contract.
     static void scheduleAtStartup(QObject* parent);
 
     /// Whether the user has the ping switched on (Preferences → General; default on).
@@ -65,8 +71,15 @@ public:
     /// Local builds have none, and the General preferences page says so next to the toggle.
     static bool isBuiltIn();
 
-    /// The random per-installation ID, created on first use and kept in Preferences.
+    /// The random per-installation ID, created (and persisted) on first use — the value the
+    /// ping sends. Minting it is a side effect, so DISPLAY code must use existingInstallId().
     static QString installId();
+
+    /// The stored install ID, or empty if none has been created yet — never creates one.
+    /// Preferences → General shows it, and merely opening a dialog must not mint and persist an
+    /// identifier (in a keyless build, or with the ping switched off, one legitimately never
+    /// exists).
+    static QString existingInstallId();
 
     /// Sends the ping now, if every gate passes (build key, environment, and the user's
     /// preference). Failures are logged at debug level and ignored.

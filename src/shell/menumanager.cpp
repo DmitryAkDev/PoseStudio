@@ -1,10 +1,15 @@
 /**
  * @file menumanager.cpp
- * @brief Builds the application's top menu bar (File / Edit / Help).
+ * @brief Builds the application's top menu bar (File / Edit / View / Help).
  *
- * Most actions here are disabled placeholders for features that don't exist yet —
- * the goal of this file is just to establish the menu structure and icon conventions
- * future features will slot into.
+ * Live today: File → Import (.OBJ meshes and .DUF character figures), Save/Load Pose and Quit;
+ * Edit → Undo/Redo (the viewport's unified pose + lighting stack), Delete Selected Object, the
+ * pose utilities (reset joint/limb/pose, mirror pose/limb) and Preferences; the whole View menu
+ * (Show Skeleton, the axis views, Flip, Frame Selected and Home View — all with app-wide
+ * shortcuts in Blender's numpad convention); Help → the website link and About. The remaining
+ * entries (New/Open/Save, the other import formats, Export, clipboard, docs) are disabled
+ * placeholders that establish the menu structure and icon conventions those features will slot
+ * into — enabling one means replacing its disabled entry with a real handler here.
  */
 
 #include "menumanager.h"
@@ -18,7 +23,6 @@
 #include <QMenuBar>
 #include <QAction>
 #include <QApplication>
-#include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QIcon>
@@ -26,7 +30,6 @@
 #include <QDesktopServices>
 #include <QStandardPaths>
 #include <QUrl>
-#include <cstring>
 
 /**
  * @brief Loads a normal/disabled icon pair following the "name.png" / "name-d.png" convention.
@@ -39,16 +42,13 @@ static QIcon loadDualStateIcon(const QString& baseName) {
 }
 
 /**
- * @brief Resolves the folder an import file dialog should start in: the folder of the last
- * import (persisted in Preferences), falling back to Documents when nothing is saved yet or
- * the stored folder was moved/deleted. Shared by every File → Import entry point.
+ * @brief The folder a file dialog should start in: the one remembered under `prefKey` (the last
+ * import / pose folder), falling back to Documents when nothing is saved yet or the stored folder
+ * was moved/deleted. Shared by every File → Import and pose I/O entry point.
  */
-static QString lastImportStartDir() {
-    const QString documents = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
-    const QString startDir =
-        PreferencesManager::instance().getValue(Constants::PREF_LAST_IMPORT_DIR, documents).toString();
-    if (startDir.isEmpty() || !QDir(startDir).exists()) return documents;
-    return startDir;
+static QString rememberedStartDir(const char* prefKey) {
+    return PreferencesManager::instance().rememberedDirectory(
+        QLatin1String(prefKey), QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation));
 }
 
 MenuManager::MenuManager(QMainWindow *parent) : QObject(parent), mainWindow(parent) {}
@@ -71,29 +71,33 @@ void MenuManager::setupMenus() {
     fileMenu->addAction("Save Copy...")->setEnabled(false);
     fileMenu->addSeparator();
 
-    // Import submenu: one entry per supported file format, kept alphabetical. Only formats with a
-    // working importer are enabled; the rest are disabled placeholders until their importer lands.
+    // Import submenu: one entry per supported file format, kept alphabetical. An entry with a
+    // handler is live; the rest are disabled placeholders until their importer lands — wiring a
+    // new format is filling in its handler here. .DUF is the rigged character figure: its own
+    // native scene format + pipeline (geometry + skeleton + morphs + materials), listed as a
+    // file format alongside the mesh formats.
     QMenu *importMenu = fileMenu->addMenu(loadDualStateIcon("import"), "Import");
-    const char *importFormats[] = {
-        ".ABC (Alembic)",
-        ".BVH (Biovision Hierarchy)",
-        ".DAE (Collada)",
-        ".DUF (DUF File)",
-        ".FBX (FBX File)",
-        ".GLB (GL Transmission Format .glTF)",
-        ".OBJ (Wavefront)",
-        ".PLY (Polygon File Format)",
-        ".STL (Stereolithography)",
-        ".USD (Universal Scene Description)",
+    struct ImportFormat {
+        const char *label;
+        void (MenuManager::*handler)(); // nullptr = importer not built yet
     };
-    for (const char *format : importFormats) {
-        QAction *action = importMenu->addAction(format);
-        if (std::strcmp(format, ".OBJ (Wavefront)") == 0) {
-            QObject::connect(action, &QAction::triggered, mainWindow, [this]() { importObjFile(); });
-        } else if (std::strcmp(format, ".DUF (DUF File)") == 0) {
-            // Rigged character figures: their own native scene format + pipeline (geometry + skeleton
-            // + morphs + materials), listed here as a file format alongside the mesh formats.
-            QObject::connect(action, &QAction::triggered, mainWindow, [this]() { importFigureFile(); });
+    const ImportFormat importFormats[] = {
+        {".ABC (Alembic)",                    nullptr},
+        {".BVH (Biovision Hierarchy)",        nullptr},
+        {".DAE (Collada)",                    nullptr},
+        {".DUF (DUF File)",                   &MenuManager::importFigureFile},
+        {".FBX (FBX File)",                   nullptr},
+        {".GLB (GL Transmission Format .glTF)", nullptr},
+        {".OBJ (Wavefront)",                  &MenuManager::importObjFile},
+        {".PLY (Polygon File Format)",        nullptr},
+        {".STL (Stereolithography)",          nullptr},
+        {".USD (Universal Scene Description)", nullptr},
+    };
+    for (const ImportFormat &format : importFormats) {
+        QAction *action = importMenu->addAction(format.label);
+        if (format.handler) {
+            QObject::connect(action, &QAction::triggered, mainWindow,
+                             [this, handler = format.handler]() { (this->*handler)(); });
         } else {
             action->setEnabled(false); // importer not built yet
         }
@@ -308,7 +312,7 @@ void MenuManager::importObjFile() {
     if (!viewportWidget) return;
 
     const QString path = QFileDialog::getOpenFileName(
-        mainWindow, QStringLiteral("Import OBJ"), lastImportStartDir(),
+        mainWindow, QStringLiteral("Import OBJ"), rememberedStartDir(Constants::PREF_LAST_IMPORT_DIR),
         QStringLiteral("Wavefront OBJ (*.obj)"));
     if (path.isEmpty()) return; // user cancelled
 
@@ -322,7 +326,8 @@ void MenuManager::importFigureFile() {
     if (!viewportWidget) return;
 
     const QString path = QFileDialog::getOpenFileName(
-        mainWindow, QStringLiteral("Import Character Figure"), lastImportStartDir(),
+        mainWindow, QStringLiteral("Import Character Figure"),
+        rememberedStartDir(Constants::PREF_LAST_IMPORT_DIR),
         QStringLiteral("Figure Files (*.duf *.dsf)"));
     if (path.isEmpty()) return; // user cancelled
 
@@ -339,13 +344,16 @@ void MenuManager::savePoseFile() {
         return;
     }
 
-    const QString documents = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
-    QString path = QFileDialog::getSaveFileName(mainWindow, QStringLiteral("Save Pose"), documents,
+    QString path = QFileDialog::getSaveFileName(mainWindow, QStringLiteral("Save Pose"),
+                                                rememberedStartDir(Constants::PREF_LAST_POSE_DIR),
                                                 QStringLiteral("Pose Files (*.pose)"));
     if (path.isEmpty()) return; // user cancelled
     if (!path.endsWith(QStringLiteral(".pose"), Qt::CaseInsensitive)) {
         path += QStringLiteral(".pose");
     }
+    // Remember the pose folder for the next save/load, like Import remembers its folder.
+    PreferencesManager::instance().setValue(Constants::PREF_LAST_POSE_DIR,
+                                            QFileInfo(path).absolutePath());
     if (!viewportWidget->savePose(path)) {
         QMessageBox::warning(mainWindow, QStringLiteral("Save Pose"),
                              QStringLiteral("Could not write the pose file."));
@@ -360,11 +368,12 @@ void MenuManager::loadPoseFile() {
         return;
     }
 
-    const QString documents = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
     const QString path = QFileDialog::getOpenFileName(mainWindow, QStringLiteral("Load Pose"),
-                                                      documents,
+                                                      rememberedStartDir(Constants::PREF_LAST_POSE_DIR),
                                                       QStringLiteral("Pose Files (*.pose)"));
     if (path.isEmpty()) return; // user cancelled
+    PreferencesManager::instance().setValue(Constants::PREF_LAST_POSE_DIR,
+                                            QFileInfo(path).absolutePath());
     if (!viewportWidget->loadPose(path)) {
         QMessageBox::warning(mainWindow, QStringLiteral("Load Pose"),
                              QStringLiteral("Could not read the pose file."));

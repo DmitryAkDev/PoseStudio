@@ -1,11 +1,13 @@
 /**
  * @file subdivision.cpp
- * @brief Implementation of subdivideFigure (Catmull-Clark). See subdivision.h.
+ * @brief Implementation of subdivideFigure + carryCorrectivesToSubdivided (Catmull-Clark). See
+ *        subdivision.h.
  */
 
 #include "subdivision.h"
 
 #include "geometryparser.h" // GeometryData
+#include "parallelfor.h"
 
 #include <algorithm>
 #include <array>
@@ -14,6 +16,7 @@
 #include <cstdint>
 #include <memory>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace pose {
@@ -61,6 +64,15 @@ struct LevelTopo {
 };
 
 constexpr uint32_t kNoVert = 0xFFFFFFFFu;
+
+} // namespace
+
+/// The per-level topologies of one subdivision, level 0 first (empty for a level-0 "subdivision").
+struct SubdivisionTopology {
+    std::vector<LevelTopo> levels;
+};
+
+namespace {
 
 uint64_t edgeKey(uint32_t a, uint32_t b) {
     const uint32_t lo = std::min(a, b);
@@ -304,19 +316,20 @@ CageState subdivideCage(const CageState& cage, const LevelTopo& t) {
     return nc;
 }
 
-// De-index key: a subdivided-cage vertex split per distinct (quantized) UV, mirroring the base
-// assembler's (base vertex, uv index) split at seams.
+// De-index key: a cage vertex split per distinct (quantized) UV — the split at UV seams. The
+// quantized coordinates are 64-bit: at 1/65536 steps a 32-bit `long` (MSVC's lround result)
+// overflows past |uv| = 32768, collapsing distinct far-parked UVs onto one key.
 struct PosUvKey {
     uint32_t pos;
-    int32_t  ux;
-    int32_t  uy;
+    int64_t  ux;
+    int64_t  uy;
     bool operator==(const PosUvKey& o) const { return pos == o.pos && ux == o.ux && uy == o.uy; }
 };
 struct PosUvHash {
     std::size_t operator()(const PosUvKey& k) const {
         std::size_t h = k.pos * 73856093u;
-        h ^= static_cast<uint32_t>(k.ux) * 19349663u;
-        h ^= static_cast<uint32_t>(k.uy) * 83492791u;
+        h ^= static_cast<std::size_t>(static_cast<uint64_t>(k.ux) * 19349663u);
+        h ^= static_cast<std::size_t>(static_cast<uint64_t>(k.uy) * 83492791u);
         return h;
     }
 };
@@ -347,18 +360,19 @@ std::vector<FigureMesh> assembleCage(const CageState& cage) {
         n = (len > 1e-8f) ? n / len : glm::vec3(0.0f, 1.0f, 0.0f);
     }
 
+    // One mesh per material zone (at least one, so untagged geometry has a home). Empty zones are
+    // kept so a mesh's index lines up with the material-zone list.
     const std::size_t zoneCount = std::max<std::size_t>(cage.zones.size(), 1);
     std::vector<FigureMesh> meshes(zoneCount);
     for (std::size_t z = 0; z < zoneCount; ++z) {
-        meshes[z].materialIndex = static_cast<int>(z);
         meshes[z].materialZone = (z < cage.zones.size()) ? cage.zones[z] : std::string();
     }
     std::vector<std::unordered_map<PosUvKey, uint32_t, PosUvHash>> caches(zoneCount);
 
     auto emit = [&](std::size_t zone, const Corner& corner) -> uint32_t {
         constexpr float kUvQuant = 65536.0f;
-        const PosUvKey key{corner.pos, static_cast<int32_t>(std::lround(corner.uv.x * kUvQuant)),
-                           static_cast<int32_t>(std::lround(corner.uv.y * kUvQuant))};
+        const PosUvKey key{corner.pos, static_cast<int64_t>(std::llround(corner.uv.x * kUvQuant)),
+                           static_cast<int64_t>(std::llround(corner.uv.y * kUvQuant))};
         auto& cache = caches[zone];
         if (const auto it = cache.find(key); it != cache.end()) {
             return it->second;
@@ -405,15 +419,16 @@ CageState buildBaseCage(const GeometryData& geo, const UvSet& uv, const std::vec
         cage.skins.resize(cage.positions.size()); // pad with zero-weight so indexing is safe
     }
     cage.faces.reserve(geo.faces.size());
-    for (std::size_t p = 0; p < geo.faces.size(); ++p) {
-        const GeometryData::Face& gf = geo.faces[p];
+    for (const GeometryData::Face& gf : geo.faces) {
         Face f;
         f.material = gf.material;
         f.n = gf.count;
         for (int i = 0; i < gf.count; ++i) {
             f.c[i].pos = gf.v[i];
             if (!uv.empty()) {
-                const uint32_t uvIdx = uv.uvIndexFor(static_cast<uint32_t>(p), gf.v[i]);
+                // Seam overrides are keyed by the polygon's index in the SOURCE polylist, which
+                // the parser preserved past any skipped polygon.
+                const uint32_t uvIdx = uv.uvIndexFor(gf.sourceIndex, gf.v[i]);
                 f.c[i].uv = (uvIdx < uv.uvs.size()) ? uv.uvs[uvIdx] : glm::vec2(0.0f);
             }
         }
@@ -428,24 +443,189 @@ SubdivisionResult subdivideFigure(const GeometryData& geo, const UvSet& uv,
                                   const std::vector<VertexSkin>& skins, int levels) {
     CageState cage = buildBaseCage(geo, uv, skins);
 
-    auto topos = std::make_shared<std::vector<LevelTopo>>();
+    auto topology = std::make_shared<SubdivisionTopology>();
     for (int l = 0; l < levels; ++l) {
         LevelTopo topo = buildTopo(cage);
         cage = subdivideCage(cage, topo);
-        topos->push_back(std::move(topo));
+        topology->levels.push_back(std::move(topo));
     }
 
     SubdivisionResult result;
     result.vertexCount = cage.positions.size();
     result.meshes = assembleCage(cage);
-    result.subdivideDeltaField = [topos](const std::vector<glm::vec3>& base) {
-        std::vector<glm::vec3> field = base;
-        for (const LevelTopo& t : *topos) {
-            field = applyField(t, field);
-        }
-        return field;
-    };
+    result.topology = std::move(topology);
     return result;
+}
+
+namespace {
+
+// A sparse per-vertex vec3 field: (vertex index, value) pairs, ascending by index, no duplicates.
+// Every index it doesn't carry reads as +0.0 — exactly what the dense field held there.
+using SparseField = std::vector<std::pair<uint32_t, glm::vec3>>;
+
+// Sorted-vector lookup for a SparseField (a corrective touches a few hundred of ~16k cage
+// vertices, so a binary search beats hashing and allocates nothing).
+glm::vec3 sparseAt(const SparseField& field, uint32_t index) {
+    const auto it = std::lower_bound(
+        field.begin(), field.end(), index,
+        [](const std::pair<uint32_t, glm::vec3>& e, uint32_t i) { return e.first < i; });
+    return (it != field.end() && it->first == index) ? it->second : glm::vec3(0.0f);
+}
+
+void sortUnique(std::vector<uint32_t>& v) {
+    std::sort(v.begin(), v.end());
+    v.erase(std::unique(v.begin(), v.end()), v.end());
+}
+
+// One Catmull-Clark level applied to a SPARSE field — the sparse twin of applyField, and
+// BIT-IDENTICAL to it by construction: every output point that can be non-zero is evaluated with
+// the same stencil expression, the same operands in the same order, reading untouched inputs as
+// the +0.0 the dense field stored (x + 0.0f == x exactly, so the dropped zero terms change
+// nothing). The outputs that CAN be non-zero are exactly: the face points of faces incident to a
+// touched vertex; the edge points of edges with a touched endpoint or a candidate adjacent face
+// (a face point is non-zero only when a corner is touched); and the vertex points of touched
+// vertices and of every corner of a candidate face (that covers each edge-neighbour of a touched
+// vertex — their shared edge lies in a candidate face — and each boundary neighbour, whose edge
+// belongs to one). Everything else is +0.0 in the dense result and simply isn't emitted.
+// Output ascending by index; candidates that evaluate to zero are kept (harmless, and the caller
+// applies the final threshold once).
+SparseField applyFieldSparse(const LevelTopo& t, const SparseField& in) {
+    std::vector<uint32_t> faces, edges, verts;
+    for (const auto& [v, value] : in) {
+        if (v >= t.inVerts) {
+            continue; // outside this level's input (the dense path never read it either)
+        }
+        verts.push_back(v);
+        for (const uint32_t f : t.vertFaces[v]) {
+            faces.push_back(f);
+        }
+        for (const uint32_t e : t.vertEdges[v]) {
+            edges.push_back(e);
+        }
+    }
+    sortUnique(faces);
+    for (const uint32_t f : faces) {
+        const int n = t.faceN[f];
+        for (int i = 0; i < n; ++i) {
+            const uint32_t a = t.faceVerts[f][static_cast<std::size_t>(i)];
+            const uint32_t b = t.faceVerts[f][static_cast<std::size_t>((i + 1) % n)];
+            verts.push_back(a);
+            edges.push_back(t.edgeMap.at(edgeKey(a, b)));
+        }
+    }
+    sortUnique(edges);
+    sortUnique(verts);
+
+    // Face points (same sum order as applyField: corners 0..n-1, then / n).
+    std::vector<glm::vec3> facePoint(faces.size());
+    for (std::size_t k = 0; k < faces.size(); ++k) {
+        const uint32_t f = faces[k];
+        glm::vec3 s(0.0f);
+        for (int i = 0; i < t.faceN[f]; ++i) {
+            s += sparseAt(in, t.faceVerts[f][static_cast<std::size_t>(i)]);
+        }
+        facePoint[k] = s / static_cast<float>(t.faceN[f]);
+    }
+    // A face outside the candidate set has no touched corner: its dense face point is +0.0.
+    const auto facePointAt = [&](int f) -> glm::vec3 {
+        const auto it = std::lower_bound(faces.begin(), faces.end(), static_cast<uint32_t>(f));
+        return (it != faces.end() && *it == static_cast<uint32_t>(f))
+                   ? facePoint[static_cast<std::size_t>(it - faces.begin())]
+                   : glm::vec3(0.0f);
+    };
+
+    SparseField out;
+    out.reserve(verts.size() + edges.size() + faces.size());
+    for (const uint32_t v : verts) {
+        if (t.vertBoundary[v]) {
+            const uint32_t n1 = t.vertBoundaryNbr[v][0];
+            const uint32_t n2 = t.vertBoundaryNbr[v][1];
+            const glm::vec3 a = (n1 != kNoVert) ? sparseAt(in, n1) : sparseAt(in, v);
+            const glm::vec3 b = (n2 != kNoVert) ? sparseAt(in, n2) : sparseAt(in, v);
+            out.emplace_back(v, (6.0f * sparseAt(in, v) + a + b) / 8.0f); // cubic B-spline boundary rule
+            continue;
+        }
+        const uint32_t n = static_cast<uint32_t>(t.vertEdges[v].size());
+        if (n == 0) {
+            out.emplace_back(v, sparseAt(in, v));
+            continue;
+        }
+        glm::vec3 fBar(0.0f);
+        for (const uint32_t f : t.vertFaces[v]) {
+            fBar += facePointAt(static_cast<int>(f));
+        }
+        fBar /= static_cast<float>(std::max<std::size_t>(t.vertFaces[v].size(), 1));
+        glm::vec3 rBar(0.0f);
+        for (const uint32_t e : t.vertEdges[v]) {
+            rBar += (sparseAt(in, t.edgeEnds[e][0]) + sparseAt(in, t.edgeEnds[e][1])) * 0.5f;
+        }
+        rBar /= static_cast<float>(n);
+        out.emplace_back(v, (fBar + 2.0f * rBar +
+                             static_cast<float>(static_cast<int>(n) - 3) * sparseAt(in, v)) /
+                                static_cast<float>(n));
+    }
+    for (const uint32_t e : edges) {
+        const glm::vec3 a = sparseAt(in, t.edgeEnds[e][0]);
+        const glm::vec3 b = sparseAt(in, t.edgeEnds[e][1]);
+        const int f1 = t.edgeFaces[e][0];
+        const int f2 = t.edgeFaces[e][1];
+        out.emplace_back(t.inVerts + e, (f2 >= 0) ? (a + b + facePointAt(f1) + facePointAt(f2)) * 0.25f
+                                                  : (a + b) * 0.5f); // boundary edge -> midpoint
+    }
+    for (std::size_t k = 0; k < faces.size(); ++k) {
+        out.emplace_back(t.inVerts + t.numEdges + faces[k], facePoint[k]);
+    }
+    // Vertex points precede edge points precede face points in index space, and each group was
+    // emitted ascending — the whole list is already sorted.
+    return out;
+}
+
+} // namespace
+
+void carryCorrectivesToSubdivided(const SubdivisionResult& sub, std::size_t cageVertexCount,
+                                  std::vector<PoseCorrective>& correctives) {
+    // Every corrective is independent (only the shared topology is read), and a figure ships
+    // ~100+ of them — so run them across cores. Each is SPARSE: it touches a few hundred of the
+    // ~16k cage vertices, and the sparse stencil pass evaluates only the outputs those can reach
+    // (a dense full-mesh pass per corrective, plus its full-size scratch fields, was the dominant
+    // slice of the subdivision's import cost).
+    static const std::vector<LevelTopo> kNoLevels;
+    const std::vector<LevelTopo>& levels = sub.topology ? sub.topology->levels : kNoLevels;
+    parallelFor(static_cast<int>(correctives.size()), [&](int ci) {
+        PoseCorrective& pc = correctives[static_cast<std::size_t>(ci)];
+        // The base-cage field: in-range entries only, duplicates accumulated in order (from +0.0),
+        // exactly as the dense field was filled.
+        SparseField field;
+        {
+            std::vector<std::pair<uint32_t, glm::vec3>> entries;
+            entries.reserve(pc.deltas.size());
+            for (const auto& [index, delta] : pc.deltas) {
+                if (index < cageVertexCount) {
+                    entries.emplace_back(index, delta);
+                }
+            }
+            std::stable_sort(entries.begin(), entries.end(),
+                             [](const auto& a, const auto& b) { return a.first < b.first; });
+            for (const auto& [index, delta] : entries) {
+                if (!field.empty() && field.back().first == index) {
+                    field.back().second += delta;
+                } else {
+                    field.emplace_back(index, glm::vec3(0.0f) + delta);
+                }
+            }
+        }
+        for (const LevelTopo& t : levels) {
+            field = applyFieldSparse(t, field);
+        }
+        SparseField kept;
+        kept.reserve(field.size());
+        for (const auto& [index, value] : field) {
+            if (glm::dot(value, value) > 1e-12f) {
+                kept.emplace_back(index, value);
+            }
+        }
+        pc.deltas = std::move(kept);
+    });
 }
 
 } // namespace pose

@@ -2,7 +2,9 @@
  * @file armature.h
  * @brief The runtime skeleton of a posable figure: its bones, the per-joint pose (Euler rotation
  *        + translation), forward kinematics into skinning dual quaternions, the user's joint
- *        pins, and the full-body-IK integration (armatureik.cpp).
+ *        pins, and the full-body-IK integration (armatureik.cpp: the drag lifecycle and its
+ *        governors; armatureikextract.cpp: the rotation extraction; armatureikpins.cpp: the
+ *        exact pin refinement).
  *
  * An Armature is everything about a figure's pose that is NOT geometry: Model owns one next to
  * its meshes and GPU buffers, uploads the dual quaternions it computes, and forwards every posing
@@ -68,7 +70,10 @@ public:
 
     /// Builds the runtime skeleton from @p bones (parents must precede children — figure
     /// skeletons are listed in hierarchy order) at bind pose. An empty list makes a static
-    /// armature: no bones, one identity joint.
+    /// armature: no bones, one identity joint. CONSTRUCT-ONCE contract: build() resets EVERY
+    /// member first (pose, selection, pins, transform, and the whole IK state block), so it is
+    /// exactly equivalent to building a freshly constructed Armature — which is how it is used
+    /// (once per Model, right after construction; the harness does the same).
     void build(const std::vector<ArmatureBone>& bones);
 
     /// Writes the skeleton (one bone per line — see loadDump for the format) so the IK harness
@@ -100,8 +105,6 @@ public:
 
     // --- World transform (the model matrix) ---
     const glm::mat4& transform() const { return m_transform; }
-    /// Replaces the model matrix and refreshes the transform-dependent bone world positions.
-    void setTransform(const glm::mat4& transform);
     /// Translates the figure by @p dy along world Y (the animated ground drop applies its
     /// per-frame fall increments through this) and refreshes the bone world positions.
     void translateY(float dy);
@@ -208,8 +211,6 @@ public:
     bool settleIkTick();
     /// Ends the FBIK drag (the solved pose stays).
     void endIkDrag();
-    /// True between beginIkDrag() and endIkDrag().
-    bool ikDragActive() const;
     /// The rig (null until the first IK drag built it) — diagnostics and the harness.
     const IkRig* ikRig() const { return m_ikRig.get(); }
 
@@ -309,7 +310,8 @@ private:
     /// motions stay with the solve's own posture choice (a minimal-norm fit closing a whole
     /// 15cm foot lift swung the straight leg back at the hip instead of flexing the knee, and
     /// stalled at half the lift; a nullspace posture bias and column-scaled least squares were
-    /// both measured and rejected). Re-skins once when it changed anything.
+    /// both measured and rejected). Re-skins once at the end whenever there was a pin, a held
+    /// joint, or a drag target to refine (a no-op only when nothing qualified).
     void refinePins(bool settling, const glm::vec3* dragTarget = nullptr);
 
     std::vector<Bone>                    m_bones;
@@ -323,7 +325,7 @@ private:
     // (bend -> its twist child, twist -> its bend parent), so grabbing the upper-arm joint lights
     // the whole upper arm rather than the half the bend bone's own weights cover.
     std::vector<int>                     m_highlightTwin;
-    std::vector<std::vector<int>>        m_children;   // anatomical children per bone (subtree walks)
+    std::vector<std::vector<int>>        m_children;   // anatomical children per bone (subtree walks, the IK extraction's aim search)
     std::vector<int>                     m_mirrorBone; // the other side's bone per bone (self for centre)
     std::vector<glm::mat4>               m_poseGlobal;  // scratch for computeSkinMatrices (it runs per drag-move; no per-call allocation)
     std::vector<glm::vec3>               m_boneEuler;  // accumulated pose rotation per bone (degrees)
@@ -338,11 +340,10 @@ private:
     std::uint64_t                        m_skinVersion = 0;
 
     // Full-body IK: the rig (graph + constraints + masses, built lazily on the first IK drag),
-    // plus the anatomical children lists and model-space bind joint positions the extraction walk
-    // reads (built alongside — bind positions provide the rest aim offsets across the rigid
-    // twist-bone links extraction looks through).
+    // plus the model-space bind joint positions the extraction walk reads (built alongside — they
+    // provide the rest aim offsets across the rigid twist-bone links extraction looks through;
+    // the children lists it walks are the skeleton's own m_children).
     std::unique_ptr<IkRig>        m_ikRig;
-    std::vector<std::vector<int>> m_ikChildren;
     std::vector<glm::vec3>        m_ikBindPos;
     // WEIGHT-BEARING feet: each planted (pinned) foot bone and its drag-start model-space
     // rotation. The extraction preserves that world orientation while the pin holds, so the
@@ -393,6 +394,10 @@ private:
     // grab keeps tracking the FINGER when the hand twists — with the solver now free to twist
     // the forearm, a constant offset missed the fingertip by up to twice its length.
     glm::mat3                     m_ikGrabRotStart{1.0f};
+    // The model matrix's inverse, cached at drag start: the transform is fixed for a drag's
+    // duration (a press completes any ground fall first, and the Ground button is ignored
+    // mid-drag), and dragIkTo maps every tick's world-space target through it.
+    glm::mat4                     m_ikInvTransform{1.0f};
     // Previous drag target (model space): the world-space governor's per-event pose budget is
     // PROPORTIONAL to how far the target actually moved — a still-but-noisy cursor earns only a
     // millimeter budget (kills trembling), a fast pull earns the full step.

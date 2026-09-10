@@ -2,6 +2,11 @@
 
 // Separable 9-tap Gaussian blur for the bloom chain — run twice, horizontal then vertical
 // (direction in the push constant).
+//
+// Pass:    the bloom render pass at half resolution, twice: H from bloom A into B, V from B
+//          back into A (which the composite then samples).
+// Inputs:  set 0.0 the previous stage's target; push: texel size + blur direction.
+// Outputs: location 0 -> the pass's single RGBA16F attachment.
 
 layout(set = 0, binding = 0) uniform sampler2D uSrc;
 

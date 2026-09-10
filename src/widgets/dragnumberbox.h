@@ -25,9 +25,13 @@
 #ifndef DRAGNUMBERBOX_H
 #define DRAGNUMBERBOX_H
 
+#include "constants.h"
+
 #include <QColor>
 #include <QWidget>
 
+class QFocusEvent;
+class QHideEvent;
 class QLineEdit;
 
 namespace pose {
@@ -47,6 +51,9 @@ class DragNumberBox : public QWidget {
 public:
     explicit DragNumberBox(QWidget* parent = nullptr);
 
+    /// Sets [min, max] and re-clamps the current value into it — so this CAN emit valueChanged
+    /// (when the old value falls outside the new range). Set the range before wiring listeners
+    /// if that matters.
     void setRange(double min, double max);
     /// The value delta one "notch" of precision represents. Drag positions snap to it.
     void setSingleStep(double step);
@@ -71,7 +78,9 @@ signals:
     /// threshold or the type-in editor opens; editingFinished when that scrub releases or the
     /// editor closes (commit and cancel alike). Always a balanced pair around any user-driven
     /// change — snapshot state on started, commit one undo entry on finished. Programmatic
-    /// setValue() emits neither.
+    /// setValue() emits neither. The pair stays balanced even when the scrub's mouse release
+    /// never arrives (a popup, the menu bar or another window took the input mid-scrub — see
+    /// abandonScrub), so a listener's bracket depth can never stick open.
     void editingStarted();
     void editingFinished();
 
@@ -83,12 +92,16 @@ protected:
     void resizeEvent(QResizeEvent* event) override;
     void enterEvent(QEnterEvent* event) override;
     void leaveEvent(QEvent* event) override;
+    void hideEvent(QHideEvent* event) override;
+    void focusOutEvent(QFocusEvent* event) override;
+    bool event(QEvent* event) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
     void beginEdit();  // click (no drag): swap in the inline line editor
     void commitEdit(); // Enter / focus-out: parse, apply, restore the painted look
     void cancelEdit(); // Esc: discard the typed text
+    void abandonScrub(); // the release is lost: end the press/scrub as if it had arrived
     QString formattedValue() const;
 
     double m_min = 0.0;
@@ -109,11 +122,12 @@ private:
     QLineEdit* m_editor = nullptr; // created lazily on first edit
 
     // Painted-look properties (QSS-overridable); defaults match the app palette
-    // (see _environment.qss's palette comment).
+    // (see _environment.qss's palette comment). The inline editor's stylesheet is built from
+    // these too (beginEdit), so a re-theme covers both looks.
     QColor m_backgroundColor = QColor(0x2a, 0x2b, 0x2d);
     QColor m_fillColor = QColor(0x31, 0x4D, 0x7A); // the app's muted accent (menu-hover blue)
     QColor m_borderColor = QColor(0x4a, 0x4b, 0x4d);
-    QColor m_hoverBorderColor = QColor(0x5b, 0x87, 0xcc); // the app's bright accent — matches the HDRI dropdown's hover border
+    QColor m_hoverBorderColor = QColor(Constants::COLOR_ACCENT); // THE app accent — matches the HDRI dropdown's hover border
     QColor m_textColor = QColor(0xe0, 0xe0, 0xe0);
 };
 

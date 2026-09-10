@@ -151,12 +151,37 @@ add_executable(
     # --- Application Shell (menu bar, splash/About overlay, Fusion theming) ---
     src/shell/menumanager.cpp
     src/shell/menumanager.h
+    src/shell/splashoverlay.cpp
     src/shell/splashoverlay.h
+    src/shell/apptheme.cpp                # AppTheme::install: icon, Fusion proxy style, QSS modules, menu shadows
+    src/shell/apptheme.h
     src/shell/appproxystyle.h
 
     # --- Asset Manager ---
     src/assets/assetmanagerwidget.cpp
     src/assets/assetmanagerwidget.h
+    src/assets/assetmanagerwidget_menus.cpp # the same class, second TU: the tree/grid context menus
+    src/assets/assetnodeids.h             # node-id / grid-role vocabulary (header-only)
+    src/assets/assetfolderproxymodel.cpp  # tree proxy: folder hit icons + collection drag-reparent
+    src/assets/assetfolderproxymodel.h
+    src/assets/assettreeview.cpp          # the tree view: QSS separator colour, drop highlight, spring-loading
+    src/assets/assettreeview.h
+    src/assets/assettreedelegate.cpp      # tree row painting
+    src/assets/assettreedelegate.h
+    src/assets/assetgriddelegate.cpp      # thumbnail grid cell painting
+    src/assets/assetgriddelegate.h
+    src/assets/customtooltip.cpp          # the grid's floating rich-text tooltip
+    src/assets/customtooltip.h
+    src/assets/assetscan.cpp              # filesystem scanning: asset/thumbnail pairing, folder hit classification
+    src/assets/assetscan.h
+    src/assets/assetdb.cpp                # every Collections/Favorites SQL statement
+    src/assets/assetdb.h
+    src/assets/assetthumbnailloader.cpp   # off-thread thumbnail decode + the gradient canvas
+    src/assets/assetthumbnailloader.h
+    src/assets/assetgriddragcontroller.cpp # the hand-rolled grid drag (reorder / drop onto the tree)
+    src/assets/assetgriddragcontroller.h
+    src/assets/assetbreadcrumblabel.cpp   # the grid title: clickable breadcrumb / plain virtual title
+    src/assets/assetbreadcrumblabel.h
 
     # --- Shared custom widgets (app-standard controls, reusable across panels) ---
     src/widgets/dragnumberbox.cpp         # scrub field: drag to change, click to type
@@ -167,13 +192,27 @@ add_executable(
     # --- Properties panels (right-docker tabs) ---
     src/properties/environmentpanel.cpp
     src/properties/environmentpanel.h
+    src/properties/hdriselector.cpp      # the HDRI picker (button + thumbnail menu) the panel hosts
+    src/properties/hdriselector.h
 
     # --- 3D Viewport (Vulkan) ---
     # Qt-facing layer (the only viewport files that touch Qt):
     src/viewport/viewportwidget.cpp
     src/viewport/viewportwidget.h
-    src/viewport/vulkanwindow.cpp
+    src/viewport/viewportstrip.cpp        # the floating top-right control strip (pickers, buttons, badge)
+    src/viewport/viewportstrip.h
+    src/viewport/axisrotatebadge.cpp      # the strip's "rotating about X/Y/Z" badge
+    src/viewport/axisrotatebadge.h
+    src/viewport/vulkanwindow.cpp         # VulkanWindow lifecycle (one class, seven TUs - see vulkanwindow.h)
     src/viewport/vulkanwindow.h
+    src/viewport/vulkanwindow_environment.cpp # the HDRI: default path, off-thread IBL bake, lighting dials
+    src/viewport/vulkanwindow_input.cpp   # mouse/wheel/key routing + the object context menu
+    src/viewport/vulkanwindow_camera.cpp  # named views, Blender-convention view hotkeys
+    src/viewport/vulkanwindow_ik.cpp      # the FBIK drag loop, ground fall, X/Y/Z wheel hold
+    src/viewport/vulkanwindow_pose.cpp    # pose utilities, pins, pose files, delete, undo/redo
+    src/viewport/vulkanwindow_bench.cpp   # POSESTUDIO_IK_PERF / _BENCH diagnostics
+    src/viewport/ikdiagnostics.h          # the diagnostics state (null unless enabled)
+    src/viewport/viewpreset.h             # the named camera views (strip <-> window vocabulary)
     src/viewport/modelimportservice.cpp   # orchestrates parse -> texture decode -> GPU upload
     src/viewport/modelimportservice.h
     src/viewport/figureimportservice.cpp  # figure analogue: figure -> ModelData -> decode -> upload
@@ -188,11 +227,21 @@ add_executable(
     src/viewport/import/tangentgen.h
     src/viewport/stb_impl.cpp             # single TU that compiles stb_image's implementation
     src/viewport/tinyexr_impl.cpp         # single TU that compiles tinyexr's implementation
+    # Layer-free utilities (pure std) shared by rendering/, scene/, import/ and the services:
+    src/viewport/util/parallelfor.h       # index-parallel loop for CPU bakes (IBL prefilter, corrective subdivision)
     # Rendering core (pure Vulkan + std + GLM, no Qt):
     src/viewport/rendering/vulkancommon.h
     src/viewport/rendering/vulkanhandles.h  # move-only RAII owners for raw device handles
     src/viewport/rendering/descriptorutil.h # one-call descriptor layout/pool/set/write helpers
-    src/viewport/rendering/parallelfor.h  # index-parallel loop for CPU bakes (IBL prefilter, corrective subdivision)
+    src/viewport/rendering/attachmentimage.cpp # RAII 2D attachment image + view, layout-barrier helpers
+    src/viewport/rendering/attachmentimage.h
+    src/viewport/rendering/renderpassbuilder.cpp # single-subpass render-pass builder + the sync contracts
+    src/viewport/rendering/renderpassbuilder.h
+    src/viewport/rendering/samplercache.cpp # shared device-lifetime samplers keyed by parameters
+    src/viewport/rendering/samplercache.h
+    src/viewport/rendering/shaderlibrary.cpp # SPIR-V loading by name + the one in-code shader list
+    src/viewport/rendering/shaderlibrary.h
+    src/viewport/rendering/ibldata.h        # the CPU-baked IBL products the GPU layer uploads
     src/viewport/rendering/vulkancontext.cpp
     src/viewport/rendering/vulkancontext.h
     src/viewport/rendering/vulkanswapchain.cpp
@@ -233,6 +282,8 @@ add_executable(
     src/viewport/import/figure/uriresolver.cpp
     src/viewport/import/figure/uriresolver.h
     src/viewport/import/figure/figuredata.h
+    src/viewport/import/figure/figureutils.cpp     # shared JSON/URI/path helpers of the figure parsers
+    src/viewport/import/figure/figureutils.h
     src/viewport/import/figure/geometryparser.cpp
     src/viewport/import/figure/geometryparser.h
     src/viewport/import/figure/uvparser.cpp
@@ -251,22 +302,57 @@ add_executable(
     src/viewport/import/figure/correctiveparser.h
     src/viewport/import/figure/subdivision.cpp
     src/viewport/import/figure/subdivision.h
+    src/viewport/import/figure/correctivescan.cpp  # on-disk discovery of pose correctives
+    src/viewport/import/figure/correctivescan.h
+    src/viewport/import/figure/bonefixups.cpp      # morph-driven joint centres + legacy twist lock
+    src/viewport/import/figure/bonefixups.h
+    src/viewport/import/figure/scenematerials.cpp  # applies a preset's materials (both forms) onto zones
+    src/viewport/import/figure/scenematerials.h
+    src/viewport/import/figure/followeraddons.cpp  # post-load follower addons: find / fit / merge
+    src/viewport/import/figure/followeraddons.h
     src/viewport/import/figure/figureimporter.cpp
     src/viewport/import/figure/figureimporter.h
     # Scene:
+    src/viewport/scene/ray.h             # the world-space picking ray (camera + models share it)
     src/viewport/scene/camera.cpp
     src/viewport/scene/camera.h
+    src/viewport/scene/cameraubo.cpp     # the set-0 camera/lighting UBO block + its per-frame fill
+    src/viewport/scene/cameraubo.h
     src/viewport/scene/environment.cpp   # procedural studio env + IBL bakes (SH, prefilter, BRDF LUT)
     src/viewport/scene/environment.h
     src/viewport/scene/lightingsettings.h # live lighting dials shared with the Environment panel
     src/viewport/scene/grid.cpp
     src/viewport/scene/grid.h
-    src/viewport/scene/mesh.cpp
+    src/viewport/scene/textureuploadcache.cpp # per-model dedup of texture uploads (shared atlases)
+    src/viewport/scene/textureuploadcache.h
+    src/viewport/scene/mesh.cpp          # one material group: buffers, material set, draw
     src/viewport/scene/mesh.h
+    src/viewport/scene/correctiveset.cpp # a model's GPU-blended pose correctives (delta table + weights)
+    src/viewport/scene/correctiveset.h
+    src/viewport/scene/groundsampler.cpp # the ground button's posed lowest-point scan
+    src/viewport/scene/groundsampler.h
+    src/viewport/scene/model.cpp         # one imported model: meshes + armature + per-frame pose data
+    src/viewport/scene/model.h
+    src/viewport/scene/bonepicker.cpp    # screen-space joint / bone-body picking across figures
+    src/viewport/scene/bonepicker.h
+    src/viewport/scene/posefile.cpp      # the plain-text .pose file reader/writer
+    src/viewport/scene/posefile.h
     src/viewport/scene/armature.cpp   # the runtime skeleton + pose + FK + pins (Vulkan-free)
     src/viewport/scene/armature.h
-    src/viewport/scene/armatureik.cpp # the Armature's FBIK integration (drag/settle/extraction)
-    src/viewport/scene/scene.cpp
+    src/viewport/scene/armatureik.cpp # the Armature's FBIK integration: drag lifecycle + governors
+    src/viewport/scene/armatureik_detail.h # its governor constants (private to the armatureik*.cpp)
+    src/viewport/scene/armatureikextract.cpp # rotation extraction (solved positions -> Euler pose)
+    src/viewport/scene/armatureikpins.cpp # exact joint-space pin refinement + the floor lift
+    src/viewport/scene/shadowpass.cpp    # the key light's depth-only pass: map, pipeline, frustum fit
+    src/viewport/scene/shadowpass.h
+    src/viewport/scene/outlinepass.cpp   # the selection-outline mask pass
+    src/viewport/scene/outlinepass.h
+    src/viewport/scene/lineoverlay.cpp   # skeleton / pin markers / ortho floor line (one line draw)
+    src/viewport/scene/lineoverlay.h
+    src/viewport/scene/scenepipelines.cpp # the shared layouts, camera/IBL sets, fallbacks, mesh pipelines
+    src/viewport/scene/scenepipelines.h
+    src/viewport/scene/scene.cpp         # orchestration: construction, models, the record sequence
+    src/viewport/scene/sceneposing.cpp   # Scene's posing forwarders to the active figure
     src/viewport/scene/scene.h
     src/viewport/scene/shademode.h # the shader picker's mode table (names + how each mode draws)
 
@@ -281,8 +367,12 @@ add_executable(
     src/viewport/scene/ik/fabriksolver.h
     src/viewport/scene/ik/balancecontroller.cpp # CoM + support polygon + pelvis correction
     src/viewport/scene/ik/balancecontroller.h
-    src/viewport/scene/ik/ikrig.cpp           # per-figure orchestration (contacts -> solve -> balance)
+    src/viewport/scene/ik/ikrig.cpp           # per-figure orchestration: rig build + shared helpers
     src/viewport/scene/ik/ikrig.h
+    src/viewport/scene/ik/ikrig_constants.h   # the rig's tuning constants (private to the four ikrig*.cpp)
+    src/viewport/scene/ik/ikrigdrag.cpp       # beginDrag: contacts -> pins, user pins, stiffness, trunk chain
+    src/viewport/scene/ik/ikrigsolve.cpp      # solveDrag (intent policies + balance blend) and the release settle
+    src/viewport/scene/ik/ikrigstepping.cpp   # balance-driven foot re-planting
     src/viewport/scene/ik/cursorfilter.h      # the drag's adaptive cursor low-pass (shared with the harness)
 
     # --- Preferences ---
@@ -292,16 +382,10 @@ add_executable(
     src/preferences/preferencespanel.h
     src/preferences/generalpreferencespanel.cpp
     src/preferences/generalpreferencespanel.h
-    src/preferences/interfacepreferencespanel.cpp
-    src/preferences/interfacepreferencespanel.h
     src/preferences/assetspreferencespanel.cpp
     src/preferences/assetspreferencespanel.h
-    src/preferences/inputpreferencespanel.cpp
-    src/preferences/inputpreferencespanel.h
-    src/preferences/navigationpreferencespanel.cpp
-    src/preferences/navigationpreferencespanel.h
-    src/preferences/systempreferencespanel.cpp
-    src/preferences/systempreferencespanel.h
+    src/preferences/placeholderpreferencespanel.cpp # one class for every not-yet-built tab (Interface/Input/Navigation/System)
+    src/preferences/placeholderpreferencespanel.h
     src/preferences/factoryresetpreferencespanel.cpp
     src/preferences/factoryresetpreferencespanel.h
 
@@ -351,6 +435,7 @@ target_include_directories(PoseStudio PRIVATE
     src/properties
     src/preferences
     src/viewport
+    src/viewport/util
     src/viewport/rendering
     src/viewport/scene
     src/viewport/scene/ik
@@ -434,17 +519,31 @@ target_link_libraries(PoseStudio PRIVATE
 # vendor's rig and stays out of the repo) — pass it on the command line or in
 # POSESTUDIO_IK_SKELETON; without one those phases are skipped and the unit tests still run.
 add_executable(PoseStudioIkHarness
-    tools/ikharness/ikharness.cpp
+    tools/ikharness/ikharness.cpp   # argument parsing, --custom, main
+    tools/ikharness/report.cpp      # gates + phase printing
+    tools/ikharness/report.h
+    tools/ikharness/simulator.cpp   # the drag-loop simulator over the real Armature
+    tools/ikharness/simulator.h
+    tools/ikharness/unitphases.cpp  # skeleton-free unit phases
+    tools/ikharness/unitphases.h
+    tools/ikharness/realphases.cpp  # the gated real-figure phases
+    tools/ikharness/realphases.h
     src/viewport/scene/armature.cpp
     src/viewport/scene/armatureik.cpp
+    src/viewport/scene/armatureikextract.cpp
+    src/viewport/scene/armatureikpins.cpp
     src/viewport/scene/ik/ikmath.cpp
     src/viewport/scene/ik/skeletongraph.cpp
     src/viewport/scene/ik/ikconstraints.cpp
     src/viewport/scene/ik/fabriksolver.cpp
     src/viewport/scene/ik/balancecontroller.cpp
     src/viewport/scene/ik/ikrig.cpp
+    src/viewport/scene/ik/ikrigdrag.cpp
+    src/viewport/scene/ik/ikrigsolve.cpp
+    src/viewport/scene/ik/ikrigstepping.cpp
 )
 target_include_directories(PoseStudioIkHarness PRIVATE
+    tools/ikharness
     src/viewport/scene
     src/viewport/scene/ik
     ${glm_SOURCE_DIR}
@@ -496,10 +595,25 @@ add_custom_command(
 # executable (same approach as Maquettes) where VulkanRenderer loads them at runtime
 # from <applicationDirPath>/shaders. Add new shaders to this list and they're picked up
 # automatically; editing a .vert/.frag re-triggers just that compile via the DEPENDS.
+#
+# Shared GLSL lives in shaders/include/*.glsl and is pulled in with #include (glslc's
+# GL_GOOGLE_include_directive, searched via -I). Every shader depends on every include file —
+# a coarse but robust rule (no DEPFILE needed) that guarantees an include edit recompiles
+# the shaders that use it. Add a new include file to SHADER_INCLUDES.
 set(SHADER_SOURCE_DIR "${CMAKE_SOURCE_DIR}/src/viewport/shaders")
+set(SHADER_INCLUDE_DIR "${SHADER_SOURCE_DIR}/include")
 set(SHADER_BINARY_DIR "${CMAKE_BINARY_DIR}/shaders")
 file(MAKE_DIRECTORY "${SHADER_BINARY_DIR}")
 
+set(SHADER_INCLUDES
+    "${SHADER_INCLUDE_DIR}/camera_ubo.glsl"   # the set-0 camera/lighting UBO + rotateY
+    "${SHADER_INCLUDE_DIR}/skinning.glsl"     # joint buffer + dual-quaternion skinning blend
+    "${SHADER_INCLUDE_DIR}/correctives.glsl"  # pose-corrective buffers + per-vertex blend
+    "${SHADER_INCLUDE_DIR}/colour.glsl"       # ACES tonemap + the selection accent colour
+    "${SHADER_INCLUDE_DIR}/fullscreen.glsl"   # the fullscreen triangle
+)
+
+# The shader list mirrors kShaderNames in src/viewport/rendering/shaderlibrary.h — keep both in step.
 set(SHADER_SOURCES
     grid.vert
     grid.frag
@@ -524,8 +638,8 @@ foreach(shader ${SHADER_SOURCES})
     set(spv "${SHADER_BINARY_DIR}/${shader}.spv")
     add_custom_command(
         OUTPUT "${spv}"
-        COMMAND ${Vulkan_GLSLC_EXECUTABLE} "${SHADER_SOURCE_DIR}/${shader}" -o "${spv}"
-        DEPENDS "${SHADER_SOURCE_DIR}/${shader}"
+        COMMAND ${Vulkan_GLSLC_EXECUTABLE} -I "${SHADER_INCLUDE_DIR}" "${SHADER_SOURCE_DIR}/${shader}" -o "${spv}"
+        DEPENDS "${SHADER_SOURCE_DIR}/${shader}" ${SHADER_INCLUDES}
         COMMENT "Compiling shader ${shader} -> ${shader}.spv"
         VERBATIM
     )

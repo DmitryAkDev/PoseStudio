@@ -1,141 +1,57 @@
 /**
  * @file mesh.cpp
- * @brief Implementation of Mesh and Model. See mesh.h.
+ * @brief Mesh upload, material set, and draw. See mesh.h.
  */
 
 #include "mesh.h"
 
-#include "camera.h" // Ray
+#include "descriptorutil.h"
 #include "modeldata.h"
+#include "textureuploadcache.h"
 #include "vertex.h"
 #include "vulkancommands.h"
-#include "vulkancommon.h"
 #include "vulkancontext.h"
+#include "vulkanimage.h"
 
-#include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtc/quaternion.hpp>
-
-#include <string>
-
-#include <array>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
-#include <cstdlib>
-#include <cstdio>
-#include <cstring>
-#include <limits>
-#include <unordered_map>
-#include <unordered_set>
-#include <vector>
 
 namespace pose {
-
-namespace {
-
-// Evaluates a corrective driver spline at @p x: a Catmull-Rom Hermite through the (ascending-in-x)
-// knots, clamped flat outside the knot range and — within each segment — clamped to that segment's
-// endpoint values so the smoothing can never overshoot into a wrong-signed correction.
-float evalSpline(const std::vector<CorrectiveKnot>& knots, float x) {
-    if (knots.empty()) {
-        return 0.0f;
-    }
-    if (knots.size() == 1 || x <= knots.front().x) {
-        return knots.front().y;
-    }
-    if (x >= knots.back().x) {
-        return knots.back().y;
-    }
-    std::size_t i = 0;
-    while (i + 1 < knots.size() && x > knots[i + 1].x) {
-        ++i;
-    }
-    const CorrectiveKnot& p1 = knots[i];
-    const CorrectiveKnot& p2 = knots[i + 1];
-    const float h = p2.x - p1.x;
-    if (h <= 1e-6f) {
-        return p1.y;
-    }
-    const float u = (x - p1.x) / h;
-    const float y0 = (i > 0) ? knots[i - 1].y : p1.y;                    // one-sided at the ends
-    const float y3 = (i + 2 < knots.size()) ? knots[i + 2].y : p2.y;
-    const float m1 = 0.5f * (p2.y - y0);
-    const float m2 = 0.5f * (y3 - p1.y);
-    const float u2 = u * u;
-    const float u3 = u2 * u;
-    const float h00 = 2.0f * u3 - 3.0f * u2 + 1.0f;
-    const float h10 = u3 - 2.0f * u2 + u;
-    const float h01 = -2.0f * u3 + 3.0f * u2;
-    const float h11 = u3 - u2;
-    const float y = h00 * p1.y + h10 * m1 + h01 * p2.y + h11 * m2;
-    return std::clamp(y, std::min(p1.y, p2.y), std::max(p1.y, p2.y));
-}
-
-} // namespace
-
-/// Per-model dedup of texture uploads: one VulkanTexture per unique DecodedImage (+ colour space —
-/// the same image could in principle feed both an sRGB and a LINEAR slot, which need distinct
-/// VkImages). Lives only for the duration of the Model constructor; the meshes keep the textures
-/// alive through their shared_ptrs afterwards.
-struct TextureUploadCache {
-    std::unordered_map<const DecodedImage*, std::shared_ptr<VulkanTexture>> srgb;
-    std::unordered_map<const DecodedImage*, std::shared_ptr<VulkanTexture>> linear;
-};
-
-namespace {
-
-// Returns the (shared) texture for @p image, uploading it into @p batch only on first use. Null
-// image => null (the caller binds the appropriate 1x1 fallback).
-std::shared_ptr<VulkanTexture> uploadShared(VulkanContext& context, TextureUploadCache& cache,
-                                            const DecodedImagePtr& image, bool srgbFormat,
-                                            ImmediateBatch& batch) {
-    if (!image || image->width == 0 || image->height == 0 || image->pixels.empty()) {
-        return nullptr;
-    }
-    auto& map = srgbFormat ? cache.srgb : cache.linear;
-    const auto it = map.find(image.get());
-    if (it != map.end()) {
-        return it->second;
-    }
-    auto texture = std::make_shared<VulkanTexture>(context, image->pixels.data(), image->width,
-                                                   image->height, batch, srgbFormat);
-    map.emplace(image.get(), texture);
-    return texture;
-}
-
-/// A host-mapped, zero-filled storage buffer of @p bytes: the per-frame corrective weight
-/// buffers (rewritten in place), and the placeholder bound where a model has no correctives.
-VulkanBuffer makeZeroedHostStorageBuffer(VulkanContext& context, VkDeviceSize bytes) {
-    VulkanBuffer buffer(context, bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO,
-                        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                            VMA_ALLOCATION_CREATE_MAPPED_BIT);
-    if (buffer.mappedData() != nullptr) {
-        std::memset(buffer.mappedData(), 0, static_cast<std::size_t>(bytes));
-    }
-    return buffer;
-}
-
-} // namespace
 
 Mesh::Mesh(VulkanContext& context, const MeshData& data, VkDescriptorSetLayout materialSetLayout,
            VkDescriptorPool materialPool, const VulkanTexture& fallbackDiffuse,
            const VulkanTexture& fallbackNormal, TextureUploadCache& uploads, ImmediateBatch& batch,
            const std::vector<uint32_t>* correctiveRanges)
-    : m_indexCount(static_cast<uint32_t>(data.indices.size())), m_baseColor(data.baseColor),
-      m_roughness(data.roughness), m_specularWeight(data.specularWeight),
-      m_metalness(data.metalness), m_lobe1Roughness(data.lobe1Roughness),
-      m_lobe2Roughness(data.lobe2Roughness), m_lobeRatio(data.lobeRatio),
-      m_topCoatWeight(data.topCoatWeight), m_topCoatRoughness(data.topCoatRoughness),
-      m_translucencyWeight(data.translucencyWeight), m_detailWeight(data.detailWeight),
-      m_detailTiles(data.detailTiles), m_opacity(data.opacity),
+    : m_indexCount(static_cast<uint32_t>(data.indices.size())), m_opacity(data.opacity),
       m_hasOpacityMask(data.hasOpacityMask) {
-    // Bind-pose centroid: the transparent pass's back-to-front sort key.
+    // Bind-pose centroid (the transparent pass's back-to-front sort key) and the joint carrying
+    // most of the mesh's skin weight (which carries that centroid through the pose). An unskinned
+    // mesh's vertices all weight joint 0 fully, so it lands on the identity joint.
     if (!data.vertices.empty()) {
+        constexpr uint32_t kMaxJointIndex = 4096; // sanity bound on a corrupt index
         glm::vec3 sum(0.0f);
+        std::vector<float> jointWeight; // summed skin weight per joint index
         for (const Vertex& v : data.vertices) {
             sum += v.pos;
+            for (int k = 0; k < 4; ++k) {
+                const uint32_t joint = v.joints[k];
+                const float weight = v.weights[k];
+                if (weight <= 0.0f || joint >= kMaxJointIndex) {
+                    continue;
+                }
+                if (joint >= jointWeight.size()) {
+                    jointWeight.resize(static_cast<std::size_t>(joint) + 1, 0.0f);
+                }
+                jointWeight[joint] += weight;
+            }
         }
         m_centroid = sum / static_cast<float>(data.vertices.size());
+        if (!jointWeight.empty()) {
+            m_dominantJoint = static_cast<uint32_t>(
+                std::max_element(jointWeight.begin(), jointWeight.end()) - jointWeight.begin());
+        }
     }
 
     const VkDeviceSize vertexBytes = sizeof(Vertex) * data.vertices.size();
@@ -144,7 +60,8 @@ Mesh::Mesh(VulkanContext& context, const MeshData& data, VkDescriptorSetLayout m
     // some pose corrective touches uploads a COPY of its vertices with the Model's per-vertex
     // corrective ranges stamped in (Vertex::correctiveRange) — the importer's data stays
     // pristine (the ground samples and bounds read it after this), and the batch copies the
-    // temporary into its staging buffer before returning.
+    // temporary into its staging buffer before returning. (A one-time whole-array copy per
+    // touched mesh at import; not worth avoiding.)
     if (correctiveRanges != nullptr && correctiveRanges->size() == data.vertices.size()) {
         std::vector<Vertex> stamped = data.vertices;
         for (std::size_t i = 0; i < stamped.size(); ++i) {
@@ -165,10 +82,8 @@ Mesh::Mesh(VulkanContext& context, const MeshData& data, VkDescriptorSetLayout m
     // The detail (normal/bump) map — a LINEAR texture — and its mode. With no map we bind the
     // flat-normal fallback and force mode 0 (no perturbation).
     m_normalTexture = uploadShared(context, uploads, data.normalImage, /*srgb=*/false, batch);
-    if (m_normalTexture) {
-        m_normalMode = data.normalMode;
-        m_normalStrength = data.normalStrength;
-    }
+    const int   normalMode = m_normalTexture ? data.normalMode : 0;       // 0 none / 1 normal / 2 bump
+    const float normalStrength = m_normalTexture ? data.normalStrength : 1.0f; // authored strength
     // Specular parameter maps (linear ×-multiplier data; see modeldata.h). Absent => the shared
     // white fallback, so the shader's per-texel multiplies are no-ops for scalar-only materials.
     m_roughnessTexture = uploadShared(context, uploads, data.roughnessImage, /*srgb=*/false, batch);
@@ -180,6 +95,31 @@ Mesh::Mesh(VulkanContext& context, const MeshData& data, VkDescriptorSetLayout m
     // Micro-detail (pore) normal map — linear, tiled (the sampler wraps).
     m_microNormalTexture =
         uploadShared(context, uploads, data.detailNormalImage, /*srgb=*/false, batch);
+
+    // The push block's per-mesh constants, baked once (record() patches the model matrix and the
+    // draw-kind/highlight field per draw).
+    m_pushTemplate.baseColor = glm::vec4(data.baseColor, data.opacity);
+    // z = metalness ("Metallic Weight" — scalar only, no map yet); w = the per-material specular
+    // (F0) weight the material parser derived from the active specular lobe's reflectivity
+    // (1 = standard 4% dielectric; skin ~0.5 → ~2%; OBJ meshes default to 1).
+    // material.y packs the detail mode + its authored strength (floor = mode, fract×8 = strength;
+    // the push block is at the 128-byte limit, so the pair shares one float).
+    const float modePacked =
+        static_cast<float>(normalMode) +
+        std::clamp(normalStrength, 0.0f, 7.9f) * 0.125f * (normalMode > 0 ? 1.0f : 0.0f);
+    m_pushTemplate.material = glm::vec4(data.roughness, modePacked, data.metalness,
+                                        data.specularWeight);
+    m_pushTemplate.material2 = glm::vec4(data.lobe1Roughness, data.lobe2Roughness, data.lobeRatio,
+                                         data.translucencyWeight);
+    // material3.w packs the micro-detail layer (the block sits at the 128-byte push limit):
+    // integer part = UV tiling, fraction = weight; 0 = no detail layer. material3.z is the
+    // per-draw field.
+    const float detailPacked =
+        (m_microNormalTexture && data.detailTiles >= 1.0f && data.detailWeight > 0.0f)
+            ? std::floor(data.detailTiles) + std::min(data.detailWeight, 0.99f)
+            : 0.0f;
+    m_pushTemplate.material3 = glm::vec4(data.topCoatWeight, data.topCoatRoughness, 0.0f,
+                                         detailPacked);
 
     const VulkanTexture& diffuse = m_texture ? *m_texture : fallbackDiffuse;
     const VulkanTexture& detail = m_normalTexture ? *m_normalTexture : fallbackNormal;
@@ -193,78 +133,32 @@ Mesh::Mesh(VulkanContext& context, const MeshData& data, VkDescriptorSetLayout m
     // Allocate this mesh's set-1 descriptor from the owning Model's pool: binding 0 = diffuse,
     // binding 1 = detail map, binding 2 = roughness map, binding 3 = spec-mask map,
     // binding 4 = translucency map, binding 5 = micro-detail (pore) normal map.
-    VkDescriptorSetAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = materialPool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &materialSetLayout;
-    VK_CHECK(vkAllocateDescriptorSets(context.device(), &allocInfo, &m_materialSet));
-
-    std::array<VkDescriptorImageInfo, 6> imageInfos{};
-    imageInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    imageInfos[0].imageView = diffuse.imageView();
-    imageInfos[0].sampler = diffuse.sampler();
-    imageInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    imageInfos[1].imageView = detail.imageView();
-    imageInfos[1].sampler = detail.sampler();
-    imageInfos[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    imageInfos[2].imageView = roughMap.imageView();
-    imageInfos[2].sampler = roughMap.sampler();
-    imageInfos[3].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    imageInfos[3].imageView = specMask.imageView();
-    imageInfos[3].sampler = specMask.sampler();
-    imageInfos[4].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    imageInfos[4].imageView = transMap.imageView();
-    imageInfos[4].sampler = transMap.sampler();
-    imageInfos[5].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    imageInfos[5].imageView = microNormal.imageView();
-    imageInfos[5].sampler = microNormal.sampler();
-
-    std::array<VkWriteDescriptorSet, 6> writes{};
-    for (uint32_t i = 0; i < writes.size(); ++i) {
-        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[i].dstSet = m_materialSet;
-        writes[i].dstBinding = i;
-        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[i].descriptorCount = 1;
-        writes[i].pImageInfo = &imageInfos[i];
-    }
-    vkUpdateDescriptorSets(context.device(), static_cast<uint32_t>(writes.size()), writes.data(), 0,
-                           nullptr);
+    m_materialSet = allocateDescriptorSet(context.device(), materialPool, materialSetLayout);
+    const std::array<VkDescriptorImageInfo, 6> imageInfos = {
+        sampledImageInfo(diffuse.imageView(), diffuse.sampler()),
+        sampledImageInfo(detail.imageView(), detail.sampler()),
+        sampledImageInfo(roughMap.imageView(), roughMap.sampler()),
+        sampledImageInfo(specMask.imageView(), specMask.sampler()),
+        sampledImageInfo(transMap.imageView(), transMap.sampler()),
+        sampledImageInfo(microNormal.imageView(), microNormal.sampler()),
+    };
+    writeCombinedImageSamplers(context.device(), m_materialSet, 0, imageInfos.data(),
+                               static_cast<uint32_t>(imageInfos.size()));
 }
 
 void Mesh::record(VkCommandBuffer cmd, VkPipelineLayout layout, const glm::mat4& model,
                   MeshDrawKind kind, int highlightJoint, int highlightTwin) const {
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 1, 1, &m_materialSet, 0,
-                            nullptr); // set 1 = this mesh's diffuse texture
+                            nullptr); // set 1 = this mesh's textures
 
-    MeshPushConstants push{};
+    MeshPushConstants push = m_pushTemplate;
     push.model = model;
-    push.baseColor = glm::vec4(m_baseColor, m_opacity);
-    // z = metalness ("Metallic Weight" — scalar only, no map yet); w = the per-material specular
-    // (F0) weight the material parser derived from the active specular lobe's reflectivity
-    // (1 = standard 4% dielectric; skin ~0.5 → ~2%; OBJ meshes default to 1).
-    // material.y packs the detail mode + its authored strength (floor = mode, fract×8 = strength;
-    // the push block is at the 128-byte limit, so the pair shares one float).
-    const float modePacked =
-        static_cast<float>(m_normalMode) +
-        std::clamp(m_normalStrength, 0.0f, 7.9f) * 0.125f * (m_normalMode > 0 ? 1.0f : 0.0f);
-    push.material = glm::vec4(m_roughness, modePacked, m_metalness, m_specularWeight);
-    push.material2 = glm::vec4(m_lobe1Roughness, m_lobe2Roughness, m_lobeRatio,
-                               m_translucencyWeight);
-    // material3.w packs the micro-detail layer (the block sits at the 128-byte push limit):
-    // integer part = UV tiling, fraction = weight; 0 = no detail layer.
-    const float detailPacked =
-        (m_microNormalTexture && m_detailTiles >= 1.0f && m_detailWeight > 0.0f)
-            ? std::floor(m_detailTiles) + std::min(m_detailWeight, 0.99f)
-            : 0.0f;
     // material3.z packs the draw kind with the selected joint + its highlight twin (see the
     // declaration): kind + 8·(joint+1) + 8192·(twin+1), every field a small exact integer.
     const int packedKind = static_cast<int>(kind) +
                            8 * (std::clamp(highlightJoint, -1, 1022) + 1) +
                            8192 * (std::clamp(highlightTwin, -1, 1022) + 1);
-    push.material3 = glm::vec4(m_topCoatWeight, m_topCoatRoughness,
-                               static_cast<float>(packedKind), detailPacked);
+    push.material3.z = static_cast<float>(packedKind);
     vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                        sizeof(push), &push);
 
@@ -281,814 +175,6 @@ void Mesh::recordDepth(VkCommandBuffer cmd) const {
     vkCmdBindVertexBuffers(cmd, 0, 1, &vertexBuffer, &offset);
     vkCmdBindIndexBuffer(cmd, m_indexBuffer.handle(), 0, VK_INDEX_TYPE_UINT32);
     vkCmdDrawIndexed(cmd, m_indexCount, 1, 0, 0, 0);
-}
-
-Model::Model(VulkanContext& context, const ModelData& data, VkDescriptorSetLayout materialSetLayout,
-             VkDescriptorSetLayout jointSetLayout, const VulkanTexture& fallbackDiffuse,
-             const VulkanTexture& fallbackNormal)
-    : m_context(context) {
-    uint32_t meshCount = 0;
-    for (const MeshData& meshData : data.meshes) {
-        if (!meshData.indices.empty()) {
-            ++meshCount;
-        }
-    }
-    if (meshCount == 0) {
-        return; // nothing to draw; no pool/sets needed
-    }
-
-    // Compute a local-space AABB over every (non-empty) mesh's vertices for mouse picking.
-    glm::vec3 lo(std::numeric_limits<float>::max());
-    glm::vec3 hi(std::numeric_limits<float>::lowest());
-    for (const MeshData& meshData : data.meshes) {
-        if (meshData.indices.empty()) {
-            continue;
-        }
-        for (const Vertex& vertex : meshData.vertices) {
-            lo = glm::min(lo, vertex.pos);
-            hi = glm::max(hi, vertex.pos);
-        }
-    }
-    if (lo.x <= hi.x) { // at least one vertex seen
-        m_boundsMin = lo;
-        m_boundsMax = hi;
-        m_hasBounds = true;
-    }
-
-    // Descriptors from this model's pool: one set-1 per mesh (six samplers each: diffuse, detail,
-    // roughness map, spec mask, translucency map, micro-detail normal) + one set-2 joint set for
-    // the whole model.
-    std::array<VkDescriptorPoolSize, 2> poolSizes{};
-    poolSizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[0].descriptorCount = meshCount * 6;
-    poolSizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSizes[1].descriptorCount = kMaxFramesInFlight * 3; // per frame slot: joints + corrective weights + deltas
-
-    VkDescriptorPoolCreateInfo poolInfo{};
-    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
-    poolInfo.pPoolSizes = poolSizes.data();
-    poolInfo.maxSets = meshCount + kMaxFramesInFlight;
-    VK_CHECK(vkCreateDescriptorPool(m_context.device(), &poolInfo, nullptr, &m_materialPool));
-
-    // One upload batch for the whole model: every mesh's vertex/index buffers and texture record
-    // into it, and it's submitted exactly once below — collapsing what used to be ~3 blocking
-    // submits per mesh (the dominant cost of importing a model with many material groups) into a
-    // single GPU round-trip. Trade-off: all staging buffers are held until that submit completes,
-    // so peak staging memory is the sum across meshes rather than one-at-a-time.
-    const bool hasCorrectives = !data.correctives.empty();
-    ImmediateBatch batch(m_context);
-    // Meshes sharing a DecodedImage (zones sampling the same atlas file) share one VulkanTexture
-    // through this cache — one staging upload + mip chain per unique image instead of per mesh.
-    TextureUploadCache uploads;
-    m_meshes.reserve(meshCount);
-    // Pose correctives resolve BEFORE the meshes upload: each touched vertex's packed range into
-    // the GPU delta table rides in its vertex data (see Mesh's correctiveRanges parameter).
-    std::vector<std::vector<uint32_t>> perMeshRanges; // parallel to m_meshes; empty = untouched mesh
-    std::vector<CorrectiveEntry>       correctiveEntries;
-    if (hasCorrectives) {
-        buildRuntimeCorrectives(data, perMeshRanges, correctiveEntries);
-    }
-    const bool skinned = !data.bones.empty();
-    if (skinned) {
-        // Reserve the ground-sample store ONCE, summed across meshes. An exact-fit reserve inside
-        // the per-mesh loop would reallocate-and-copy the whole vector every iteration (exact-fit
-        // defeats geometric growth), turning a figure's ~10 MB of samples into O(zones × total)
-        // redundant copying.
-        std::size_t totalVerts = 0;
-        for (const MeshData& meshData : data.meshes) {
-            if (!meshData.indices.empty()) {
-                totalVerts += meshData.vertices.size();
-            }
-        }
-        m_groundSamples.reserve(totalVerts);
-    }
-    for (const MeshData& meshData : data.meshes) {
-        if (meshData.indices.empty()) {
-            continue;
-        }
-        const std::size_t mi = m_meshes.size();
-        const std::vector<uint32_t>* ranges =
-            (mi < perMeshRanges.size() && !perMeshRanges[mi].empty()) ? &perMeshRanges[mi] : nullptr;
-        m_meshes.emplace_back(m_context, meshData, materialSetLayout, m_materialPool, fallbackDiffuse,
-                              fallbackNormal, uploads, batch, ranges);
-        if (skinned) {
-            // Ground samples: the skinning inputs dropToGround() needs to find the posed lowest
-            // point (the GPU buffers are device-local and unreadable).
-            for (const Vertex& v : meshData.vertices) {
-                m_groundSamples.push_back({v.pos, v.joints, v.weights});
-            }
-        }
-    }
-    // The corrective delta table: one static device-local buffer for the whole model (the vertex
-    // shaders index it through each vertex's range), riding the same upload batch; a 16-byte zero
-    // placeholder keeps set 2 complete for a model without correctives.
-    if (!correctiveEntries.empty()) {
-        m_correctiveDeltaBuffer = createDeviceLocalBuffer(
-            m_context, correctiveEntries.data(), sizeof(CorrectiveEntry) * correctiveEntries.size(),
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, batch);
-    } else {
-        m_correctiveDeltaBuffer = makeZeroedHostStorageBuffer(m_context, sizeof(CorrectiveEntry));
-    }
-    batch.submitAndWait();
-
-    // The armature — the runtime skeleton + pose (see armature.h) — built from the model's bones
-    // (empty for a static model: one identity joint). Bind transforms are translation-only, so
-    // each bone's local rest offset is the difference of the global rest positions.
-    std::vector<ArmatureBone> armatureBones(data.bones.size());
-    for (std::size_t i = 0; i < data.bones.size(); ++i) {
-        const ModelBone& src = data.bones[i];
-        ArmatureBone& dst = armatureBones[i];
-        dst.name = src.name;
-        dst.parent = src.parent;
-        const glm::vec3 parentGlobal =
-            (src.parent >= 0 && src.parent < static_cast<int>(data.bones.size()))
-                ? glm::vec3(data.bones[static_cast<std::size_t>(src.parent)].bindGlobal[3])
-                : glm::vec3(0.0f);
-        dst.localBindTranslation = glm::vec3(src.bindGlobal[3]) - parentGlobal;
-        dst.orientation = src.orientation;
-        dst.rotationOrder = src.rotationOrder;
-        dst.rotationMin = src.rotationMin;
-        dst.rotationMax = src.rotationMax;
-        dst.rotationLimited = src.rotationLimited;
-    }
-    m_armature.build(armatureBones);
-    // Debug hook: POSESTUDIO_DUMP_SKELETON=<path> dumps the imported skeleton (one bone per
-    // line) so the IK harness (tools/ikharness/) can run its drag-loop tests against REAL figure
-    // rigs instead of synthetic approximations. No-op unless the environment variable is set.
-    if (const char* dumpPath = std::getenv("POSESTUDIO_DUMP_SKELETON");
-        dumpPath != nullptr && m_armature.hasSkeleton()) {
-        m_armature.dump(dumpPath);
-    }
-    m_jointCount = m_armature.jointCount();
-
-    // Host-mapped storage buffers of skinning DUAL QUATERNIONS (2 vec4 per joint — see
-    // Armature::skinDualQuats) — ONE PER FRAME IN FLIGHT (a single shared buffer raced the GPU
-    // and tore skinned frames). Each frame slot gets its own buffer + set-2 descriptor;
-    // uploadJointsIfDirty() fills the current slot's buffer at record time, when that slot's
-    // fence guarantees the GPU is done with it.
-    std::array<VkDescriptorSetLayout, kMaxFramesInFlight> jointLayouts;
-    jointLayouts.fill(jointSetLayout);
-    VkDescriptorSetAllocateInfo jointAlloc{};
-    jointAlloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    jointAlloc.descriptorPool = m_materialPool;
-    jointAlloc.descriptorSetCount = kMaxFramesInFlight;
-    jointAlloc.pSetLayouts = jointLayouts.data();
-    VK_CHECK(vkAllocateDescriptorSets(m_context.device(), &jointAlloc, m_jointSets.data()));
-
-    // The corrective weight buffers ride the same per-slot scheme: one float per corrective
-    // (16-byte minimum, zero-filled — a fresh model renders uncorrected until its first
-    // evaluation at record time), host-mapped and rewritten in place by
-    // uploadCorrectiveWeightsIfDirty.
-    const VkDeviceSize weightBytes =
-        std::max<VkDeviceSize>(16, sizeof(float) * m_correctives.size());
-    for (int f = 0; f < kMaxFramesInFlight; ++f) {
-        const auto slot = static_cast<std::size_t>(f);
-        m_jointBuffers[slot] =
-            VulkanBuffer(m_context, m_jointCount * 2 * sizeof(glm::vec4),
-                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO,
-                         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                             VMA_ALLOCATION_CREATE_MAPPED_BIT);
-        m_correctiveWeightBuffers[slot] = makeZeroedHostStorageBuffer(m_context, weightBytes);
-
-        // Set 2 for this slot: 0 = joints, 1 = corrective weights, 2 = the shared delta table.
-        std::array<VkDescriptorBufferInfo, 3> infos{};
-        infos[0].buffer = m_jointBuffers[slot].handle();
-        infos[0].offset = 0;
-        infos[0].range = m_jointCount * 2 * sizeof(glm::vec4);
-        infos[1].buffer = m_correctiveWeightBuffers[slot].handle();
-        infos[1].offset = 0;
-        infos[1].range = VK_WHOLE_SIZE;
-        infos[2].buffer = m_correctiveDeltaBuffer.handle();
-        infos[2].offset = 0;
-        infos[2].range = VK_WHOLE_SIZE;
-
-        std::array<VkWriteDescriptorSet, 3> writes{};
-        for (uint32_t b = 0; b < writes.size(); ++b) {
-            writes[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[b].dstSet = m_jointSets[slot];
-            writes[b].dstBinding = b;
-            writes[b].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            writes[b].descriptorCount = 1;
-            writes[b].pBufferInfo = &infos[b];
-        }
-        vkUpdateDescriptorSets(m_context.device(), static_cast<uint32_t>(writes.size()),
-                               writes.data(), 0, nullptr);
-    }
-}
-
-void Model::uploadJointsIfDirty(uint32_t frameIndex) {
-    uploadCorrectiveWeightsIfDirty(frameIndex); // the pose's other per-frame data (no-op without JCMs)
-    const std::vector<glm::vec4>& quats = m_armature.skinDualQuats();
-    if (quats.empty() || frameIndex >= static_cast<uint32_t>(kMaxFramesInFlight) ||
-        m_jointUploaded[frameIndex] == m_armature.skinVersion()) {
-        return;
-    }
-    auto* dst = static_cast<glm::vec4*>(m_jointBuffers[frameIndex].mappedData());
-    if (dst == nullptr) {
-        return;
-    }
-    const std::size_t bytes =
-        std::min(quats.size(), std::size_t{2} * m_jointCount) * sizeof(glm::vec4);
-    std::memcpy(dst, quats.data(), bytes);
-    m_jointUploaded[frameIndex] = m_armature.skinVersion();
-}
-
-void Model::setBoneRotation(const std::string& boneName, const glm::vec3& eulerDegrees) {
-    if (m_armature.setBoneRotation(boneName, eulerDegrees)) {
-        refreshCorrectives();
-    }
-}
-
-void Model::applyPose(const std::vector<std::pair<std::string, glm::vec3>>& pose) {
-    m_armature.applyPose(pose);
-    refreshCorrectives(); // re-morph for the restored pose
-}
-
-void Model::buildRuntimeCorrectives(const ModelData& data,
-                                    std::vector<std::vector<uint32_t>>& perMeshRanges,
-                                    std::vector<CorrectiveEntry>& entries) {
-    // Bone names -> indices, resolved once (the armature is built from data.bones in this same
-    // order, so these ARE the runtime bone indices the pose is read by).
-    std::unordered_map<std::string, int> boneOf;
-    boneOf.reserve(data.bones.size());
-    for (std::size_t i = 0; i < data.bones.size(); ++i) {
-        boneOf.emplace(data.bones[i].name, static_cast<int>(i));
-    }
-
-    // The non-empty meshes, in the order the constructor builds them (= m_meshes order).
-    std::vector<const MeshData*> meshes;
-    meshes.reserve(data.meshes.size());
-    uint32_t baseCount = 0;
-    for (const MeshData& md : data.meshes) {
-        if (md.indices.empty()) {
-            continue;
-        }
-        meshes.push_back(&md);
-        for (const uint32_t b : md.baseVertex) {
-            baseCount = std::max(baseCount, b + 1);
-        }
-    }
-    const std::size_t meshCount = meshes.size();
-    perMeshRanges.assign(meshCount, {});
-    entries.clear();
-
-    // Invert each mesh's baseVertex array: base vertex -> the render (mesh, local) vertices it
-    // fed. A base vertex on a UV/zone seam feeds several render vertices (possibly across
-    // meshes), so a corrective's single delta must reach all of them. Dense CSR over the (small)
-    // base cage: one counting pass, one fill pass.
-    std::vector<uint32_t> fanStart(static_cast<std::size_t>(baseCount) + 1, 0);
-    for (const MeshData* md : meshes) {
-        for (const uint32_t b : md->baseVertex) {
-            ++fanStart[b + 1];
-        }
-    }
-    for (std::size_t i = 1; i < fanStart.size(); ++i) {
-        fanStart[i] += fanStart[i - 1];
-    }
-    std::vector<std::pair<uint32_t, uint32_t>> fan(fanStart.back()); // (mesh, local vertex)
-    {
-        std::vector<uint32_t> cursor(fanStart.begin(), fanStart.end() - 1);
-        for (uint32_t k = 0; k < meshCount; ++k) {
-            const std::vector<uint32_t>& bidx = meshes[k]->baseVertex;
-            for (uint32_t lv = 0; lv < bidx.size(); ++lv) {
-                fan[cursor[bidx[lv]]++] = {k, lv};
-            }
-        }
-    }
-
-    // Pass 1: how many correctives touch each render vertex, and which correctives land on any
-    // rendered geometry at all (those are the ones kept — the GPU index is the compacted one).
-    std::vector<std::vector<uint32_t>> count(meshCount);
-    for (uint32_t k = 0; k < meshCount; ++k) {
-        count[k].assign(meshes[k]->vertices.size(), 0);
-    }
-    std::vector<int> compactIndex(data.correctives.size(), -1);
-    std::size_t total = 0;
-    for (std::size_t ci = 0; ci < data.correctives.size(); ++ci) {
-        bool landed = false;
-        for (const auto& [baseIdx, delta] : data.correctives[ci].deltas) {
-            if (baseIdx >= baseCount) {
-                continue; // targets a vertex not present in any rendered mesh
-            }
-            for (uint32_t f = fanStart[baseIdx]; f < fanStart[baseIdx + 1]; ++f) {
-                const auto [k, lv] = fan[f];
-                ++count[k][lv];
-                ++total;
-                landed = true;
-            }
-        }
-        if (landed) {
-            compactIndex[ci] = static_cast<int>(m_correctives.size());
-            RuntimeCorrective rc;
-            const PoseCorrective& pc = data.correctives[ci];
-            rc.id = pc.id;
-            rc.sumFormulas = pc.sumFormulas;
-            rc.gateScale = pc.gateScale;
-            rc.clamped = pc.clamped;
-            rc.clampMin = pc.clampMin;
-            rc.clampMax = pc.clampMax;
-            rc.opBone.resize(rc.sumFormulas.size());
-            for (std::size_t f = 0; f < rc.sumFormulas.size(); ++f) {
-                const std::vector<CorrectiveOp>& ops = rc.sumFormulas[f].ops;
-                rc.opBone[f].assign(ops.size(), -1);
-                for (std::size_t k = 0; k < ops.size(); ++k) {
-                    if (ops[k].kind == CorrectiveOp::Kind::PushRotation) {
-                        const auto it = boneOf.find(ops[k].bone);
-                        rc.opBone[f][k] = it == boneOf.end() ? -1 : it->second;
-                    }
-                }
-            }
-            m_correctives.push_back(std::move(rc));
-        }
-    }
-    m_correctiveWeight.assign(m_correctives.size(), 0.0f);
-    if (m_correctives.empty()) {
-        return;
-    }
-
-    // The packed range is (first entry << 8) | count: 24 bits of entry offset, 8 of count. Cap
-    // the total at the guaranteed storage-buffer range (2^23 entries × 16 B = 128 MB) — a real
-    // figure lands around a million — and a vertex's run at 255 (its later correctives are
-    // dropped; no authored content approaches this).
-    constexpr std::size_t kMaxEntries = std::size_t{1} << 23;
-    constexpr uint32_t    kMaxPerVertex = 255;
-    if (total > kMaxEntries) {
-        std::fprintf(stderr,
-                     "[correctives] %zu delta entries exceed the GPU table limit (%zu); "
-                     "pose correctives disabled for this model\n",
-                     total, kMaxEntries);
-        m_correctives.clear();
-        m_correctiveWeight.clear();
-        perMeshRanges.assign(meshCount, {});
-        return;
-    }
-
-    // Prefix the runs into the flat table and stamp each touched vertex's packed range.
-    std::vector<std::vector<uint32_t>> start(meshCount);
-    std::size_t running = 0;
-    bool capped = false;
-    for (uint32_t k = 0; k < meshCount; ++k) {
-        const std::vector<uint32_t>& cnt = count[k];
-        start[k].assign(cnt.size(), 0);
-        bool touched = false;
-        for (std::size_t lv = 0; lv < cnt.size(); ++lv) {
-            if (cnt[lv] == 0) {
-                continue;
-            }
-            touched = true;
-            const uint32_t n = std::min(cnt[lv], kMaxPerVertex);
-            capped = capped || n != cnt[lv];
-            start[k][lv] = static_cast<uint32_t>(running);
-            running += n;
-        }
-        if (touched) {
-            perMeshRanges[k].assign(cnt.size(), 0);
-            for (std::size_t lv = 0; lv < cnt.size(); ++lv) {
-                if (cnt[lv] != 0) {
-                    perMeshRanges[k][lv] = (start[k][lv] << 8) | std::min(cnt[lv], kMaxPerVertex);
-                }
-            }
-        }
-    }
-    if (capped) {
-        std::fprintf(stderr, "[correctives] a vertex is touched by more than %u correctives; "
-                             "the extra ones are dropped for it\n", kMaxPerVertex);
-    }
-
-    // Pass 2: fill the table, each vertex's run in corrective order.
-    entries.resize(running);
-    std::vector<std::vector<uint32_t>> filled(meshCount);
-    for (uint32_t k = 0; k < meshCount; ++k) {
-        filled[k].assign(count[k].size(), 0);
-    }
-    for (std::size_t ci = 0; ci < data.correctives.size(); ++ci) {
-        if (compactIndex[ci] < 0) {
-            continue;
-        }
-        const auto gpuIndex = static_cast<uint32_t>(compactIndex[ci]);
-        for (const auto& [baseIdx, delta] : data.correctives[ci].deltas) {
-            if (baseIdx >= baseCount) {
-                continue;
-            }
-            for (uint32_t f = fanStart[baseIdx]; f < fanStart[baseIdx + 1]; ++f) {
-                const auto [k, lv] = fan[f];
-                if (filled[k][lv] >= kMaxPerVertex) {
-                    continue;
-                }
-                entries[start[k][lv] + filled[k][lv]++] = {gpuIndex, delta};
-            }
-        }
-    }
-    if (std::getenv("POSESTUDIO_DUMP_CORRECTIVES") != nullptr) {
-        std::fprintf(stderr, "[correctives] %zu correctives -> %zu GPU delta entries (%.1f MB)\n",
-                     m_correctives.size(), entries.size(),
-                     static_cast<double>(entries.size() * sizeof(CorrectiveEntry)) / (1024.0 * 1024.0));
-    }
-}
-
-float Model::evalCorrectiveWeight(std::size_t correctiveIndex) const {
-    const RuntimeCorrective& rc = m_correctives[correctiveIndex];
-    float sum = 0.0f;
-    std::vector<float> st;
-    st.reserve(8);
-    for (std::size_t fi = 0; fi < rc.sumFormulas.size(); ++fi) {
-        const CorrectiveFormula& f = rc.sumFormulas[fi];
-        st.clear();
-        for (std::size_t oi = 0; oi < f.ops.size(); ++oi) {
-            const CorrectiveOp& op = f.ops[oi];
-            switch (op.kind) {
-                case CorrectiveOp::Kind::PushRotation: {
-                    float angle = 0.0f;
-                    const int bone = rc.opBone[fi][oi];
-                    if (bone >= 0) {
-                        angle = m_armature.boneEuler(static_cast<std::size_t>(bone))[op.axis];
-                    }
-                    st.push_back(angle);
-                    break;
-                }
-                case CorrectiveOp::Kind::PushConst:
-                    st.push_back(op.value);
-                    break;
-                case CorrectiveOp::Kind::Spline: {
-                    const float d = st.empty() ? 0.0f : st.back();
-                    if (!st.empty()) {
-                        st.pop_back();
-                    }
-                    st.push_back(evalSpline(op.knots, d));
-                    break;
-                }
-                case CorrectiveOp::Kind::Mult:
-                    if (st.size() >= 2) {
-                        const float b = st.back();
-                        st.pop_back();
-                        st.back() *= b;
-                    }
-                    break;
-                case CorrectiveOp::Kind::Add:
-                    if (st.size() >= 2) {
-                        const float b = st.back();
-                        st.pop_back();
-                        st.back() += b;
-                    }
-                    break;
-            }
-        }
-        sum += st.empty() ? 0.0f : st.back();
-    }
-    const float w = sum * rc.gateScale;
-    // The channel clamp is part of the authored driver (see PoseCorrective::clamped): linear ramp
-    // drivers rely on it to switch off outside their intended range — a knee-EXTENSION flexion
-    // (rotation/x × -1/11) must stay 0 through the 155° of flexion, not run to -14.
-    return rc.clamped ? glm::clamp(w, rc.clampMin, rc.clampMax) : w;
-}
-
-bool Model::evaluateCorrectiveWeights() {
-    bool changed = false;
-    for (std::size_t i = 0; i < m_correctives.size(); ++i) {
-        const float w = evalCorrectiveWeight(i);
-        // Only commit a move past the threshold, so the stored weight is always exactly what the
-        // GPU has (sub-threshold drift accumulates until it trips, never silently diverges).
-        if (std::fabs(w - m_correctiveWeight[i]) > 1e-4f) {
-            m_correctiveWeight[i] = w;
-            changed = true;
-        }
-    }
-    if (changed) {
-        ++m_correctiveVersion;
-    }
-    return changed;
-}
-
-void Model::uploadCorrectiveWeightsIfDirty(uint32_t frameIndex) {
-    if (m_correctives.empty() || frameIndex >= static_cast<uint32_t>(kMaxFramesInFlight)) {
-        return;
-    }
-    // The pose moved since the weights were last evaluated (any posing path — a drag tick, a
-    // gizmo/wheel nudge, an IK settle, a pose load — bumps the armature's skin version).
-    if (m_correctiveEvalSkinVersion != m_armature.skinVersion()) {
-        evaluateCorrectiveWeights();
-        m_correctiveEvalSkinVersion = m_armature.skinVersion();
-    }
-    if (m_correctiveUploaded[frameIndex] == m_correctiveVersion) {
-        return;
-    }
-    auto* dst = static_cast<float*>(m_correctiveWeightBuffers[frameIndex].mappedData());
-    if (dst == nullptr) {
-        return;
-    }
-    std::memcpy(dst, m_correctiveWeight.data(), sizeof(float) * m_correctiveWeight.size());
-    m_correctiveUploaded[frameIndex] = m_correctiveVersion;
-}
-
-void Model::refreshCorrectives() {
-    if (m_correctives.empty()) {
-        return;
-    }
-    evaluateCorrectiveWeights();
-    m_correctiveEvalSkinVersion = m_armature.skinVersion();
-    // Diagnostic hook: POSESTUDIO_DUMP_CORRECTIVES=1 prints every corrective whose weight is
-    // non-zero when a pose settles — which JCMs fire, and how hard. No-op unless set.
-    static const bool dump = std::getenv("POSESTUDIO_DUMP_CORRECTIVES") != nullptr;
-    if (dump) {
-        std::fprintf(stderr, "[correctives] active after pose change:\n");
-        for (std::size_t i = 0; i < m_correctives.size(); ++i) {
-            if (std::fabs(m_correctiveWeight[i]) >= 1e-4f) {
-                std::fprintf(stderr, "  %-48s w=%.3f\n", m_correctives[i].id.c_str(),
-                             m_correctiveWeight[i]);
-            }
-        }
-        std::fflush(stderr);
-    }
-}
-
-Model::~Model() {
-    // Destroying the pool frees all of this model's set-1 descriptors; the meshes (textures +
-    // buffers) are freed afterwards as members. The device is idle by the time a Model dies
-    // (Scene waits before tearing models down), so the freed sets are never referenced again.
-    if (m_materialPool != VK_NULL_HANDLE) {
-        vkDestroyDescriptorPool(m_context.device(), m_materialPool, nullptr);
-    }
-}
-
-void Model::record(VkCommandBuffer cmd, VkPipelineLayout layout, bool transparentPass,
-                   const glm::vec3& cameraPos, uint32_t frameIndex) {
-    // A model whose meshes were all index-empty never created its pool/joint sets (the
-    // constructor early-returns) — binding the VK_NULL_HANDLE set would be invalid Vulkan usage.
-    if (m_meshes.empty()) {
-        return;
-    }
-    // Set 2 = this frame slot's skin matrices (shared by all this model's meshes); upload the
-    // current pose into the slot first if it hasn't seen it (no-op when the shadow pass already
-    // did this frame).
-    uploadJointsIfDirty(frameIndex);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 2, 1,
-                            &m_jointSets[frameIndex], 0, nullptr);
-    const glm::mat4& transform = m_armature.transform();
-    const int selected = m_armature.selectedBone();
-    const int twin = m_armature.selectedHighlightTwin();
-    if (!transparentPass) {
-        for (const Mesh& mesh : m_meshes) {
-            if (!mesh.isTransparent()) {
-                mesh.record(cmd, layout, transform, MeshDrawKind::Opaque, selected, twin);
-            }
-        }
-        return;
-    }
-    // Transparent pass: back-to-front by (bind-pose) centroid distance, so layered shells —
-    // lashes over cornea over sclera — blend in the right order from any viewing angle.
-    std::vector<std::pair<float, const Mesh*>> order;
-    for (const Mesh& mesh : m_meshes) {
-        if (mesh.isTransparent()) {
-            const glm::vec3 c = glm::vec3(transform * glm::vec4(mesh.centroid(), 1.0f));
-            const glm::vec3 d = c - cameraPos;
-            order.emplace_back(glm::dot(d, d), &mesh);
-        }
-    }
-    std::sort(order.begin(), order.end(),
-              [](const std::pair<float, const Mesh*>& a, const std::pair<float, const Mesh*>& b) {
-                  return a.first > b.first; // farthest first
-              });
-    for (const auto& [distSq, mesh] : order) {
-        mesh->record(cmd, layout, transform, MeshDrawKind::Transparent, selected, twin);
-    }
-}
-
-void Model::recordWire(VkCommandBuffer cmd, VkPipelineLayout layout, uint32_t frameIndex) {
-    if (m_meshes.empty()) {
-        return;
-    }
-    uploadJointsIfDirty(frameIndex);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 2, 1,
-                            &m_jointSets[frameIndex], 0, nullptr);
-    const int twin = m_armature.selectedHighlightTwin();
-    for (const Mesh& mesh : m_meshes) { // every mesh: cards and shells are geometry too
-        mesh.record(cmd, layout, m_armature.transform(), MeshDrawKind::Wire,
-                    m_armature.selectedBone(), twin);
-    }
-}
-
-void Model::recordDepthFill(VkCommandBuffer cmd, VkPipelineLayout layout, uint32_t frameIndex) {
-    if (m_meshes.empty()) {
-        return;
-    }
-    uploadJointsIfDirty(frameIndex);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 2, 1,
-                            &m_jointSets[frameIndex], 0, nullptr);
-    for (const Mesh& mesh : m_meshes) {
-        if (!mesh.isTransparent()) {
-            mesh.record(cmd, layout, m_armature.transform(), MeshDrawKind::DepthOnly);
-        }
-    }
-}
-
-void Model::recordShadow(VkCommandBuffer cmd, VkPipelineLayout layout,
-                         const glm::mat4& lightViewProj, uint32_t frameIndex) {
-    if (m_meshes.empty()) {
-        return;
-    }
-    // The shadow pipeline's only set (index 0) is the joint-matrix layout — bind the same set
-    // object the main pass binds at index 2 (set compatibility is by layout, not index), so a
-    // posed figure casts its posed shadow. This pass runs first in the frame, so it typically
-    // performs the frame slot's joint upload.
-    uploadJointsIfDirty(frameIndex);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1,
-                            &m_jointSets[frameIndex], 0, nullptr);
-    ShadowPushConstants push{};
-    push.viewProj = lightViewProj;
-    push.model = m_armature.transform();
-    vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), &push);
-    for (const Mesh& mesh : m_meshes) {
-        if (!mesh.isTransparent()) { // no alpha in this pass — cards/shells would cast solid shadows
-            mesh.recordDepth(cmd);
-        }
-    }
-}
-
-void Model::recordSilhouette(VkCommandBuffer cmd, VkPipelineLayout layout,
-                             const glm::mat4& viewProj, uint32_t frameIndex) {
-    if (m_meshes.empty()) {
-        return;
-    }
-    // Same shader + set layout as the shadow pass (shadow.vert; joint set at index 0), projected
-    // by the camera instead of the light — the outline traces the POSED silhouette.
-    uploadJointsIfDirty(frameIndex);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1,
-                            &m_jointSets[frameIndex], 0, nullptr);
-    ShadowPushConstants push{};
-    push.viewProj = viewProj;
-    push.model = m_armature.transform();
-    vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), &push);
-    for (const Mesh& mesh : m_meshes) {
-        if (!mesh.hasOpacityMask()) { // a cutout card's real shape lives in a map this pass can't read
-            mesh.recordDepth(cmd);
-        }
-    }
-}
-
-bool Model::worldBounds(glm::vec3& outMin, glm::vec3& outMax) const {
-    if (!m_hasBounds) {
-        return false;
-    }
-    // Transform all 8 local AABB corners (the transform may rotate; min/max of the corners is the
-    // tight world AABB of the local box).
-    outMin = glm::vec3(std::numeric_limits<float>::max());
-    outMax = glm::vec3(std::numeric_limits<float>::lowest());
-    for (int i = 0; i < 8; ++i) {
-        const glm::vec3 corner((i & 1) ? m_boundsMax.x : m_boundsMin.x,
-                               (i & 2) ? m_boundsMax.y : m_boundsMin.y,
-                               (i & 4) ? m_boundsMax.z : m_boundsMin.z);
-        const glm::vec3 world = glm::vec3(m_armature.transform() * glm::vec4(corner, 1.0f));
-        outMin = glm::min(outMin, world);
-        outMax = glm::max(outMax, world);
-    }
-    // A POSED figure can leave its bind-pose box (a forward lean carries the head well outside
-    // it), and the shadow frustum is fitted from these bounds — geometry crossing the fitted
-    // map's edge showed as transient dark bands/streaks while posing. Union in the posed bone
-    // positions, padded by a flesh margin (the skin extends past the joints — the skull above
-    // the head joint, toes past the toe joints). Static models are exact via the box alone.
-    if (m_armature.hasSkeleton()) {
-        constexpr float kFleshMargin = 0.25f;
-        glm::vec3 boneMin(std::numeric_limits<float>::max());
-        glm::vec3 boneMax(std::numeric_limits<float>::lowest());
-        for (std::size_t i = 0; i < m_armature.boneCount(); ++i) {
-            const glm::vec3& p = m_armature.boneWorldPosition(i);
-            boneMin = glm::min(boneMin, p);
-            boneMax = glm::max(boneMax, p);
-        }
-        outMin = glm::min(outMin, boneMin - glm::vec3(kFleshMargin));
-        outMax = glm::max(outMax, boneMax + glm::vec3(kFleshMargin));
-    }
-    return true;
-}
-
-bool Model::intersectRay(const Ray& ray, float& tOut) const {
-    if (!m_hasBounds) {
-        return false;
-    }
-    if (m_armature.hasSkeleton()) {
-        // A POSED figure is picked against the world-space box of its live joints plus a flesh
-        // margin, not its bind box: full-body IK walks and crouches move the whole figure
-        // through the hip's pose translation, so after a walk the mesh sat far outside the
-        // bind bounds — a right-click on the character found its joints (those are picked by
-        // live position) but not the model, and the context menu lost its Delete entry.
-        constexpr float kFleshMargin = 0.16f; // metres: the torso's depth around the spine
-        glm::vec3 lo(std::numeric_limits<float>::max());
-        glm::vec3 hi(std::numeric_limits<float>::lowest());
-        for (std::size_t i = 0; i < m_armature.boneCount(); ++i) {
-            const glm::vec3& p = m_armature.boneWorldPosition(i);
-            lo = glm::min(lo, p);
-            hi = glm::max(hi, p);
-        }
-        lo -= glm::vec3(kFleshMargin);
-        hi += glm::vec3(kFleshMargin);
-        float tMin = 0.0f;
-        float tMax = std::numeric_limits<float>::max();
-        for (int axis = 0; axis < 3; ++axis) {
-            if (std::abs(ray.direction[axis]) < 1e-8f) {
-                if (ray.origin[axis] < lo[axis] || ray.origin[axis] > hi[axis]) {
-                    return false;
-                }
-                continue;
-            }
-            const float invD = 1.0f / ray.direction[axis];
-            float t1 = (lo[axis] - ray.origin[axis]) * invD;
-            float t2 = (hi[axis] - ray.origin[axis]) * invD;
-            if (t1 > t2) {
-                std::swap(t1, t2);
-            }
-            tMin = std::max(tMin, t1);
-            tMax = std::min(tMax, t2);
-            if (tMin > tMax) {
-                return false;
-            }
-        }
-        tOut = tMin;
-        return true;
-    }
-    // Transform the ray into local space so we can slab-test the AABB directly (equivalent to an
-    // oriented-box test in world space, but cheaper). The transform is affine, so the ray
-    // parameter t is preserved — the t we find is the same world-space distance for every model.
-    const glm::mat4 inv = glm::inverse(m_armature.transform());
-    const glm::vec3 o = glm::vec3(inv * glm::vec4(ray.origin, 1.0f));
-    const glm::vec3 d = glm::vec3(inv * glm::vec4(ray.direction, 0.0f));
-
-    float tMin = 0.0f; // ignore hits behind the ray origin
-    float tMax = std::numeric_limits<float>::max();
-    for (int axis = 0; axis < 3; ++axis) {
-        if (std::abs(d[axis]) < 1e-8f) {
-            // Ray parallel to this slab: miss unless the origin is already within it.
-            if (o[axis] < m_boundsMin[axis] || o[axis] > m_boundsMax[axis]) {
-                return false;
-            }
-            continue;
-        }
-        const float invD = 1.0f / d[axis];
-        float t1 = (m_boundsMin[axis] - o[axis]) * invD;
-        float t2 = (m_boundsMax[axis] - o[axis]) * invD;
-        if (t1 > t2) {
-            std::swap(t1, t2);
-        }
-        tMin = std::max(tMin, t1);
-        tMax = std::min(tMax, t2);
-        if (tMin > tMax) {
-            return false;
-        }
-    }
-    tOut = tMin;
-    return true;
-}
-
-bool Model::dropToGround() {
-    float minY = 0.0f;
-    if (!groundGap(minY) || std::abs(minY) < 1e-4f) {
-        return false; // nothing sampled, or already resting on the floor
-    }
-    translateY(-minY);
-    return true;
-}
-
-bool Model::groundGap(float& lowestY) const {
-    float minY = std::numeric_limits<float>::max();
-    if (m_armature.hasSkeleton() && !m_groundSamples.empty()) {
-        // Posed lowest point: CPU-skin every ground sample with the CURRENT pose's skin matrices
-        // (poseGlobal · inverseBind — the armature's poseGlobal always holds the last pose
-        // update) and track the world-space minimum. A one-shot ~few-ms walk; corrective deltas
-        // are ignored (they move contact regions by millimetres at most). Linear matrix blending
-        // is fine here even though the GPU skins with dual quaternions: contact regions (feet,
-        // knees) are near-single-joint weighted, where LBS and DQS agree exactly.
-        const std::size_t boneCount = m_armature.boneCount();
-        std::vector<glm::mat4> skin(boneCount);
-        for (std::size_t i = 0; i < boneCount; ++i) {
-            skin[i] = m_armature.poseGlobal(i) * m_armature.inverseBind(i);
-        }
-        for (const GroundSample& s : m_groundSamples) {
-            const glm::vec4 p(s.pos, 1.0f);
-            glm::vec3 posed(0.0f);
-            for (int j = 0; j < 4; ++j) {
-                const float w = s.weights[j];
-                if (w > 0.0f && s.joints[j] < skin.size()) {
-                    posed += w * glm::vec3(skin[s.joints[j]] * p);
-                }
-            }
-            minY = std::min(minY, (m_armature.transform() * glm::vec4(posed, 1.0f)).y);
-        }
-    } else if (m_hasBounds) {
-        // Static model: the bind AABB through the transform is exact (it can't pose).
-        for (int i = 0; i < 8; ++i) {
-            const glm::vec3 c((i & 1) ? m_boundsMax.x : m_boundsMin.x,
-                              (i & 2) ? m_boundsMax.y : m_boundsMin.y,
-                              (i & 4) ? m_boundsMax.z : m_boundsMin.z);
-            minY = std::min(minY, (m_armature.transform() * glm::vec4(c, 1.0f)).y);
-        }
-    } else {
-        return false; // no geometry to ground
-    }
-    if (!(minY < std::numeric_limits<float>::max())) {
-        return false; // nothing sampled
-    }
-    lowestY = minY;
-    return true;
 }
 
 } // namespace pose

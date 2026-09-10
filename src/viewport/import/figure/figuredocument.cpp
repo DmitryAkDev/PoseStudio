@@ -8,6 +8,7 @@
 #include <miniz.h>
 
 #include <fstream>
+#include <memory>
 #include <stdexcept>
 
 namespace pose {
@@ -65,14 +66,15 @@ std::vector<uint8_t> gunzip(const uint8_t* data, std::size_t size) {
     const std::size_t deflateSize = size - pos - 8;
 
     std::size_t outLen = 0;
-    void* out = tinfl_decompress_mem_to_heap(data + pos, deflateSize, &outLen, 0 /*raw deflate*/);
+    // miniz hands back a malloc'd buffer; own it through unique_ptr so the copy into the vector
+    // below can't leak it if that allocation throws.
+    const std::unique_ptr<void, decltype(&mz_free)> out(
+        tinfl_decompress_mem_to_heap(data + pos, deflateSize, &outLen, 0 /*raw deflate*/), &mz_free);
     if (!out) {
         throw std::runtime_error("gunzip: inflate failed");
     }
-    std::vector<uint8_t> result(static_cast<const uint8_t*>(out),
-                                static_cast<const uint8_t*>(out) + outLen);
-    mz_free(out);
-    return result;
+    return std::vector<uint8_t>(static_cast<const uint8_t*>(out.get()),
+                                static_cast<const uint8_t*>(out.get()) + outLen);
 }
 
 FigureDocument FigureDocument::loadFromBytes(std::vector<uint8_t> bytes, const std::string& sourceName) {

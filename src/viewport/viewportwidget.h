@@ -7,6 +7,12 @@
  * layout like any other widget and stay completely unaware of Vulkan. If the Vulkan
  * instance can't be created (no driver / no GPU), it degrades to an inline message
  * rather than taking the whole app down.
+ *
+ * It is also the SOLE wiring point between the window and the floating control strip
+ * (ViewportStrip): the strip emits what the user picked, the window reports the state it is in,
+ * and neither knows the other — every facade method here forwards to the window, and every
+ * strip signal lands on one of those facade methods, so the menus, the keys and the strip all
+ * take the same path.
  */
 
 #ifndef VIEWPORTWIDGET_H
@@ -14,13 +20,12 @@
 
 #include "scene/camera.h" // AxisView (the View menu's camera entries)
 
-#include <QWidget>
 #include <QStringList>
+#include <QWidget>
 
 #include <memory>
 
 class QVulkanInstance;
-class QPushButton;
 class QShowEvent;
 class QHideEvent;
 class QResizeEvent;
@@ -28,7 +33,7 @@ class QMoveEvent;
 
 namespace pose {
 
-class AxisRotateBadge;
+class ViewportStrip;
 class VulkanWindow;
 struct LightingSettings;
 
@@ -76,23 +81,26 @@ public:
     void mirrorPose();
     void mirrorSelectedLimb();
 
-    /// Returns the camera to the default perspective framing (the overlay's Home button).
-    /// No-op if the viewport degraded.
+    /// Returns the camera to the default perspective framing (the strip's Home button, the 5
+    /// key). No-op if the viewport degraded.
     void resetView();
 
-    /// Camera views in Blender's numpad convention — View menu entries; the viewport handles the
-    /// keys itself (1/3/7 + Ctrl, 9, "."). No-ops if the viewport degraded.
+    /// Camera views in Blender's numpad convention. The View menu's QActions carry the keys
+    /// APP-WIDE (1/3/7 + Ctrl for the opposite side, 9 = flip, 5 = Home, "." = frame selected,
+    /// number row and keypad alike); the window handles the same keys itself only as the
+    /// fallback for a platform that hands the native window the key first. No-ops if the
+    /// viewport degraded.
     void setAxisView(AxisView view);
     void flipView();
     void frameSelected();
 
-    /// Drops the posable figure onto the ground plane (the overlay's ground button): moves it so
+    /// Drops the posable figure onto the ground plane (the strip's Ground button): moves it so
     /// the current pose's lowest point rests at y = 0. No-op if the viewport degraded.
     void groundFigure();
 
     /// Toggles the skeleton overlay (the joint→parent bone lines drawn over the figure). Off by
     /// default — joints are grabbed directly on the figure — but joints stay clickable either way.
-    /// Driven by the overlay's Skeleton button and the View menu (kept in sync via the
+    /// Driven by the strip's Skeleton button and the View menu (kept in sync via the
     /// skeletonVisibilityChanged signal). No-op if the viewport degraded.
     void setShowSkeleton(bool on);
     bool showSkeleton() const;
@@ -120,14 +128,14 @@ signals:
     /// Re-emitted from the viewport when undo/redo restores a lighting state, so the Environment
     /// panel can sync its widgets. The settings are already applied renderer-side.
     void lightingRestored(const LightingSettings& settings);
-    /// Emitted whenever the skeleton overlay's visibility changes (from the overlay's Skeleton
+    /// Emitted whenever the skeleton overlay's visibility changes (from the strip's Skeleton
     /// button or the View menu), so the two controls stay in sync. The renderer state is already
     /// updated by the time this fires.
     void skeletonVisibilityChanged(bool visible);
 
 protected:
-    // The shader dropdown floats as a *top-level* window over the native viewport (a child widget would
-    // be composited behind it), so it has to be repositioned as the viewport moves/resizes.
+    // The control strip is a *top-level* window floating over the native viewport (a child widget
+    // would be composited behind it), so it has to be re-anchored as the viewport moves/resizes.
     void showEvent(QShowEvent* event) override;
     void hideEvent(QHideEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
@@ -135,19 +143,23 @@ protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
-    void createShaderOverlay();   // builds the floating top-right strip: shader + view pickers, buttons
-    void syncOverlayPosition();   // glues it to the viewport's top-right corner (global coords)
+    /// Builds the strip and wires it to the window — the one place the two meet.
+    void createStrip();
+    /// Glues the strip to the container's top-right corner (no-op while hidden / degraded).
+    void anchorStrip();
+    /// Applies @p f to the window — the body of every facade forwarder. No-op when the viewport
+    /// degraded (no window).
+    template <class F>
+    void withWindow(F&& f) {
+        if (m_window) {
+            f(*m_window);
+        }
+    }
 
-    std::unique_ptr<QVulkanInstance> m_instance;           // owns the VkInstance
-    VulkanWindow*                    m_window = nullptr;    // owned by m_container
-    QWidget*                         m_container = nullptr; // the createWindowContainer wrapper
-    QWidget*                         m_overlay = nullptr;   // top-level frameless host for the dropdown
-    QPushButton*                     m_shaderButton = nullptr;   // opens the shader-mode QMenu
-    QPushButton*                     m_viewButton = nullptr;     // opens the named-view QMenu; reads the current view
-    QPushButton*                     m_homeButton = nullptr;     // resets the camera to default framing
-    QPushButton*                     m_groundButton = nullptr;   // drops the figure onto the floor plane
-    QPushButton*                     m_skeletonButton = nullptr; // toggles the skeleton overlay (View)
-    AxisRotateBadge*                 m_axisBadge = nullptr;      // "rotating about X/Y/Z" badge under the strip
+    std::unique_ptr<QVulkanInstance> m_instance;               // owns the VkInstance
+    VulkanWindow*                    m_window = nullptr;        // owned by m_container
+    QWidget*                         m_container = nullptr;     // the createWindowContainer wrapper
+    ViewportStrip*                   m_strip = nullptr;         // the floating top-right control strip
     QWidget*                         m_filteredWindow = nullptr; // top-level we filter for move/resize
 };
 

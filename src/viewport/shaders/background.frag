@@ -3,31 +3,20 @@
 // HDRI backdrop fragment stage: samples the lighting environment along the per-pixel eye ray, so
 // the panorama that lights the figure is also VISIBLE behind it — reflections and shading read as
 // coming from somewhere real, and the figure sits in a place instead of a void. Follows the same
-// exposure / rotation / tonemap dials as the PBR shading (mesh.frag), so backdrop and subject
-// always agree.
+// exposure / rotation dials as the PBR shading (mesh.frag), so backdrop and subject always agree;
+// like the PBR mode it writes LINEAR HDR and leaves the tonemapping to the composite.
 //
 // The sampled image is the prefiltered specular cubemap's lower mips (set 3 binding 0 — bound
 // here as set 1): mip 0 is the environment itself. The panel's Blur dial selects the LOD —
 // photographic background defocus, which also hides the cube's finite resolution.
+//
+// Pass:    the HDR scene pass, first draw (depth test/write off).
+// Inputs:  set 0.0 the camera UBO (exposure, rotation, the backdrop dials); set 1.0 the
+//          prefiltered environment cube (the scene's IBL set bound at index 1).
+// Outputs: location 0 -> colour attachment 0 (linear HDR, alpha 0); attachment 1 masked.
 
-layout(set = 0, binding = 0) uniform CameraUbo {
-    mat4 viewProj;
-    mat4 view;
-    mat4 lightViewProj;
-    vec4 cameraPos;
-    vec4 lightDir;
-    vec4 lightColor;
-    vec4 fillDir;
-    vec4 fillColor;
-    vec4 rimDir;
-    vec4 rimColor;
-    vec4 ambient;
-    vec4 params;  // y = exposure
-    vec4 sh[9];
-    vec4 params2; // z = envRotation(rad)
-    vec4 params3; // z = backdrop mode (1 = environment, 2 = ground-projected dome), w = blur (mips)
-    vec4 params4; // x = backdrop brightness, y = dome radius (world units)
-} cam;
+#extension GL_GOOGLE_include_directive : enable
+#include "camera_ubo.glsl" // cam + rotateY
 
 layout(set = 1, binding = 0) uniform samplerCube uEnv;
 
@@ -38,16 +27,6 @@ layout(location = 0) out vec4 outColor;
 // Dome mode: the height the environment was nominally captured from (a tripod) — the projection
 // center the sample directions radiate from, so the panorama's floor lands on y=0 plausibly.
 const float kTripodHeight = 1.6;
-
-vec3 rotateY(vec3 v, float angle) {
-    float c = cos(angle), s = sin(angle);
-    return vec3(c * v.x + s * v.z, v.y, -s * v.x + c * v.z);
-}
-
-vec3 tonemapACES(vec3 x) {
-    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
-    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
-}
 
 void main() {
     vec3 dir = normalize(vFarPoint - vNearPoint);

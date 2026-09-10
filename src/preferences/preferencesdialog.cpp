@@ -6,11 +6,8 @@
 #include "preferencesdialog.h"
 #include "preferencespanel.h"
 #include "generalpreferencespanel.h"
-#include "interfacepreferencespanel.h"
 #include "assetspreferencespanel.h"
-#include "inputpreferencespanel.h"
-#include "navigationpreferencespanel.h"
-#include "systempreferencespanel.h"
+#include "placeholderpreferencespanel.h"
 #include "factoryresetpreferencespanel.h"
 
 #include <QListWidget>
@@ -59,7 +56,8 @@ PreferencesDialog::PreferencesDialog(QWidget* parent)
     connect(buttonBox, &QDialogButtonBox::rejected, this, &QDialog::reject);
     connect(m_nav, &QListWidget::currentRowChanged, m_stack, &QStackedWidget::setCurrentIndex);
 
-    // Register the tabs. Several panels are still placeholder subclasses, to be built out later.
+    // Register the tabs, in nav order. The PlaceholderPreferencesPanel entries hold a tab's
+    // place until its real page exists — see preferencespanel.h for how to promote one.
     auto* assetsPanel = new AssetsPreferencesPanel(this);
     connect(assetsPanel, &AssetsPreferencesPanel::librariesChanged,
             this, &PreferencesDialog::assetLibrariesChanged);
@@ -69,11 +67,23 @@ PreferencesDialog::PreferencesDialog(QWidget* parent)
     });
 
     addPanel(QStringLiteral("General"),       new GeneralPreferencesPanel(this));
-    addPanel(QStringLiteral("Interface"),     new InterfacePreferencesPanel(this));
+    addPanel(QStringLiteral("Interface"),
+             new PlaceholderPreferencesPanel(
+                 QStringLiteral("Interface"),
+                 QStringLiteral("Interface and appearance settings will appear here."), this));
     addPanel(QStringLiteral("Assets"),        assetsPanel);
-    addPanel(QStringLiteral("Input"),         new InputPreferencesPanel(this));
-    addPanel(QStringLiteral("Navigation"),    new NavigationPreferencesPanel(this));
-    addPanel(QStringLiteral("System"),        new SystemPreferencesPanel(this));
+    addPanel(QStringLiteral("Input"),
+             new PlaceholderPreferencesPanel(
+                 QStringLiteral("Input"),
+                 QStringLiteral("Keyboard and input settings will appear here."), this));
+    addPanel(QStringLiteral("Navigation"),
+             new PlaceholderPreferencesPanel(
+                 QStringLiteral("Navigation"),
+                 QStringLiteral("Viewport navigation settings will appear here."), this));
+    addPanel(QStringLiteral("System"),
+             new PlaceholderPreferencesPanel(
+                 QStringLiteral("System"),
+                 QStringLiteral("System, performance, and storage settings will appear here."), this));
     addPanel(QStringLiteral("Factory Reset"), new FactoryResetPreferencesPanel(this));
 
     m_nav->setCurrentRow(0);
@@ -86,11 +96,8 @@ void PreferencesDialog::selectTab(const QString& tabLabel) {
 
 void PreferencesDialog::addPanel(const QString& tabLabel, PreferencesPanel* panel) {
     auto* item = new QListWidgetItem(tabLabel, m_nav);
-    // Set the row height here rather than leaning on the ::item vertical QSS padding alone: on the
-    // default delegate that padding inflates the hover/selection box past the item's layout cell
-    // (oversized highlight that bleeds into the neighbouring row), while the cells themselves stay
-    // text-tight and visually cramped. A fixed sizeHint reconciles the two so the tabs are evenly
-    // spaced and the highlight matches the row. (Same fix as AssetLibraryList — see its comment.)
+    // A fixed row height in code rather than QSS ::item vertical padding — the same fix, for the
+    // same reason, as the Assets page's library list: see AssetsPreferencesPanel::reloadLibraries.
     item->setSizeHint(QSize(0, 38));
     m_stack->addWidget(panel);
 }

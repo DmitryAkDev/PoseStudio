@@ -9,11 +9,18 @@
  * fresh install; a user who already has a library folder by that name (registered from anywhere on
  * disk) keeps theirs, and that one is resolved here. HDRI environment panoramas live in its hdri/
  * subfolder — the folder the Environment panel lists and where users drop their own .hdr files.
+ *
+ * Cost model: the library root is looked up in the database ONCE and cached (see
+ * invalidateCache); every other function is pure path arithmetic or a directory scan, and the
+ * one filesystem write (creating hdri/) is explicit — ensureHdriDirectory() — rather than a side
+ * effect of every lookup. The panorama scan returns each file's category and display name
+ * precomputed, so callers never re-derive them.
  */
 
 #ifndef LIBRARYPATHS_H
 #define LIBRARYPATHS_H
 
+#include <QList>
 #include <QString>
 #include <QStringList>
 
@@ -21,28 +28,53 @@ namespace LibraryPaths {
 
 /// The user's "My PoseStudio Library" root: the first *enabled, non-built-in* asset library whose
 /// folder name matches Constants::USER_LIBRARY_DIRNAME; else the default Documents location
-/// (whether or not it exists on disk yet). Never returns an empty string. Requires the "db_conn"
-/// database to be open (main.cpp opens it before any widget is constructed).
+/// (whether or not it exists on disk yet). Never returns an empty string. Requires the application
+/// database to be open (main.cpp opens it before any widget is constructed). Cached after the
+/// first call — see invalidateCache().
 QString userLibraryRoot();
 
-/// The HDRI environments folder inside the user library, created on demand so "drop files here"
-/// always has a target. A panorama (.hdr or .exr) in this folder appears in the Environment
-/// panel's HDRI menu; a same-basename image file (any common format, e.g. .webp) becomes its menu
-/// thumbnail. Users may categorize panoramas into subfolders — each subfolder becomes a heading in
-/// the HDRI menu.
+/// Forgets the cached library root so the next userLibraryRoot() re-reads the AssetLibraries
+/// table. Call it after any library is added or removed (Preferences → Assets does; the Asset
+/// Manager's own add/remove-library actions must too) — otherwise a "My PoseStudio Library"
+/// registered mid-session isn't seen until the next launch.
+void invalidateCache();
+
+/// The HDRI environments folder inside the user library (<root>/hdri) — a pure path, which may
+/// not exist yet; ensureHdriDirectory() creates it. A panorama (.hdr or .exr) in this folder
+/// appears in the Environment panel's HDRI menu; a same-basename image file (any common format,
+/// e.g. .jpg — the stock previews) becomes its menu thumbnail. Users may categorize panoramas into
+/// subfolders — each subfolder becomes a heading in the HDRI menu.
 QString hdriDirectory();
 
+/// hdriDirectory(), created on disk if it is missing, so "drop files here" always has a target.
+/// Called from the startup path (the HDRI selector's constructor) and the "Open HDRI Folder…"
+/// link — deliberately not from every lookup, which used to cost a filesystem write per call.
+QString ensureHdriDirectory();
+
+/// One panorama in the HDRI menu, with everything the menu shows precomputed.
+struct HdriEntry {
+    QString path;     ///< Absolute file path (.hdr or .exr)
+    QString category; ///< Its folder relative to the hdri root ("" = uncategorized root file;
+                      ///< a nested subfolder reads "Outdoor/Sunset")
+    QString name;     ///< Basename without extension — the menu text and the thumbnail-pairing key
+};
+
 /// Every panorama (.hdr/.exr) under hdriDirectory(), searched recursively so subfolder-categorized
-/// collections are found. Absolute paths in display order: uncategorized root files first, then each subfolder
-/// (= category) alphabetically, files alphabetical within — the exact order the Environment panel's
-/// HDRI menu renders, with a heading per subfolder. A file's category is its folder path relative
-/// to the hdri root (nested subfolders read "Outdoor/Sunset").
+/// collections are found, in display order: uncategorized root files first, then each subfolder
+/// (= category) alphabetically, files alphabetical within — the exact order the Environment
+/// panel's HDRI menu renders, with a heading per subfolder.
+QList<HdriEntry> hdriEntries();
+
+/// Just the paths of hdriEntries(), in the same order — for callers that only walk files.
 QStringList hdriFiles();
 
-/// The startup/default panorama: the stock one by name wherever the user filed it, else the first
-/// of hdriFiles(); empty when there are no panoramas at all (the viewport then keeps its procedural
-/// studio environment). Shared by VulkanWindow::defaultEnvironmentPath() and the Environment
-/// panel's initial selection so the button text can't disagree with what the viewport loaded.
+/// The startup/default panorama. An explicit override next to the executable wins — <appDir>/
+/// environment.hdr, then environment.exr (a developer/packaging lever for forcing one specific
+/// environment, checked before the library) — else the stock panorama by name wherever the user
+/// filed it, else the first of hdriEntries(); empty when there are no panoramas at all (the
+/// viewport then keeps its procedural studio environment). Shared by the viewport's startup
+/// environment load and the Environment panel's initial selection, so the button text can't
+/// disagree with what the viewport loaded.
 QString defaultHdri();
 
 } // namespace LibraryPaths

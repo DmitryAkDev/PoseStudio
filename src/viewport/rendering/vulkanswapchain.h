@@ -1,21 +1,26 @@
 /**
  * @file vulkanswapchain.h
- * @brief Everything tied to the window's current resolution: the swapchain images,
- *        the shared depth buffer, the render pass, and the per-image framebuffers.
+ * @brief Everything tied to the window's current resolution: the swapchain images, their
+ *        views, the present render pass, and the per-image framebuffers.
  *
- * This is the layer that gets thrown away and rebuilt on every resize (and whenever
- * the surface goes out of date). VulkanContext stays alive across that; VulkanSwapchain
- * does not. The render pass technically only depends on the colour/depth *formats*
- * (which don't change on resize), so recreate() keeps it and only rebuilds the
- * resolution-dependent images/framebuffers.
+ * This is the layer that gets thrown away and rebuilt on every resize (and whenever the
+ * surface goes out of date). VulkanContext stays alive across that; VulkanSwapchain does not.
+ * The render pass depends only on the surface's colour format (which doesn't change on
+ * resize), so recreate() keeps it and only rebuilds the resolution-dependent images/framebuffers.
+ *
+ * The pass is deliberately minimal: ONE single-sample colour attachment, loaded DONT_CARE and
+ * stored for presentation, no depth. Since the HDR/post rework the scene renders offscreen
+ * (HdrTarget, at the context's MSAA count) and the only draw in this pass is the fullscreen
+ * composite, which overwrites every pixel with depth testing off — a multisampled colour target
+ * + depth buffer here would be cleared and resolved every frame (~236 MB at 5120x1440 4x) for
+ * nothing. Pipelines built against this pass (the composite) are therefore single-sample.
  */
 
 #ifndef VULKANSWAPCHAIN_H
 #define VULKANSWAPCHAIN_H
 
 #include "vulkancommon.h"
-
-#include <vk_mem_alloc.h>
+#include "vulkanhandles.h"
 
 #include <cstdint>
 #include <vector>
@@ -26,14 +31,14 @@ class VulkanContext;
 
 /**
  * @class VulkanSwapchain
- * @brief Owns the swapchain + its render targets and the render pass they feed.
+ * @brief Owns the swapchain + its image views/framebuffers and the present render pass.
  */
 class VulkanSwapchain {
 public:
     /// Builds the swapchain at @p extentHint (used only when the surface lets us choose
     /// the size, i.e. on some compositors). @p extentHint is in physical pixels.
     VulkanSwapchain(VulkanContext& context, VkExtent2D extentHint);
-    ~VulkanSwapchain();
+    ~VulkanSwapchain() = default; // members clean up in reverse declaration order
 
     VulkanSwapchain(const VulkanSwapchain&) = delete;
     VulkanSwapchain& operator=(const VulkanSwapchain&) = delete;
@@ -42,50 +47,36 @@ public:
     /// Safe to call repeatedly; the caller must vkDeviceWaitIdle first.
     void recreate(VkExtent2D extentHint);
 
-    VkSwapchainKHR handle()        const { return m_swapchain; }
-    VkRenderPass   renderPass()    const { return m_renderPass; }
+    VkSwapchainKHR handle()        const { return m_swapchain.get(); }
+    VkRenderPass   renderPass()    const { return m_renderPass.get(); }
     VkExtent2D     extent()        const { return m_extent; }
     uint32_t       imageCount()    const { return static_cast<uint32_t>(m_images.size()); }
-    VkFramebuffer  framebuffer(uint32_t imageIndex) const { return m_framebuffers[imageIndex]; }
+    VkFramebuffer  framebuffer(uint32_t imageIndex) const { return m_framebuffers[imageIndex].get(); }
 
 private:
     void createSwapchain(VkExtent2D extentHint);
     void createImageViews();
-    void createColorResources(); // the multisampled colour target (MSAA only)
-    void createDepthResources();
     void createRenderPass();
     void createFramebuffers();
     void cleanupResolutionResources(); // everything except the render pass
 
-    // Chooses surface format / present mode / extent from what the surface supports.
+    // Chooses surface format / present mode / extent / composite alpha from what the surface supports.
     VkSurfaceFormatKHR chooseSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& available) const;
     VkPresentModeKHR   choosePresentMode(const std::vector<VkPresentModeKHR>& available) const;
     VkExtent2D         chooseExtent(const VkSurfaceCapabilitiesKHR& caps, VkExtent2D extentHint) const;
+    VkCompositeAlphaFlagBitsKHR chooseCompositeAlpha(const VkSurfaceCapabilitiesKHR& caps) const;
 
     VulkanContext& m_context;
 
-    VkSwapchainKHR             m_swapchain   = VK_NULL_HANDLE;
-    VkRenderPass              m_renderPass  = VK_NULL_HANDLE;
-    VkFormat                  m_colorFormat = VK_FORMAT_UNDEFINED;
-    VkFormat                  m_depthFormat = VK_FORMAT_UNDEFINED;
-    VkSampleCountFlagBits     m_samples     = VK_SAMPLE_COUNT_1_BIT; // MSAA level (from the context)
-    VkExtent2D                m_extent      = {0, 0};
-
-    std::vector<VkImage>      m_images;       // owned by the swapchain, not destroyed individually
-    std::vector<VkImageView>  m_imageViews;
-    std::vector<VkFramebuffer> m_framebuffers;
-
-    // Multisampled colour target rendered into and resolved to the swapchain image each frame.
-    // Only created when m_samples > 1; single-sample rendering draws straight to the swapchain image.
-    VkImage       m_colorImage      = VK_NULL_HANDLE;
-    VmaAllocation m_colorAllocation = VK_NULL_HANDLE;
-    VkImageView   m_colorView       = VK_NULL_HANDLE;
-
-    // Single shared depth target (we don't render frames-in-flight into the same depth
-    // buffer concurrently because acquire/present serialises per image). Multisampled when m_samples>1.
-    VkImage       m_depthImage      = VK_NULL_HANDLE;
-    VmaAllocation m_depthAllocation = VK_NULL_HANDLE;
-    VkImageView   m_depthView       = VK_NULL_HANDLE;
+    // Declaration order = reverse destruction order: framebuffers and views go before the
+    // swapchain whose images they wrap, and the pass they were built for goes last.
+    UniqueRenderPass               m_renderPass;
+    UniqueSwapchain                m_swapchain;
+    VkFormat                       m_colorFormat = VK_FORMAT_UNDEFINED;
+    VkExtent2D                     m_extent      = {0, 0};
+    std::vector<VkImage>           m_images;      // owned by the swapchain, not destroyed individually
+    std::vector<UniqueImageView>   m_imageViews;
+    std::vector<UniqueFramebuffer> m_framebuffers;
 };
 
 } // namespace pose

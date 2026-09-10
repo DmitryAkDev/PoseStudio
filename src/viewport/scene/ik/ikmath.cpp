@@ -1,3 +1,18 @@
+/**
+ * @file ikmath.cpp
+ * @brief The IK module's shared rotation math: shortest-arc quaternions, signed angles about an
+ *        axis, and the Euler composition/decomposition pair for the figure format's per-joint
+ *        rotation orders.
+ *
+ * Two policies here are load-bearing. shortestArc is guarded on the CROSS length, never the dot:
+ * its inputs ride through long chains of quaternion products whose norms drift, and an acos /
+ * normalize formulation once returned NaN for two identical vectors — the in-app "figure flies
+ * off the screen" bug (NaN skin matrices). eulerFromMatrix is the EXACT inverse of eulerMatrix
+ * for all six orders — the middle angle comes from atan2(sin, cos) rather than asin so it stays
+ * conditioned near gimbal lock, where the third angle folds into the first — and the pair lives
+ * together so the composition the Armature poses with and the decomposition the extraction fits
+ * with can never drift apart. Qt-free (std + GLM).
+ */
 #include "ikmath.h"
 
 #include <glm/gtc/matrix_transform.hpp>

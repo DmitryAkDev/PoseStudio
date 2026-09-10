@@ -1,11 +1,21 @@
 /**
  * @file vulkanrenderer.h
- * @brief The per-frame engine: command buffers, frame synchronisation, and the
- *        acquire -> record -> submit -> present loop.
+ * @brief The frame orchestrator: command buffers, frame synchronisation, the screen-sized
+ *        targets, and the acquire -> record -> submit -> present loop that runs the frame graph.
  *
- * Owns the swapchain and the things that depend on the surface, drives one frame per
- * drawFrame() call, and transparently rebuilds the swapchain when the window resizes or
- * the surface goes out of date.
+ * This is the one file in rendering/ that sits ABOVE scene/ — it owns the Scene and the Grid and
+ * is allowed to include their headers; every other rendering/ file stays below the scene layer.
+ * Owns the swapchain and everything that depends on the surface (the offscreen HDR target, the
+ * outline mask, the post chain), drives one frame per drawFrame() call, and transparently
+ * rebuilds those when the window resizes or the surface goes out of date.
+ *
+ * A frame (recordCommandBuffer) is a fixed sequence of passes: the key-light SHADOW map -> the
+ * selection OUTLINE mask (only with a selection) -> the offscreen HDR SCENE pass at the context's
+ * MSAA count (backdrop, meshes, grid, overlays, resolved to a sampleable RGBA16F image plus a
+ * separate specular image) -> the screen-space SSS blur and BLOOM (PBR mode only) -> the
+ * single-sample swapchain pass, whose sole draw is the fullscreen COMPOSITE (tonemap + bloom +
+ * outline). Sync is per frame-in-flight (kMaxFramesInFlight) for the acquire semaphore and
+ * fence, per swapchain image for the render-finished semaphore.
  *
  * Like the rest of rendering/, this is intentionally Qt-free — it takes a plain
  * std::string shader directory — so the only Qt coupling in the whole viewport lives in
@@ -15,9 +25,9 @@
 #ifndef VULKANRENDERER_H
 #define VULKANRENDERER_H
 
+#include "camera.h"
 #include "vulkancommon.h"
-
-#include "../scene/camera.h"
+#include "vulkanhandles.h"
 
 #include <memory>
 #include <string>
@@ -35,7 +45,6 @@ class Grid;
 class Scene;
 struct ModelData;
 struct BakedEnvironment;
-struct LightingSettings;
 
 /**
  * @class VulkanRenderer
@@ -70,19 +79,16 @@ public:
     /// happen in the Qt layer (VulkanWindow), keeping this core free of file/codec concerns.
     void addModel(const ModelData& data);
 
-    /// Returns the index of the nearest model the @p ray hits (for picking), or -1 if none.
-    int pickModel(const Ray& ray) const;
-
     /// Removes the model at @p index from the scene, waiting for the GPU to go idle first so its
     /// buffers/descriptors aren't freed while an in-flight frame still references them.
     void deleteModel(std::size_t index);
 
-    // --- Object selection (the outlined model; forwarded to the Scene) ---
-    /// The selected model's index, or -1 when nothing is selected.
-    int  selectedModelIndex() const;
-    /// Selects model @p index (-1 clears). The selection is outlined in the viewport; selecting
-    /// a figure also makes it the active (posing-target) figure.
-    void setSelectedModel(int index);
+    /// The scene: selection, picking, shade mode, lighting dials, and the whole posing API
+    /// (joints, full-body IK, pins, pose snapshots and files) are called on it directly — the
+    /// renderer adds no policy of its own to any of them. Only the operations that DO (a device
+    /// wait before freeing, the camera framing, the environment upload) stay as renderer methods.
+    Scene&       scene() { return *m_scene; }
+    const Scene& scene() const { return *m_scene; }
     /// Scale for screen-space UI sizes rendered by the engine (the selection outline's width):
     /// the window's device pixel ratio, so a 2px outline stays 2 LOGICAL pixels on a HiDPI
     /// display. Defaults to 1.
@@ -101,96 +107,35 @@ public:
     /// and the image codec out of this core. No-op if the scene doesn't exist yet.
     void applyBakedEnvironment(const BakedEnvironment& baked);
 
-    /// Applies the live lighting/exposure dials (Environment panel). No-op if the scene doesn't exist.
-    void setLightingSettings(const LightingSettings& settings);
-
-    // --- Posing UI (forwarded to the Scene) ---
-    bool hasPosableFigure() const;
-    int  activeFigureIndex() const;   // the posing target among the figures (see Scene)
-    void setActiveFigure(int index);
-    void setShowSkeleton(bool on);
-    bool showSkeleton() const;
-
-    // --- Shading (forwarded to the Scene) ---
-    /// Sets the viewport shade mode (see mesh.frag's mode table). Takes effect on the next frame.
-    void setShadeMode(int mode);
-    int  shadeMode() const;
-    /// Selects the figure joint nearest the pixel (@p px,@p py) in a @p vpW × @p vpH viewport.
-    /// Returns the selected bone index, or -1 if none.
-    int  selectBoneAt(float px, float py, float vpW, float vpH);
-    bool hasSelectedBone() const;
-    int  selectBoneByName(const std::string& name); // diagnostics / the IK benchmark
-    void nudgeSelectedBone(const glm::vec3& deltaEulerDegrees);
-    /// Settles the figure after an interactive pose edit (applies pose correctives). Call on drag end.
-    void finalizePose();
-    // --- Full-body IK (forwarded to the Scene; see scene/ik/) ---
-    /// Begins an FBIK drag of the selected joint (contacts anchored/pinned, balance captured).
-    bool beginBoneIkDrag();
-    /// One FBIK drag update: solve the body so the selected joint reaches toward @p targetWorld.
-    /// Returns true if the pose actually changed (false: deadband / settle-freeze).
-    bool dragBoneIkTo(const glm::vec3& targetWorld);
-    /// One animated release-settle step (see Model::settleIkTick): call at the drag tick rate
-    /// after release until it returns false, then endBoneIkDrag().
-    bool settleBoneIkTick();
-    /// Ends the FBIK drag (pose stays; finalizePose() settles correctives, as with any drag).
-    void endBoneIkDrag();
-    /// World position of the selected joint (the IK drag plane anchor); false if none selected.
-    bool selectedBoneWorldPosition(glm::vec3& out) const;
-    // --- User joint pins (forwarded to the Scene; see Model::togglePinSelectedBone) ---
-    bool togglePinSelectedBone();
-    bool selectedBonePinned() const;
-    bool hasPinnedBones() const;
-    void unpinAllBones();
-    // --- Pose utilities (forwarded to the Scene's active figure) ---
-    bool resetSelectedJoint(bool subtree);
-    void resetPose();
-    void mirrorPose();
-    bool mirrorSelectedLimb();
-    /// Drops the posable figure onto the ground plane (posed lowest point → y = 0). Returns true
-    /// if it actually moved (the caller then requests a frame).
-    bool groundFigure();
-    bool figureGroundGap(float& lowestY) const; // the figure's lowest world height (see Scene)
-    void translateFigureY(float dy);            // the animated drop's per-frame step
-
-    // --- Pose snapshot (for undo/redo) ---
-    std::vector<std::pair<std::string, glm::vec3>> capturePose() const;
-    void applyPose(const std::vector<std::pair<std::string, glm::vec3>>& pose);
-    /// Saves / loads the posed figure's joint rotations to/from @p path. Returns false if there's
-    /// no figure or the file can't be opened.
-    bool savePose(const std::string& path) const;
-    bool loadPose(const std::string& path);
-
 private:
     void createCommandPool();
     void createCommandBuffers();
     void createSyncObjects();
-    void destroySyncObjects();
     void recreateSwapchain();
+    /// Records the whole frame graph for one frame — see the file banner and the definition.
     void recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex);
 
-    /// Reads a compiled SPIR-V blob from m_shaderDir. Throws VulkanError if missing.
-    std::vector<char> loadSpirv(const std::string& fileName) const;
-
     VulkanContext& m_context;
-    std::string    m_shaderDir;
 
     std::unique_ptr<VulkanSwapchain> m_swapchain;
     std::unique_ptr<HdrTarget>       m_hdrTarget;   // offscreen HDR scene target (see hdrtarget.h)
     std::unique_ptr<OutlineMask>     m_outlineMask; // the selected model's silhouette coverage (see outlinemask.h)
-    std::unique_ptr<PostProcess>     m_postProcess; // bloom + the tonemapping composite (+ the outline)
-    std::unique_ptr<Scene>           m_scene; // imported meshes (opaque)
-    std::unique_ptr<Grid>            m_grid;  // floor grid overlay
+    std::unique_ptr<PostProcess>     m_postProcess; // SSS + bloom + the tonemapping composite (+ the outline)
+    std::unique_ptr<Scene>           m_scene; // every scene pass: shadow map, outline mask, the HDR
+                                              // scene (backdrop, meshes, overlays) — see scene.h
+    std::unique_ptr<Grid>            m_grid;  // floor grid overlay (drawn into the HDR pass after the scene)
     float                            m_uiScale = 1.0f; // see setUiScale
 
-    VkCommandPool                m_commandPool = VK_NULL_HANDLE;
-    std::vector<VkCommandBuffer> m_commandBuffers;            // one per frame-in-flight
+    UniqueCommandPool            m_commandPool;
+    std::vector<VkCommandBuffer> m_commandBuffers; // one per frame-in-flight; freed with the pool
 
     // imageAvailable + inFlight are per frame-in-flight; renderFinished is per swapchain
     // image (a semaphore signalled at submit must not be reused until that image's
-    // present completes, which is tracked per image, not per frame).
-    std::vector<VkSemaphore> m_imageAvailableSemaphores;
-    std::vector<VkSemaphore> m_renderFinishedSemaphores;
-    std::vector<VkFence>     m_inFlightFences;
+    // present completes, which is tracked per image, not per frame). RAII owners: destroyed
+    // after the destructor body (which has already waited for the device to go idle).
+    std::vector<UniqueSemaphore> m_imageAvailableSemaphores;
+    std::vector<UniqueSemaphore> m_renderFinishedSemaphores;
+    std::vector<UniqueFence>     m_inFlightFences;
 
     uint32_t   m_currentFrame = 0;
     VkExtent2D m_windowExtent = {0, 0};

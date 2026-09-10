@@ -1,3 +1,16 @@
+/**
+ * @file menumanager.h
+ * @brief Declares MenuManager, which builds and owns the application's top menu bar.
+ *
+ * The menus are the shell's one dependency on the rest of the app: File → Import / pose I/O and
+ * every Edit / View action drive the viewport through the ViewportWidget facade, and
+ * Preferences (plus the Asset Manager's "Manage Asset Folders") open the PreferencesDialog from
+ * one entry point, openPreferencesDialog(), which is also where the dialog's library-change
+ * signals are wired back to the live Asset Manager. Both collaborators are registered after
+ * setupMenus() (main.cpp builds the menus before the panels exist), so the actions capture
+ * `this` and look the widgets up at trigger time rather than binding to them at build time.
+ */
+
 #ifndef MENUMANAGER_H
 #define MENUMANAGER_H
 
@@ -21,7 +34,7 @@ class MenuManager : public QObject {
 public:
     explicit MenuManager(QMainWindow *parent = nullptr);
 
-    /// Constructs the File/Edit/Help menus and attaches them to the main window.
+    /// Constructs the File/Edit/View/Help menus and attaches them to the main window.
     void setupMenus();
 
     /// Registers the live Asset Manager: wires its "Manage Asset Folders" action to open

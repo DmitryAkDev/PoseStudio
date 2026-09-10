@@ -67,13 +67,12 @@ std::string mirroredBoneName(const std::string& name) {
 } // namespace
 
 void Armature::build(const std::vector<ArmatureBone>& bones) {
-    m_bones.clear();
-    m_boneIndex.clear();
-    m_boneNames.clear();
-    m_ikRig.reset();
-    m_ikChildren.clear();
-    m_ikBindPos.clear();
-    m_selectedBone = -1;
+    // Start from a fresh armature: EVERY member — skeleton, pose, selection, pins, transform,
+    // and the whole IK state block (flat-sole nodes, prior exemptions, the governor's velocity
+    // and settle-freeze state, ...) — is reset, so a rebuilt armature behaves exactly like a
+    // freshly constructed one. Clearing only the skeleton members left the IK block stale;
+    // harmless while build() runs once per object, which is the contract (see the header).
+    *this = Armature();
 
     // inverseBind and localBind are precomputed; computeSkinMatrices() then fills the skin data —
     // every skin transform is identity at bind pose, so a freshly imported model draws exactly as
@@ -198,11 +197,6 @@ bool Armature::loadDump(const std::string& path, std::vector<ArmatureBone>& out)
         out.push_back(std::move(b));
     }
     return true;
-}
-
-void Armature::setTransform(const glm::mat4& transform) {
-    m_transform = transform;
-    computeSkinMatrices(); // refresh the transform-dependent bone world positions
 }
 
 void Armature::translateY(float dy) {

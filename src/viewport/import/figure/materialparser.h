@@ -72,15 +72,28 @@ struct MaterialRefs {
                                   ///< lowered for refractive (glass) surfaces.
 };
 
+/// Cross-file material bases the importer pre-resolved for parseMaterials, which itself only knows
+/// same-file "#id" references: `extraBases` are base materials lifted from OTHER documents, keyed by
+/// their fragment id and consulted after the same-file library; `urlRewrites` maps a scene material
+/// (by address within `sceneMaterials`) to the same-file "#fragment" url it should be read with.
+/// Both are views — the pointed-at JSON must outlive the parse. Replaces an older scheme that
+/// deep-copied the scene materials and the whole material library to append/rewrite in place.
+struct MaterialBaseOverrides {
+    std::unordered_map<std::string, const nlohmann::json*> extraBases;
+    std::unordered_map<const nlohmann::json*, std::string> urlRewrites;
+};
+
 /// Parses a preset's `scene.materials` into a zone-name -> MaterialRefs map. Each scene material only
 /// *overrides* channels on a base material it references by `url` (`#id`); the full channel set
 /// (roughness, transparency, …) lives in @p materialLibrary. This merges the two (scene wins), which
 /// is essential — e.g. the eye's clear shells get their transparency-defining channels only from the
 /// base. A material listing several groups is registered under each. Pass an empty array for
 /// @p materialLibrary when there is none (a base `.dsf` imported directly carries no materials).
+/// @p overrides (optional) supplies cross-file bases and url rewrites — see MaterialBaseOverrides.
 std::unordered_map<std::string, MaterialRefs> parseMaterials(const nlohmann::json& sceneMaterials,
                                                              const nlohmann::json& materialLibrary,
-                                                             const nlohmann::json& imageLibrary);
+                                                             const nlohmann::json& imageLibrary,
+                                                             const MaterialBaseOverrides* overrides = nullptr);
 
 } // namespace pose
 

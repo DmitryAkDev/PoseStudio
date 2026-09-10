@@ -47,6 +47,10 @@ namespace Constants {
     // time, so importing several models from one folder doesn't re-navigate from Documents.
     inline constexpr const char* PREF_LAST_IMPORT_DIR = "LastImportDir";
 
+    // Folder of the most recently saved or loaded .pose file — File → Save Pose / Load Pose start
+    // here next time (a pose library lives somewhere specific; Documents every time was a chore).
+    inline constexpr const char* PREF_LAST_POSE_DIR = "LastPoseDir";
+
     // Newline-separated list of content-root folders (each directly containing a "data/"
     // subfolder). The figure importer resolves a preset's cross-file references (geometry, morphs,
     // skin, UVs) against these, in addition to auto-detecting the root from the imported file's own
@@ -65,12 +69,10 @@ namespace Constants {
     // UI DIMENSIONS & LAYOUT
     // =========================================================================
     
-    // The maximum bounding box Qt will use to display an icon in the grid
-    inline constexpr int GRID_ICON_DISPLAY_SIZE = 120; 
-
-    // The high-res internal render dimensions for the custom QPainter thumbnail
-    inline constexpr int THUMB_RENDER_SIZE = GRID_ICON_DISPLAY_SIZE;
-    inline constexpr int THUMB_CANVAS_HEIGHT = (GRID_ICON_DISPLAY_SIZE + 8); // Extra padding for text
+    // The logical edge of a grid thumbnail: both the icon rect AssetGridDelegate paints into and
+    // the square canvas AssetThumbnailLoader renders (at the device pixel ratio). One value, so
+    // a thumbnail is never resampled a second time to fit its cell.
+    inline constexpr int GRID_ICON_DISPLAY_SIZE = 120;
 
     // Grid View Cell Sizes
     inline constexpr int GRID_CELL_WIDTH = (GRID_ICON_DISPLAY_SIZE + 10);

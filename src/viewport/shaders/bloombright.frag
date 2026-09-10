@@ -2,6 +2,10 @@
 
 // Bloom bright-extract (half resolution): keeps only what's brighter than the threshold, with a
 // soft knee so highlights ease into blooming instead of popping. Samples the resolved HDR scene.
+//
+// Pass:    the bloom render pass at half resolution, into bloom target A.
+// Inputs:  set 0.0 the (SSS-diffused) HDR resolve; push: x = the luminance threshold.
+// Outputs: location 0 -> the pass's single RGBA16F attachment.
 
 layout(set = 0, binding = 0) uniform sampler2D uHdr;
 

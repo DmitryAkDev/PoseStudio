@@ -10,8 +10,9 @@
  * hand-written "destroy everything in the right order" destructors can go.
  *
  * Only handles whose destroy function has the uniform (device, handle, allocator) shape are
- * covered here; VMA-backed buffers/images have their own owners (VulkanBuffer, the attachment
- * helpers). The owner never creates anything — call the vkCreate* function as usual and hand the
+ * covered here — including the swapchain and command pool, whose KHR/core destroy entry points
+ * share it; VMA-backed buffers/images have their own owners (VulkanBuffer, AttachmentImage).
+ * The owner never creates anything — call the vkCreate* function as usual and hand the
  * result over with `reset(device, handle)` or the constructor.
  */
 
@@ -85,6 +86,8 @@ using UniqueSampler             = UniqueDeviceHandle<VkSampler, vkDestroySampler
 using UniqueShaderModule        = UniqueDeviceHandle<VkShaderModule, vkDestroyShaderModule>;
 using UniqueSemaphore           = UniqueDeviceHandle<VkSemaphore, vkDestroySemaphore>;
 using UniqueFence               = UniqueDeviceHandle<VkFence, vkDestroyFence>;
+using UniqueCommandPool         = UniqueDeviceHandle<VkCommandPool, vkDestroyCommandPool>;
+using UniqueSwapchain           = UniqueDeviceHandle<VkSwapchainKHR, vkDestroySwapchainKHR>;
 
 } // namespace pose
 

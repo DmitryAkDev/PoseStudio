@@ -23,7 +23,9 @@
 #ifndef OUTLINEMASK_H
 #define OUTLINEMASK_H
 
-#include <vk_mem_alloc.h>
+#include "attachmentimage.h"
+#include "vulkanhandles.h"
+
 #include <vulkan/vulkan.h>
 
 #include <cstdint>
@@ -35,7 +37,7 @@ class VulkanContext;
 class OutlineMask {
 public:
     OutlineMask(VulkanContext& context, VkExtent2D extent);
-    ~OutlineMask();
+    ~OutlineMask() = default; // members clean up in reverse declaration order
 
     OutlineMask(const OutlineMask&) = delete;
     OutlineMask& operator=(const OutlineMask&) = delete;
@@ -44,8 +46,8 @@ public:
     /// have made the device idle (the renderer's resize path already does).
     void resize(VkExtent2D extent);
 
-    VkRenderPass  renderPass() const { return m_renderPass; }
-    VkFramebuffer framebuffer() const { return m_framebuffer; }
+    VkRenderPass  renderPass() const { return m_renderPass.get(); }
+    VkFramebuffer framebuffer() const { return m_framebuffer.get(); }
     VkExtent2D    extent() const { return m_extent; }
 
     /// Number of attachments in the pass (2 with MSAA: coverage + resolve; 1 without) — the
@@ -62,21 +64,17 @@ private:
     void createImages();
     void destroyImages();
 
-    VulkanContext& m_context;
-    VkExtent2D     m_extent{};
-    VkRenderPass   m_renderPass = VK_NULL_HANDLE;
-    VkSampler      m_sampler = VK_NULL_HANDLE;
-    uint32_t       m_attachmentCount = 0;
+    VulkanContext&   m_context;
+    VkExtent2D       m_extent{};
+    UniqueRenderPass m_renderPass;
+    VkSampler        m_sampler = VK_NULL_HANDLE; // borrowed from the context's SamplerCache
+    uint32_t         m_attachmentCount = 0;
 
     // MSAA coverage (transient) + its single-sample resolve; single-sample fallback: the
     // coverage image itself is the sampleable result.
-    VkImage       m_colorImage = VK_NULL_HANDLE;
-    VmaAllocation m_colorAlloc = VK_NULL_HANDLE;
-    VkImageView   m_colorView = VK_NULL_HANDLE;
-    VkImage       m_resolveImage = VK_NULL_HANDLE;
-    VmaAllocation m_resolveAlloc = VK_NULL_HANDLE;
-    VkImageView   m_resolveView = VK_NULL_HANDLE;
-    VkFramebuffer m_framebuffer = VK_NULL_HANDLE;
+    AttachmentImage   m_color;
+    AttachmentImage   m_resolve;
+    UniqueFramebuffer m_framebuffer; // last: it references the views above
 };
 
 } // namespace pose

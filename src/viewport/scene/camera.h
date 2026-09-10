@@ -12,15 +12,11 @@
 #ifndef CAMERA_H
 #define CAMERA_H
 
+#include "ray.h" // the picking ray screenPointToRay() builds
+
 #include <glm/glm.hpp>
 
 namespace pose {
-
-/// A world-space ray (origin + normalized direction), e.g. for mouse picking.
-struct Ray {
-    glm::vec3 origin;
-    glm::vec3 direction;
-};
 
 /// The six axis-aligned views, in Blender's numpad convention: Front looks at the scene from +Z
 /// (the side a default-imported figure faces), Right from +X (screen-right in the front view, so

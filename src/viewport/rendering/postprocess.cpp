@@ -5,8 +5,10 @@
 
 #include "postprocess.h"
 
+#include "descriptorutil.h"
 #include "hdrtarget.h"
-#include "vulkancommands.h"
+#include "renderpassbuilder.h"
+#include "samplercache.h"
 #include "vulkancommon.h"
 #include "vulkancontext.h"
 #include "vulkanpipeline.h"
@@ -45,89 +47,26 @@ PostProcess::PostProcess(VulkanContext& context, VkRenderPass swapchainRenderPas
     : m_context(context), m_extent(extent), m_hdrResolveView(hdrResolve.imageView) {
     VkDevice device = m_context.device();
 
-    // --- Bloom render pass: one single-sample RGBA16F attachment, left sampleable. -------------
-    VkAttachmentDescription color{};
-    color.format = HdrTarget::kColorFormat;
-    color.samples = VK_SAMPLE_COUNT_1_BIT;
-    color.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; // fullscreen draw overwrites every pixel
-    color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    color.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    color.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    color.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    color.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    // --- Bloom render pass: one single-sample RGBA16F attachment, loaded DONT_CARE (the
+    // fullscreen draw overwrites every pixel) and left sampleable. The chain ping-pongs
+    // A -> B -> A with each pass sampling the previous one's output: the sampled-target contract
+    // orders reads before overwrites and writes before reads, both directions. ------------------
+    m_bloomPass = RenderPassBuilder()
+                      .color(HdrTarget::kColorFormat, VK_SAMPLE_COUNT_1_BIT,
+                             VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_STORE,
+                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+                      .dependencies(sampledTargetDependencies(/*withDepth=*/false))
+                      .build(device);
 
-    VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-    VkSubpassDescription subpass{};
-    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpass.colorAttachmentCount = 1;
-    subpass.pColorAttachments = &colorRef;
+    m_sampler = m_context.samplers().get(SamplerDesc::linearClamp());
 
-    // The chain ping-pongs A -> B -> A with each pass sampling the previous one's output:
-    // order reads before overwrites and writes before reads, both directions.
-    std::array<VkSubpassDependency, 2> deps{};
-    deps[0].srcSubpass = VK_SUBPASS_EXTERNAL;
-    deps[0].dstSubpass = 0;
-    deps[0].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    deps[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    deps[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    deps[1].srcSubpass = 0;
-    deps[1].dstSubpass = VK_SUBPASS_EXTERNAL;
-    deps[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    deps[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    deps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-    VkRenderPassCreateInfo rpInfo{};
-    rpInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    rpInfo.attachmentCount = 1;
-    rpInfo.pAttachments = &color;
-    rpInfo.subpassCount = 1;
-    rpInfo.pSubpasses = &subpass;
-    rpInfo.dependencyCount = static_cast<uint32_t>(deps.size());
-    rpInfo.pDependencies = deps.data();
-    VK_CHECK(vkCreateRenderPass(device, &rpInfo, nullptr, &m_bloomPass));
-
-    VkSamplerCreateInfo samplerInfo{};
-    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    samplerInfo.magFilter = VK_FILTER_LINEAR;
-    samplerInfo.minFilter = VK_FILTER_LINEAR;
-    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    VK_CHECK(vkCreateSampler(device, &samplerInfo, nullptr, &m_sampler));
-
-    // --- Descriptors: one 3-sampler layout, six sets (bright/blurH/blurV/sssH/sssV/composite). --
-    std::array<VkDescriptorSetLayoutBinding, 3> bindings{};
-    for (uint32_t i = 0; i < bindings.size(); ++i) {
-        bindings[i].binding = i;
-        bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        bindings[i].descriptorCount = 1;
-        bindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    }
-    VkDescriptorSetLayoutCreateInfo layoutInfo{};
-    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
-    layoutInfo.pBindings = bindings.data();
-    VK_CHECK(vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &m_setLayout));
-
-    VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 18};
-    VkDescriptorPoolCreateInfo poolInfo{};
-    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.poolSizeCount = 1;
-    poolInfo.pPoolSizes = &poolSize;
-    poolInfo.maxSets = 6;
-    VK_CHECK(vkCreateDescriptorPool(device, &poolInfo, nullptr, &m_pool));
-
-    const std::array<VkDescriptorSetLayout, 6> layouts{m_setLayout, m_setLayout, m_setLayout,
-                                                       m_setLayout, m_setLayout, m_setLayout};
+    // --- Descriptors: one 3-sampler layout, six sets (bright/blurH/blurV/composite/sssH/sssV). --
+    m_setLayout = createDescriptorSetLayout(
+        device, uniformBindings(3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT));
+    m_pool = createDescriptorPool(device, {poolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 18)}, 6);
     std::array<VkDescriptorSet, 6> sets{};
-    VkDescriptorSetAllocateInfo alloc{};
-    alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    alloc.descriptorPool = m_pool;
-    alloc.descriptorSetCount = static_cast<uint32_t>(layouts.size());
-    alloc.pSetLayouts = layouts.data();
-    VK_CHECK(vkAllocateDescriptorSets(device, &alloc, sets.data()));
+    allocateDescriptorSets(device, m_pool.get(), m_setLayout.get(), static_cast<uint32_t>(sets.size()),
+                           sets.data());
     m_brightSet = sets[0];
     m_blurHSet = sets[1];
     m_blurVSet = sets[2];
@@ -135,23 +74,22 @@ PostProcess::PostProcess(VulkanContext& context, VkRenderPass swapchainRenderPas
     m_sssHSet = sets[4];
     m_sssVSet = sets[5];
 
-    // --- Pipelines. Bright/blur target the bloom pass (single-sample); the composite targets the
-    // swapchain's MSAA pass (a fully-covered fullscreen triangle — MSAA is a no-op on it). -------
+    // --- Pipelines. All single-sample: bright/blur/SSS target the bloom pass, the composite the
+    // swapchain's single-sample present pass (the scene's MSAA lives in the HDR target). --------
     PipelineConfig postConfig;
     postConfig.pushConstantSize = sizeof(PostPush);
     postConfig.pushConstantStages = VK_SHADER_STAGE_FRAGMENT_BIT;
     postConfig.depthTestEnable = false;
     postConfig.depthWriteEnable = false;
     postConfig.blendEnable = false;
-    postConfig.descriptorSetLayouts = {m_setLayout};
+    postConfig.descriptorSetLayouts = {m_setLayout.get()};
     postConfig.singleSample = true;
-    m_brightPipeline = std::make_unique<VulkanPipeline>(m_context, m_bloomPass, fullscreenVertSpirv,
+    m_brightPipeline = std::make_unique<VulkanPipeline>(m_context, m_bloomPass.get(), fullscreenVertSpirv,
                                                         brightFragSpirv, postConfig);
-    m_blurPipeline = std::make_unique<VulkanPipeline>(m_context, m_bloomPass, fullscreenVertSpirv,
+    m_blurPipeline = std::make_unique<VulkanPipeline>(m_context, m_bloomPass.get(), fullscreenVertSpirv,
                                                       blurFragSpirv, postConfig);
-    m_sssPipeline = std::make_unique<VulkanPipeline>(m_context, m_bloomPass, fullscreenVertSpirv,
+    m_sssPipeline = std::make_unique<VulkanPipeline>(m_context, m_bloomPass.get(), fullscreenVertSpirv,
                                                      sssBlurFragSpirv, postConfig);
-    postConfig.singleSample = false; // must match the swapchain pass's MSAA count
     m_compositePipeline = std::make_unique<VulkanPipeline>(
         m_context, swapchainRenderPass, fullscreenVertSpirv, compositeFragSpirv, postConfig);
 
@@ -159,26 +97,7 @@ PostProcess::PostProcess(VulkanContext& context, VkRenderPass swapchainRenderPas
     updateDescriptors(hdrResolve, hdrSpecResolve, outlineMask);
 }
 
-PostProcess::~PostProcess() {
-    destroyTargets();
-    VkDevice device = m_context.device();
-    m_brightPipeline.reset();
-    m_blurPipeline.reset();
-    m_sssPipeline.reset();
-    m_compositePipeline.reset();
-    if (m_pool != VK_NULL_HANDLE) {
-        vkDestroyDescriptorPool(device, m_pool, nullptr);
-    }
-    if (m_setLayout != VK_NULL_HANDLE) {
-        vkDestroyDescriptorSetLayout(device, m_setLayout, nullptr);
-    }
-    if (m_sampler != VK_NULL_HANDLE) {
-        vkDestroySampler(device, m_sampler, nullptr);
-    }
-    if (m_bloomPass != VK_NULL_HANDLE) {
-        vkDestroyRenderPass(device, m_bloomPass, nullptr);
-    }
-}
+PostProcess::~PostProcess() = default; // members clean up in reverse declaration order
 
 void PostProcess::resize(VkExtent2D extent, const VkDescriptorImageInfo& hdrResolve,
                          const VkDescriptorImageInfo& hdrSpecResolve,
@@ -194,42 +113,12 @@ void PostProcess::createTargets() {
     VkDevice device = m_context.device();
     m_bloomExtent = {std::max(m_extent.width / 2, 1u), std::max(m_extent.height / 2, 1u)};
 
-    const auto makeTarget = [&](BloomTarget& target, VkExtent2D extent) {
-        VkImageCreateInfo info{};
-        info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        info.imageType = VK_IMAGE_TYPE_2D;
-        info.format = HdrTarget::kColorFormat;
-        info.extent = {extent.width, extent.height, 1};
-        info.mipLevels = 1;
-        info.arrayLayers = 1;
-        info.samples = VK_SAMPLE_COUNT_1_BIT;
-        info.tiling = VK_IMAGE_TILING_OPTIMAL;
-        info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-        info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        VmaAllocationCreateInfo allocInfo{};
-        allocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-        VK_CHECK(vmaCreateImage(m_context.allocator(), &info, &allocInfo, &target.image,
-                                &target.alloc, nullptr));
-
-        VkImageViewCreateInfo viewInfo{};
-        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        viewInfo.image = target.image;
-        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        viewInfo.format = HdrTarget::kColorFormat;
-        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        viewInfo.subresourceRange.levelCount = 1;
-        viewInfo.subresourceRange.layerCount = 1;
-        VK_CHECK(vkCreateImageView(device, &viewInfo, nullptr, &target.view));
-
-        VkFramebufferCreateInfo fbInfo{};
-        fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        fbInfo.renderPass = m_bloomPass;
-        fbInfo.attachmentCount = 1;
-        fbInfo.pAttachments = &target.view;
-        fbInfo.width = extent.width;
-        fbInfo.height = extent.height;
-        fbInfo.layers = 1;
-        VK_CHECK(vkCreateFramebuffer(device, &fbInfo, nullptr, &target.framebuffer));
+    const auto makeTarget = [&](Target& target, VkExtent2D extent) {
+        target.image = AttachmentImage(m_context, HdrTarget::kColorFormat, extent, VK_SAMPLE_COUNT_1_BIT,
+                                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                                       VK_IMAGE_ASPECT_COLOR_BIT);
+        const VkImageView view = target.image.view();
+        target.framebuffer = createFramebuffer(device, m_bloomPass.get(), &view, 1, extent);
     };
     makeTarget(m_bloomA, m_bloomExtent);
     makeTarget(m_bloomB, m_bloomExtent);
@@ -241,86 +130,39 @@ void PostProcess::createTargets() {
     // sampled while still in UNDEFINED layout — a validation violation, and UB on hardware.
     // Repro without this: resize the window while in a stylized shade mode. (Runs only at
     // construction/resize, when the device is idle, so the blocking submit is fine.)
-    submitImmediate(m_context, [&](VkCommandBuffer cmd) {
-        const auto toReadOnly = [&](VkImage image) {
-            VkImageMemoryBarrier barrier{};
-            barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            barrier.image = image;
-            barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            barrier.subresourceRange.levelCount = 1;
-            barrier.subresourceRange.layerCount = 1;
-            barrier.srcAccessMask = 0;
-            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr,
-                                 1, &barrier);
-        };
-        toReadOnly(m_bloomA.image);
-        toReadOnly(m_bloomB.image);
-        toReadOnly(m_sssScratch.image);
-    });
+    initialiseToShaderRead(m_context,
+                           {m_bloomA.image.image(), m_bloomB.image.image(), m_sssScratch.image.image()});
 
     // The SSSSS V pass writes straight back into the HDR resolve image (same format/usage — the
     // bloom pass object is compatible and size-agnostic).
-    VkFramebufferCreateInfo fbInfo{};
-    fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    fbInfo.renderPass = m_bloomPass;
-    fbInfo.attachmentCount = 1;
-    fbInfo.pAttachments = &m_hdrResolveView;
-    fbInfo.width = m_extent.width;
-    fbInfo.height = m_extent.height;
-    fbInfo.layers = 1;
-    VK_CHECK(vkCreateFramebuffer(device, &fbInfo, nullptr, &m_sssResolveFb));
+    m_sssResolveFb = createFramebuffer(device, m_bloomPass.get(), &m_hdrResolveView, 1, m_extent);
 }
 
 void PostProcess::destroyTargets() {
-    VkDevice device = m_context.device();
-    const auto destroy = [&](BloomTarget& target) {
-        if (target.framebuffer != VK_NULL_HANDLE) {
-            vkDestroyFramebuffer(device, target.framebuffer, nullptr);
-            target.framebuffer = VK_NULL_HANDLE;
-        }
-        if (target.view != VK_NULL_HANDLE) {
-            vkDestroyImageView(device, target.view, nullptr);
-            target.view = VK_NULL_HANDLE;
-        }
-        if (target.image != VK_NULL_HANDLE) {
-            vmaDestroyImage(m_context.allocator(), target.image, target.alloc);
-            target.image = VK_NULL_HANDLE;
-            target.alloc = VK_NULL_HANDLE;
-        }
-    };
-    destroy(m_bloomA);
-    destroy(m_bloomB);
-    destroy(m_sssScratch);
-    if (m_sssResolveFb != VK_NULL_HANDLE) {
-        vkDestroyFramebuffer(device, m_sssResolveFb, nullptr);
-        m_sssResolveFb = VK_NULL_HANDLE;
+    m_sssResolveFb.reset();
+    for (Target* target : {&m_bloomA, &m_bloomB, &m_sssScratch}) {
+        target->framebuffer.reset();
+        target->image.reset();
     }
 }
 
 void PostProcess::updateDescriptors(const VkDescriptorImageInfo& hdrResolve,
                                     const VkDescriptorImageInfo& hdrSpecResolve,
                                     const VkDescriptorImageInfo& outlineMask) {
-    const auto imageInfo = [&](const BloomTarget& target) {
-        VkDescriptorImageInfo info{};
-        info.sampler = m_sampler;
-        info.imageView = target.view;
-        info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        return info;
-    };
-    const VkDescriptorImageInfo aInfo = imageInfo(m_bloomA);
-    const VkDescriptorImageInfo bInfo = imageInfo(m_bloomB);
-    const VkDescriptorImageInfo sssInfo = imageInfo(m_sssScratch);
+    const VkDescriptorImageInfo aInfo = sampledImageInfo(m_bloomA.image.view(), m_sampler);
+    const VkDescriptorImageInfo bInfo = sampledImageInfo(m_bloomB.image.view(), m_sampler);
+    const VkDescriptorImageInfo sssInfo = sampledImageInfo(m_sssScratch.image.view(), m_sampler);
 
     // (set, binding, image): bright reads HDR; blurH reads A; blurV reads B; composite reads
     // HDR + A + the selection-outline mask; sssH reads HDR; sssV reads the SSS scratch + the
-    // SPECULAR resolve (added back after the blur — the blur must never smear glints). Unused
-    // bindings get a duplicate write so every declared binding is valid.
+    // SPECULAR resolve (added back after the blur — the blur must never smear glints).
+    //
+    // The DUPLICATE-WRITE trick: every set uses the same three-binding layout, but most shaders
+    // declare only binding 0 (or 0 and 1). Vulkan requires every binding a pipeline's layout
+    // declares to hold a valid descriptor when the set is bound (VUID-vkCmdDraw-None-02699 and
+    // kin), whether or not the shader reads it — so a pass's unused bindings are written with its
+    // binding-0 image again rather than left uninitialised. One layout + one pool for six passes
+    // in exchange for a few redundant writes.
     struct Entry {
         VkDescriptorSet              set;
         uint32_t                     binding;
@@ -362,7 +204,7 @@ void PostProcess::runFullscreenPass(VkCommandBuffer cmd, VkFramebuffer framebuff
                                     VkDescriptorSet set, const float params[4]) {
     VkRenderPassBeginInfo rp{};
     rp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rp.renderPass = m_bloomPass;
+    rp.renderPass = m_bloomPass.get();
     rp.framebuffer = framebuffer;
     rp.renderArea.extent = extent;
     vkCmdBeginRenderPass(cmd, &rp, VK_SUBPASS_CONTENTS_INLINE);
@@ -397,8 +239,8 @@ void PostProcess::recordSss(VkCommandBuffer cmd) {
     const float texelY = 1.0f / static_cast<float>(m_extent.height);
     const float pushH[4] = {texelX, texelY, 1.0f, 0.0f};
     const float pushV[4] = {texelX, texelY, 0.0f, 1.0f};
-    runFullscreenPass(cmd, m_sssScratch.framebuffer, m_extent, *m_sssPipeline, m_sssHSet, pushH);
-    runFullscreenPass(cmd, m_sssResolveFb, m_extent, *m_sssPipeline, m_sssVSet, pushV);
+    runFullscreenPass(cmd, m_sssScratch.framebuffer.get(), m_extent, *m_sssPipeline, m_sssHSet, pushH);
+    runFullscreenPass(cmd, m_sssResolveFb.get(), m_extent, *m_sssPipeline, m_sssVSet, pushV);
 }
 
 void PostProcess::recordBloom(VkCommandBuffer cmd) {
@@ -409,10 +251,10 @@ void PostProcess::recordBloom(VkCommandBuffer cmd) {
     const float pushBright[4] = {kBloomThreshold, 0.0f, 0.0f, 0.0f};
     const float pushH[4] = {texelX, texelY, 1.0f, 0.0f};
     const float pushV[4] = {texelX, texelY, 0.0f, 1.0f};
-    runFullscreenPass(cmd, m_bloomA.framebuffer, m_bloomExtent, *m_brightPipeline, m_brightSet,
+    runFullscreenPass(cmd, m_bloomA.framebuffer.get(), m_bloomExtent, *m_brightPipeline, m_brightSet,
                       pushBright);
-    runFullscreenPass(cmd, m_bloomB.framebuffer, m_bloomExtent, *m_blurPipeline, m_blurHSet, pushH);
-    runFullscreenPass(cmd, m_bloomA.framebuffer, m_bloomExtent, *m_blurPipeline, m_blurVSet, pushV);
+    runFullscreenPass(cmd, m_bloomB.framebuffer.get(), m_bloomExtent, *m_blurPipeline, m_blurHSet, pushH);
+    runFullscreenPass(cmd, m_bloomA.framebuffer.get(), m_bloomExtent, *m_blurPipeline, m_blurVSet, pushV);
 }
 
 void PostProcess::recordComposite(VkCommandBuffer cmd, bool tonemap, bool bloom,

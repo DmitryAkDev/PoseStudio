@@ -5,23 +5,11 @@
 
 #include "uvparser.h"
 
+#include "figureutils.h"
+
 #include <nlohmann/json.hpp>
 
 namespace pose {
-
-namespace {
-// Several figure-format arrays are stored as {"count":N, "values":[...]}, but a few (e.g.
-// polygon_vertex_indices) are a bare array. Return the element array either way.
-const nlohmann::json& valuesArray(const nlohmann::json& node) {
-    if (node.is_object()) {
-        const auto it = node.find("values");
-        if (it != node.end()) {
-            return *it;
-        }
-    }
-    return node;
-}
-} // namespace
 
 UvSet parseUvSet(const nlohmann::json& uvDoc, const std::string& fragmentId) {
     UvSet out;

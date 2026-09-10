@@ -5,6 +5,8 @@
 
 #include "vulkancontext.h"
 
+#include "samplercache.h"
+
 #include <array>
 #include <cstdio>
 #include <cstring>
@@ -35,10 +37,11 @@ VulkanContext::VulkanContext(VkInstance instance, VkSurfaceKHR surface, uint32_t
     pickPhysicalDevice();
     createLogicalDevice();
     createAllocator(apiVersion);
+    m_samplers = std::make_unique<SamplerCache>(m_device);
 
     // Pick the MSAA level once: the highest of {4x, 2x} the device supports for BOTH colour and depth
-    // framebuffers, else single-sample. 4x is the quality/perf sweet spot for a viewport; the render
-    // pass, depth target, and every pipeline are built against this count.
+    // framebuffers, else single-sample. 4x is the quality/perf sweet spot for a viewport; the HDR
+    // scene pass, the outline mask, and every scene pipeline are built against this count.
     VkPhysicalDeviceProperties props{};
     vkGetPhysicalDeviceProperties(m_physicalDevice, &props);
     const VkSampleCountFlags counts =
@@ -52,14 +55,26 @@ VulkanContext::VulkanContext(VkInstance instance, VkSurfaceKHR surface, uint32_t
 }
 
 VulkanContext::~VulkanContext() {
-    // Reverse construction order. The instance and surface are borrowed (owned by
-    // QVulkanInstance), so we never destroy them here.
+    // Reverse construction order. The samplers must go before the device that owns them (a
+    // member would otherwise be destroyed AFTER this body, i.e. after vkDestroyDevice). The
+    // instance and surface are borrowed (owned by QVulkanInstance), so we never destroy them here.
+    m_samplers.reset();
     if (m_allocator != VK_NULL_HANDLE) {
         vmaDestroyAllocator(m_allocator);
     }
     if (m_device != VK_NULL_HANDLE) {
         vkDestroyDevice(m_device, nullptr);
     }
+}
+
+const VkFormatProperties& VulkanContext::formatProperties(VkFormat format) const {
+    auto it = m_formatProperties.find(format);
+    if (it == m_formatProperties.end()) {
+        VkFormatProperties props{};
+        vkGetPhysicalDeviceFormatProperties(m_physicalDevice, format, &props);
+        it = m_formatProperties.emplace(format, props).first;
+    }
+    return it->second;
 }
 
 bool VulkanContext::findQueueFamilies(VkPhysicalDevice device, uint32_t& graphicsFamily,
@@ -162,10 +177,12 @@ void VulkanContext::createLogicalDevice() {
     // Per-attachment blend/write-mask states: the HDR scene pass has two colour attachments
     // (diffuse + the specular the SSS blur must not smear) with different write masks per
     // pipeline. Universally supported on desktop hardware (and by MoltenVK); guard anyway so an
-    // exotic device fails gracefully at pipeline creation rather than device creation.
+    // exotic device degrades gracefully at pipeline creation (VulkanPipeline collapses the two
+    // attachments to one shared state — see supportsIndependentBlend()) rather than failing here.
     VkPhysicalDeviceFeatures supported{};
     vkGetPhysicalDeviceFeatures(m_physicalDevice, &supported);
     features.independentBlend = supported.independentBlend;
+    m_supportsIndependentBlend = supported.independentBlend == VK_TRUE;
     // Wireframe rasterization (the wireframe shade modes' LINE polygon mode). Universal on
     // desktop GPUs and MoltenVK; a device without it simply gets no wire pipelines (the wire
     // modes then draw their surface fill alone — see Scene).
@@ -212,22 +229,6 @@ void VulkanContext::createAllocator(uint32_t apiVersion) {
     ci.device = m_device;
     ci.vulkanApiVersion = apiVersion;
     VK_CHECK(vmaCreateAllocator(&ci, &m_allocator));
-}
-
-VkFormat VulkanContext::findDepthFormat() const {
-    const std::array<VkFormat, 3> candidates = {
-        VK_FORMAT_D32_SFLOAT,
-        VK_FORMAT_D32_SFLOAT_S8_UINT,
-        VK_FORMAT_D24_UNORM_S8_UINT,
-    };
-    for (VkFormat format : candidates) {
-        VkFormatProperties props{};
-        vkGetPhysicalDeviceFormatProperties(m_physicalDevice, format, &props);
-        if (props.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) {
-            return format;
-        }
-    }
-    throw VulkanError("No supported depth attachment format.");
 }
 
 } // namespace pose

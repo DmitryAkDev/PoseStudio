@@ -13,6 +13,8 @@
 #ifndef LIGHTINGSETTINGS_H
 #define LIGHTINGSETTINGS_H
 
+#include <tuple>
+
 namespace pose {
 
 struct LightingSettings {
@@ -54,22 +56,20 @@ struct LightingSettings {
     float shadowReach           = 4.0f;  ///< World distance (caster→floor along the light) over
                                          ///< which the ground shadow dissolves; bigger = longer trail.
 
+    /// EVERY field as one tuple of references — the single list that operator== compares, so a
+    /// new dial is added here (next to its declaration) and can't silently drop out of the "did
+    /// this edit change anything" check.
+    auto tie() const {
+        return std::tie(exposure, diffuseIntensity, specularIntensity, ambientFill, keyIntensity,
+                        environmentRotationDeg, keyAzimuthDeg, keyElevationDeg, subsurface,
+                        rimIntensity, tonemap, backdropMode, backdropBlur, backdropBrightness,
+                        domeRadius, shadowsEnabled, shadowIntensity, shadowSoftness, shadowReach);
+    }
+
     /// Field-wise equality, so callers can tell whether an edit actually changed anything (the
     /// Environment panel skips the undo entry for a no-op gesture). Exact float compares are right
     /// here: both sides come from the same widget values, never from computation.
-    bool operator==(const LightingSettings& o) const {
-        return exposure == o.exposure && diffuseIntensity == o.diffuseIntensity &&
-               specularIntensity == o.specularIntensity && ambientFill == o.ambientFill &&
-               keyIntensity == o.keyIntensity &&
-               environmentRotationDeg == o.environmentRotationDeg &&
-               keyAzimuthDeg == o.keyAzimuthDeg && keyElevationDeg == o.keyElevationDeg &&
-               subsurface == o.subsurface && rimIntensity == o.rimIntensity &&
-               tonemap == o.tonemap && backdropMode == o.backdropMode &&
-               backdropBlur == o.backdropBlur && backdropBrightness == o.backdropBrightness &&
-               domeRadius == o.domeRadius && shadowsEnabled == o.shadowsEnabled &&
-               shadowIntensity == o.shadowIntensity && shadowSoftness == o.shadowSoftness &&
-               shadowReach == o.shadowReach;
-    }
+    bool operator==(const LightingSettings& o) const { return tie() == o.tie(); }
     bool operator!=(const LightingSettings& o) const { return !(*this == o); }
 };
 

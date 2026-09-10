@@ -3,13 +3,14 @@
 // Posing overlay: draws the skeleton as coloured line segments (joint -> parent), transformed by the
 // per-frame camera view-projection (the same set-0 UBO the mesh pipeline uses). Per-vertex colour
 // lets the selected joint be highlighted.
+//
+// Pass:    the HDR scene pass, last (the line overlays; depth test off).
+// Inputs:  set 0.0 the camera UBO (only viewProj is read; the shared block declares it all);
+//          vertex attributes: position + colour (LineVertex).
+// Outputs: vColor for skeleton.frag.
 
-// Shared set-0 camera/lighting UBO (the same buffer the mesh pipeline fills). The overlay only needs
-// the view-projection, so it declares just the first member — declaring a partial-but-misordered
-// subset (e.g. skipping `view`) would put later fields at the wrong std140 offsets.
-layout(set = 0, binding = 0) uniform CameraUbo {
-    mat4 viewProj;
-} cam;
+#extension GL_GOOGLE_include_directive : enable
+#include "camera_ubo.glsl"
 
 layout(location = 0) in vec3 inPos;
 layout(location = 1) in vec3 inColor;

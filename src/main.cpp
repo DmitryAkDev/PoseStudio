@@ -2,8 +2,10 @@
  * @file main.cpp
  * @brief Application entry point: boots core services, then builds the main window.
  *
- * Startup order matters here — the database and preferences cache must be ready
- * before any UI that might read from them gets constructed.
+ * Pure wiring — the theming lives in shell/apptheme.*, the database bootstrap in core/database.*.
+ * Startup order matters here — the database and preferences cache must be ready before any UI
+ * that might read from them gets constructed, and the theme must be installed before the first
+ * widget polishes.
  */
 
 #include "database.h"
@@ -13,84 +15,16 @@
 #include "preferencesmanager.h"
 #include "installping.h"
 #include "assetmanagerwidget.h"
-#include "appproxystyle.h"
+#include "apptheme.h"
 #include "environmentpanel.h"
 #include "viewport/viewportwidget.h"
 
 #include <QApplication>
 #include <QDebug>
-#include <QEvent>
-#include <QFile>
 #include <QMainWindow>
-#include <QMenu>
-#include <QPainterPath>
 #include <QScreen>
 #include <QSplitter>
 #include <QTabWidget>
-#include <QIcon>
-
-namespace {
-/**
- * @brief Strips the heavy native drop shadow from every popup menu, application-wide.
- *
- * Rounded menus (the border-radius in _menumanager.qss) are *translucent* popup windows, which Windows
- * gives a heavy native drop shadow. Setting Qt::NoDropShadowWindowHint on each menu removes that shadow
- * while keeping the rounded corners. It's applied on the menu's Polish event — before its native window
- * is created, so the shadow never appears — which covers menu-bar dropdowns, their submenus, context
- * menus, and the viewport's shader menu alike, from one place.
- */
-class MenuShadowFilter : public QObject {
-public:
-    using QObject::QObject;
-
-protected:
-    bool eventFilter(QObject* watched, QEvent* event) override {
-        auto* menu = qobject_cast<QMenu*>(watched);
-        if (!menu) {
-            return QObject::eventFilter(watched, event);
-        }
-        if (event->type() == QEvent::Polish) {
-            menu->setWindowFlag(Qt::NoDropShadowWindowHint, true);
-            menu->setAttribute(Qt::WA_TranslucentBackground, true);
-        } else if (event->type() == QEvent::Resize) {
-            // NoDropShadowWindowHint leaves a 2-3px opaque black speck at each sharp outer corner (the
-            // triangle outside the border-radius won't clear to transparent). Clip the popup to its
-            // rounded-rect shape so those specks are cut away — the mask radius matches the 4px QSS
-            // border-radius, so it removes only the corner triangles and not the visible border.
-            QPainterPath path;
-            path.addRoundedRect(QRectF(menu->rect()), 4, 4);
-            menu->setMask(QRegion(path.toFillPolygon().toPolygon()));
-        }
-        return QObject::eventFilter(watched, event);
-    }
-};
-} // namespace
-
-/**
- * @brief Concatenates the app's QSS modules into one stylesheet, in cascade order
- *        (later files can override rules from earlier ones).
- */
-static QString loadStylesheets() {
-    QString combinedStyles;
-
-    const QStringList filesToLoad = {
-        QStringLiteral(":/resources/styles/global.qss"),
-        QStringLiteral(":/resources/styles/_assetmanager.qss"),
-        QStringLiteral(":/resources/styles/_menumanager.qss"),
-        QStringLiteral(":/resources/styles/_preferences.qss"),
-        QStringLiteral(":/resources/styles/_environment.qss")
-    };
-
-    for (const QString& filePath : filesToLoad) {
-        QFile file(filePath);
-        if (file.open(QFile::ReadOnly | QFile::Text)) {
-            combinedStyles.append(file.readAll()).append(QLatin1Char('\n'));
-        } else {
-            qWarning() << "[!] Failed to load stylesheet module:" << filePath;
-        }
-    }
-    return combinedStyles;
-}
 
 int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
@@ -102,34 +36,17 @@ int main(int argc, char *argv[]) {
     QApplication::setApplicationDisplayName(QStringLiteral("PoseStudio"));
 
     // --- 1. Core services & data layer ---
-    initializeDatabase(DbInitMode::Normal);
-
-    // Sanity-check the connection now, with a clear error, rather than failing confusingly
-    // the first time some unrelated widget tries to run a query later.
-    if (!QSqlDatabase::database(QStringLiteral("db_conn")).isOpen()) {
+    // Fail here, with a clear error, rather than confusingly the first time some unrelated widget
+    // tries to run a query later.
+    if (!initializeDatabase(DbInitMode::Normal)) {
         qCritical() << "Fatal Error: PoseStudio cannot launch without a valid database connection.";
         return -1;
     }
 
     PreferencesManager::instance().loadFromDatabase();
 
-    // --- 2. Branding & theming ---
-    app.setWindowIcon(QIcon(QStringLiteral(":/resources/icon.png")));
-
-    // Disable the OS-level slide/fade animations for all tooltips (the asset grid uses a
-    // custom interactive tooltip and expects instant show/hide).
-    QApplication::setEffectEnabled(Qt::UI_AnimateTooltip, false);
-    QApplication::setEffectEnabled(Qt::UI_FadeTooltip, false);
-
-    // AppProxyStyle layered over Fusion: forces the custom dark theme to render identically on
-    // every platform (never the native OS style), and adds app-wide tweaks (tooltip delays,
-    // submenu overlap, dimmed disabled icons). The proxy takes ownership of the Fusion base.
-    app.setStyle(new AppProxyStyle(QStringLiteral("Fusion")));
-    app.setStyleSheet(loadStylesheets());
-
-    // Strip the native drop shadow from every popup menu app-wide, keeping their rounded corners
-    // (see MenuShadowFilter). Parented to the app so it lives for the whole session.
-    app.installEventFilter(new MenuShadowFilter(&app));
+    // --- 2. Branding & theming (window icon, Fusion proxy style, the QSS modules, menu shadows) ---
+    AppTheme::install(app);
 
     // --- 3. Main window layout ---
     QMainWindow mainWindow;
@@ -169,7 +86,6 @@ int main(int argc, char *argv[]) {
 
     AssetManagerWidget *assetsTab = new AssetManagerWidget();
     sidePanel->addTab(assetsTab, QStringLiteral("Asset Manager"));
-    sidePanel->addTab(new QWidget(), QStringLiteral("Properties")); // placeholder tab
     // The Environment tab: live image-based-lighting controls for the viewport (see EnvironmentPanel).
     sidePanel->addTab(new pose::EnvironmentPanel(viewport), QStringLiteral("Environment"));
 
@@ -198,7 +114,12 @@ int main(int argc, char *argv[]) {
     splash->show();
 
     // "Open with" / drag-onto-exe convenience: import any model/figure paths passed on the command
-    // line. The importers queue them until the renderer exists, so this is safe pre-show.
+    // line. Two paths, depending on the platform: the viewport builds its renderer on the first
+    // expose, and on Windows that expose is delivered synchronously inside mainWindow.show()
+    // above, so here the renderer already exists and these imports run the ordinary interactive
+    // path (progress dialog and all). Where the expose arrives later (other platforms), the
+    // importers queue the paths and drain them, in this order, once the renderer is up — so the
+    // calls are safe either way.
     const QStringList launchArgs = QCoreApplication::arguments();
     for (int i = 1; i < launchArgs.size(); ++i) {
         const QString& arg = launchArgs.at(i);
@@ -215,8 +136,9 @@ int main(int argc, char *argv[]) {
 
     // The anonymous per-launch install ping (see installping.h): armed now, it fires a few
     // seconds into the session so it never competes with startup, and is a no-op in builds
-    // without a signing key or when the user has switched it off.
-    InstallPing::scheduleAtStartup(&app);
+    // without a signing key or when the user has switched it off. Owned by the main window, NOT
+    // the application object — see scheduleAtStartup for why that distinction matters at exit.
+    InstallPing::scheduleAtStartup(&mainWindow);
 
     return app.exec();
 }

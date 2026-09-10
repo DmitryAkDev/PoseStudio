@@ -1,3 +1,21 @@
+/**
+ * @file fabriksolver.cpp
+ * @brief The multi-chain FABRIK solve: forward and backward passes over the pelvis-rooted graph,
+ *        per-effector RESTORATION chains, the hard-pin policy, reach leashes, the floor
+ *        constraint, the soft pose prior, and best-state keeping.
+ *
+ * Every policy here fixed a measured failure (see tools/ikharness): constraint frames are
+ * evaluated on the OWNING (parent) side and seeded from the current pose; the root's rotation is
+ * never solved; bone lengths come from bind data, never from the entry positions; the fold-escape
+ * kick lives ONLY in the restoration chains and is triple-gated (stall, an error floor, and
+ * geometric FOLD NEED); a chain that collapses to a two-bone limb gets an analytic seed on its
+ * joint's FLEXION side; the global and per-chain best states are kept (greedy constrained
+ * iteration wanders); hard pins back the soft goals off toward their solve-entry positions and
+ * get a final kick-free polish; and the floor is applied where lengths are set (inside
+ * placeChild), never as a post-hoc clamp. Diagnostics: IK_CHAIN_TRACE=<node>, IK_FLOOR_TRACE,
+ * IK_TWOBONE_TRACE, POSESTUDIO_IK_SOLVER_TRACE, and the IK_NAN_TRAP compile-time guard.
+ * Qt-free (std + GLM).
+ */
 #include "fabriksolver.h"
 
 #include "ikmath.h"
@@ -182,7 +200,7 @@ float FabrikSolver::solve(const SkeletonGraph& graph, const std::vector<char>& a
     // (the lower thigh inherited the knee's bend and "kinked" at the rigid twist joint), and the
     // top-down restoration chains fought the bottom-up main pass every iteration. Ground
     // anchoring is the PINS' job now; the root floats (its solved displacement becomes the
-    // Model's root pose translation) and is held by the planted limbs — or by a caller-provided
+    // Armature's root pose translation) and is held by the planted limbs — or by a caller-provided
     // pinned root effector when nothing is planted.
     const int anatomicalRoot = root;
 
@@ -233,7 +251,7 @@ float FabrikSolver::solve(const SkeletonGraph& graph, const std::vector<char>& a
         // plane is out of the segment's reach (the parent itself is under the floor), the
         // child is lifted onto it and the next passes restore lengths around that.
         // Free joints only: an effector has its own target (pins sit AT their clearance, and
-        // the Model clamps the drag goal) — projecting those too made the planted feet chatter
+        // the Armature clamps the drag goal) — projecting those too made the planted feet chatter
         // at the boundary every pass (steps failed to trigger, releases landed 2cm off).
         if (settings.floorClearance != nullptr &&
             static_cast<int>(settings.floorClearance->size()) == n &&
@@ -628,12 +646,6 @@ float FabrikSolver::solve(const SkeletonGraph& graph, const std::vector<char>& a
             for (std::size_t m = chain.size() - 1; m-- > 0;) {
                 placeChild(chain[m], chain[m + 1], chainBias);
             }
-#ifdef IK_DEBUG_PRINT
-            std::printf("  [restore] pin %d chain %zu sub-base %d round %d err %g bias %g\n",
-                        e.node, chain.size(), chain.back(), round,
-                        glm::length(positions[static_cast<std::size_t>(e.node)] - goal),
-                        chainBias);
-#endif
             const float roundErr =
                 glm::length(positions[static_cast<std::size_t>(e.node)] - goal);
             if (roundErr < chainBestErr) {
@@ -847,13 +859,6 @@ float FabrikSolver::solve(const SkeletonGraph& graph, const std::vector<char>& a
             bestPositions = positions;
             bestFrame = frame;
         }
-#ifdef IK_DEBUG_PRINT
-        std::printf("[fabrik] iter %d error %g\n", iter, error);
-        for (const IkEffector& e : effectors) {
-            std::printf("  eff node %d pinned %d err %g\n", e.node, e.pinned ? 1 : 0,
-                        glm::length(positions[static_cast<std::size_t>(e.node)] - goal));
-        }
-#endif
     }
     if (!bestPositions.empty()) {
         positions = bestPositions;

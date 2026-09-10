@@ -6,6 +6,7 @@
 #include "morphresolver.h"
 
 #include "figuredocument.h"
+#include "figureutils.h"
 #include "uriresolver.h"
 
 #include <nlohmann/json.hpp>
@@ -22,41 +23,63 @@ namespace pose {
 
 namespace {
 
-// A parsed channel reference: its key (the fragment id after '#'), the file+fragment url used to
-// load it ("/path.dsf#frag", or "#frag" for a same-file reference), and the driven property (after
-// '?', e.g. "value", "scale/general", "rotation/y").
-struct ChannelRef {
-    std::string key;
-    std::string url;
-    std::string property;
-};
-
-ChannelRef parseChannelRef(const std::string& ref) {
-    std::string rest = ref;
-    // Strip a leading "NodeName:" scope — but only when the colon precedes any '/', so a colon
-    // inside a path or fragment ("/data/x.dsf#Some:Channel") isn't mistaken for a scope
-    // separator (matching channelId in figureimporter.cpp, which learned the same rule).
-    if (const std::size_t colon = rest.find(':'); colon != std::string::npos) {
-        const std::size_t slash = rest.find('/');
-        if (slash == std::string::npos || colon < slash) {
-            rest = rest.substr(colon + 1);
-        }
-    }
-    const std::size_t q = rest.find('?');
-    const std::string url = (q == std::string::npos) ? rest : rest.substr(0, q);
-    const std::string property = (q == std::string::npos) ? std::string() : rest.substr(q + 1);
-    const std::size_t hash = url.find('#');
-    const std::string key = (hash == std::string::npos) ? url : url.substr(hash + 1);
-    return {key, url, property};
-}
+// Channel references here are split by figureutils' parseChannelRef. This resolver keys its value
+// map by the RAW (as-written, still percent-encoded) id — `rawKey` — on both sides: the seeds come
+// from the scene's modifier urls and the driven channels from formula output urls, and both are
+// written the same encoded way, so raw-vs-raw compares exactly. `fileUrl` ("/path.dsf#frag", or
+// "#frag" for a same-file reference) is what the resolver loads.
 
 double valueOf(const std::unordered_map<std::string, double>& values, const std::string& key) {
     const auto it = values.find(key);
     return it != values.end() ? it->second : 0.0;
 }
 
-// Evaluates a formula's operation list — a small stack machine — against the current channel values.
-double evalOperations(const nlohmann::json& operations,
+// One pre-compiled formula operation. The evaluation below runs up to eight fixed-point rounds
+// over every reachable formula, and re-reading each op's JSON (and re-parsing each push url) per
+// round was pure repetition — so a formula's operations are translated ONCE at discovery into
+// this form and the rounds just walk it.
+struct CompiledOp {
+    enum class Kind { PushValue, PushChannel, Mult, Add, Sub, Div, Other };
+    Kind        kind = Kind::Other;
+    double      value = 0.0; ///< PushValue: the constant.
+    std::string key;         ///< PushChannel: the channel key (rawKey) to read.
+};
+
+// Translates a formula's `operations` list. Mirrors the evaluator's old per-op reads exactly: a
+// "push" carries a numeric `val`, else a string `url` (a channel reference), else pushes 0; any
+// op name outside the vocabulary becomes Other (a no-op at evaluation).
+std::vector<CompiledOp> compileOperations(const nlohmann::json& operations) {
+    std::vector<CompiledOp> out;
+    for (const auto& op : operations) {
+        const std::string o = op.value("op", std::string());
+        CompiledOp c;
+        if (o == "push") {
+            if (const auto v = op.find("val"); v != op.end() && v->is_number()) {
+                c.kind = CompiledOp::Kind::PushValue;
+                c.value = v->get<double>();
+            } else if (const auto u = op.find("url"); u != op.end() && u->is_string()) {
+                c.kind = CompiledOp::Kind::PushChannel;
+                c.key = parseChannelRef(u->get<std::string>()).rawKey;
+            } else {
+                c.kind = CompiledOp::Kind::PushValue;
+                c.value = 0.0;
+            }
+        } else if (o == "mult") {
+            c.kind = CompiledOp::Kind::Mult;
+        } else if (o == "add") {
+            c.kind = CompiledOp::Kind::Add;
+        } else if (o == "sub") {
+            c.kind = CompiledOp::Kind::Sub;
+        } else if (o == "div") {
+            c.kind = CompiledOp::Kind::Div;
+        }
+        out.push_back(std::move(c));
+    }
+    return out;
+}
+
+// Evaluates a compiled formula — a small stack machine — against the current channel values.
+double evalOperations(const std::vector<CompiledOp>& operations,
                       const std::unordered_map<std::string, double>& values) {
     std::vector<double> stack;
     auto pop = [&stack]() -> double {
@@ -67,34 +90,51 @@ double evalOperations(const nlohmann::json& operations,
         stack.pop_back();
         return v;
     };
-    for (const auto& op : operations) {
-        const std::string o = op.value("op", std::string());
-        if (o == "push") {
-            if (const auto v = op.find("val"); v != op.end() && v->is_number()) {
-                stack.push_back(v->get<double>());
-            } else if (const auto u = op.find("url"); u != op.end() && u->is_string()) {
-                stack.push_back(valueOf(values, parseChannelRef(u->get<std::string>()).key));
-            } else {
-                stack.push_back(0.0);
+    for (const CompiledOp& op : operations) {
+        switch (op.kind) {
+            case CompiledOp::Kind::PushValue:
+                stack.push_back(op.value);
+                break;
+            case CompiledOp::Kind::PushChannel:
+                stack.push_back(valueOf(values, op.key));
+                break;
+            case CompiledOp::Kind::Mult: {
+                const double b = pop();
+                stack.push_back(pop() * b);
+                break;
             }
-        } else if (o == "mult") {
-            const double b = pop();
-            stack.push_back(pop() * b);
-        } else if (o == "add") {
-            stack.push_back(pop() + pop());
-        } else if (o == "sub") {
-            const double b = pop();
-            stack.push_back(pop() - b);
-        } else if (o == "div") {
-            const double b = pop();
-            stack.push_back(b != 0.0 ? pop() / b : (pop(), 0.0));
+            case CompiledOp::Kind::Add:
+                stack.push_back(pop() + pop());
+                break;
+            case CompiledOp::Kind::Sub: {
+                const double b = pop();
+                stack.push_back(pop() - b);
+                break;
+            }
+            case CompiledOp::Kind::Div: {
+                const double b = pop();
+                stack.push_back(b != 0.0 ? pop() / b : (pop(), 0.0));
+                break;
+            }
+            case CompiledOp::Kind::Other:
+                // Rarer ops (spline, etc.) are uncommon for identity morphs and approximated as
+                // no-ops (leave the stack) — a known gap of this identity-morph path only. The
+                // pose-corrective evaluator (correctiveparser.cpp) implements the spline
+                // vocabulary for real.
+                break;
         }
-        // Rarer ops (spline, etc.) are uncommon for identity morphs and approximated as no-ops
-        // (leave the stack) — a known gap of this identity-morph path only. The pose-corrective
-        // evaluator (correctiveparser.cpp) implements the spline vocabulary for real.
     }
     return stack.empty() ? 0.0 : stack.back();
 }
+
+// One reachable formula, compiled: where its result goes plus its operation program. Formulas
+// without an `operations` list are kept for their output (discovery enqueues it) but never
+// evaluated, as before.
+struct CompiledFormula {
+    ChannelRef              output;
+    bool                    hasOperations = false;
+    std::vector<CompiledOp> ops;
+};
 
 // Maps a channel property's trailing axis ("center_point/x" -> 0, ".../y" -> 1, ".../z" -> 2).
 int axisIndexOf(const std::string& property) {
@@ -107,19 +147,6 @@ int axisIndexOf(const std::string& property) {
         case 'z': return 2;
         default:  return -1;
     }
-}
-
-const nlohmann::json* findModifier(const nlohmann::json& doc, const std::string& fragment) {
-    const auto lib = doc.find("modifier_library");
-    if (lib == doc.end() || !lib->is_array()) {
-        return nullptr;
-    }
-    for (const auto& m : *lib) {
-        if (m.value("id", std::string()) == fragment) {
-            return &m;
-        }
-    }
-    return nullptr;
 }
 
 } // namespace
@@ -147,7 +174,7 @@ std::vector<DialedMorph> resolveDialedMorphs(const nlohmann::json& presetRoot, U
         for (const auto& node : *nodes) {
             const auto geos = node.find("geometries");
             if (geos != node.end() && geos->is_array() && !geos->empty()) {
-                figureNodeKey = parseChannelRef(node.value("url", std::string())).key;
+                figureNodeKey = parseChannelRef(node.value("url", std::string())).rawKey;
                 break;
             }
         }
@@ -174,18 +201,14 @@ std::vector<DialedMorph> resolveDialedMorphs(const nlohmann::json& presetRoot, U
         if (ch == mod.end()) {
             continue;
         }
-        double cv = 0.0;
-        if (const auto v = ch->find("current_value"); v != ch->end() && v->is_number()) {
-            cv = v->get<double>();
-        } else if (const auto v2 = ch->find("value"); v2 != ch->end() && v2->is_number()) {
-            cv = v2->get<double>();
-        }
+        const double cv = channelDouble(*ch, 0.0); // the DIALED value (current_value over value)
         const std::string url = mod.value("url", std::string());
         if (url.empty()) {
             continue;
         }
-        values[parseChannelRef(url).key] += cv;
-        enqueue(parseChannelRef(url).key, url);
+        const std::string key = parseChannelRef(url).rawKey;
+        values[key] += cv;
+        enqueue(key, url);
     }
 
     // A "routed" output is consumed outside channel propagation (joint centers, figure scale) or
@@ -200,14 +223,11 @@ std::vector<DialedMorph> resolveDialedMorphs(const nlohmann::json& presetRoot, U
     };
 
     // --- Discovery: walk the driver graph from the seeds, loading each reachable file-backed
-    // channel's modifier once and keeping its formula list. Reachability is value-independent
+    // channel's modifier once and compiling its formula list. Reachability is value-independent
     // (a formula's outputs are enumerated whether or not it currently evaluates to zero), so
-    // this graph is fixed before any value is computed. The visited set bounds the walk.
-    struct LoadedChannel {
-        std::shared_ptr<const FigureDocument> doc; // keeps the formula JSON alive
-        const nlohmann::json* formulas;
-    };
-    std::vector<LoadedChannel> loaded;
+    // this graph is fixed before any value is computed. The visited set bounds the walk. The
+    // compiled formulas own everything the rounds need, so the documents needn't be kept.
+    std::vector<std::vector<CompiledFormula>> loaded; // one formula list per reached modifier
     std::unordered_set<std::string> processed;
     while (!queue.empty()) {
         const std::string key = queue.front();
@@ -227,7 +247,7 @@ std::vector<DialedMorph> resolveDialedMorphs(const nlohmann::json& presetRoot, U
         } catch (...) {
             continue;
         }
-        const nlohmann::json* mod = findModifier(doc->root(), parseChannelRef(uit->second).key);
+        const nlohmann::json* mod = findModifierById(doc->root(), parseChannelRef(uit->second).rawKey);
         if (!mod) {
             continue;
         }
@@ -235,14 +255,21 @@ std::vector<DialedMorph> resolveDialedMorphs(const nlohmann::json& presetRoot, U
         if (formulas == mod->end() || !formulas->is_array()) {
             continue;
         }
-        loaded.push_back({doc, &*formulas});
+        std::vector<CompiledFormula> compiled;
+        compiled.reserve(formulas->size());
         for (const auto& formula : *formulas) {
-            const ChannelRef out = parseChannelRef(formula.value("output", std::string()));
-            if (out.key.empty() || isRoutedOutput(out.property)) {
-                continue;
+            CompiledFormula cf;
+            cf.output = parseChannelRef(formula.value("output", std::string()));
+            if (const auto ops = formula.find("operations"); ops != formula.end()) {
+                cf.hasOperations = true;
+                cf.ops = compileOperations(*ops);
             }
-            enqueue(out.key, out.url);
+            if (!cf.output.rawKey.empty() && !isRoutedOutput(cf.output.property)) {
+                enqueue(cf.output.rawKey, cf.output.fileUrl);
+            }
+            compiled.push_back(std::move(cf));
         }
+        loaded.push_back(std::move(compiled));
     }
 
     // --- Evaluation, iterated to a fixed point. Discovery order is a BFS, which is NOT a
@@ -258,24 +285,23 @@ std::vector<DialedMorph> resolveDialedMorphs(const nlohmann::json& presetRoot, U
         double roundScale = 0.0;
         JointCenterOffsets roundOffsets;
 
-        for (const LoadedChannel& lc : loaded) {
-            for (const auto& formula : *lc.formulas) {
-                const auto ops = formula.find("operations");
-                if (ops == formula.end()) {
+        for (const std::vector<CompiledFormula>& formulas : loaded) {
+            for (const CompiledFormula& formula : formulas) {
+                if (!formula.hasOperations) {
                     continue;
                 }
-                const ChannelRef out = parseChannelRef(formula.value("output", std::string()));
-                if (out.key.empty()) {
+                const ChannelRef& out = formula.output;
+                if (out.rawKey.empty()) {
                     continue;
                 }
-                const double r = evalOperations(*ops, values); // the formula's default stage is additive
+                const double r = evalOperations(formula.ops, values); // the formula's default stage is additive
 
                 // Joint-center adjustment: a full-body/head morph also drives each bone's center_point
                 // (the joint's rest origin) so the skeleton follows the character's new proportions.
                 // Route these to the bone-offset map — a bone is not a morph channel to propagate.
                 if (out.property.rfind("center_point/", 0) == 0) {
                     if (const int a = axisIndexOf(out.property); a >= 0) {
-                        roundOffsets[out.key][a] += static_cast<float>(r);
+                        roundOffsets[out.rawKey][a] += static_cast<float>(r);
                     }
                     continue;
                 }
@@ -295,13 +321,13 @@ std::vector<DialedMorph> resolveDialedMorphs(const nlohmann::json& presetRoot, U
                 // so those outputs are dropped here.
                 if (out.property.find("scale/general") != std::string::npos ||
                     out.property.find("general_scale") != std::string::npos) {
-                    if (out.key == figureNodeKey) {
+                    if (out.rawKey == figureNodeKey) {
                         roundScale += r;
                     }
                     continue;
                 }
 
-                next[out.key] += r;
+                next[out.rawKey] += r;
             }
         }
 

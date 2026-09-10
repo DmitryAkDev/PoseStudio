@@ -11,6 +11,7 @@
 #include <glm/glm.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -21,6 +22,25 @@
 namespace pose {
 
 namespace {
+
+/// The per-texel coverage mask. Atomic because the rasterizer's triangle blocks write it
+/// concurrently: every store is the same value (1), so relaxed atomics cost nothing on the
+/// architectures we target and turn what was formally a data race into defined behaviour.
+using CoverageMask = std::vector<std::atomic<uint8_t>>;
+
+/// Texel-space bbox bound as an int, computed in double and clamped: a far-parked UV
+/// (|uv| ~ 1e6, past what the tile-span gate below rejects by magnitude only once its bound is
+/// exceeded) would otherwise cast a ~4e9 float straight to int — undefined behaviour.
+int clampedTexel(double v) {
+    constexpr double kLimit = 1e9; // far beyond any texture size; keeps every later int op finite
+    if (!(v > -kLimit)) { // also catches NaN
+        return static_cast<int>(-kLimit);
+    }
+    if (v > kLimit) {
+        return static_cast<int>(kLimit);
+    }
+    return static_cast<int>(v);
+}
 
 // One level of the pull-push pyramid above the base image: the average colour of the covered
 // texels beneath each coarse texel, plus whether any were covered at all.
@@ -36,7 +56,7 @@ struct PyramidLevel {
 // uv = ((x+0.5)/w, (y+0.5)/h), so its centre (x+0.5, y+0.5) is tested against the triangles
 // scaled into texel space. The runtime sampler REPEATs, so out-of-range UVs wrap into the mask.
 void rasterizeCoverage(const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices,
-                       int w, int h, std::vector<uint8_t>& covered) {
+                       int w, int h, CoverageMask& covered) {
     const glm::vec2 scale(static_cast<float>(w), static_cast<float>(h));
     const int triCount = static_cast<int>(indices.size() / 3);
 
@@ -74,8 +94,8 @@ void rasterizeCoverage(const std::vector<Vertex>& vertices, const std::vector<ui
     }
     const int uniqueCount = static_cast<int>(uniqueTris.size());
 
-    // Parallel over triangle blocks: concurrent writes only ever store the same value (1), so the
-    // races are benign.
+    // Parallel over triangle blocks: concurrent writes only ever store the same value (1) — the
+    // mask is atomic (relaxed) so those overlapping stores are defined behaviour.
     constexpr int kBlock = 256;
     const int blocks = (uniqueCount + kBlock - 1) / kBlock;
     parallelFor(blocks, [&](int block) {
@@ -85,6 +105,10 @@ void rasterizeCoverage(const std::vector<Vertex>& vertices, const std::vector<ui
             const glm::vec2 a = vertices[indices[3 * t + 0]].uv * scale;
             const glm::vec2 b = vertices[indices[3 * t + 1]].uv * scale;
             const glm::vec2 c = vertices[indices[3 * t + 2]].uv * scale;
+            if (!std::isfinite(a.x) || !std::isfinite(a.y) || !std::isfinite(b.x) ||
+                !std::isfinite(b.y) || !std::isfinite(c.x) || !std::isfinite(c.y)) {
+                continue; // NaN/inf UVs: nothing sensible to rasterize
+            }
 
             const float area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
             if (std::abs(area) < 1e-8f) {
@@ -93,10 +117,11 @@ void rasterizeCoverage(const std::vector<Vertex>& vertices, const std::vector<ui
             const float sign = (area > 0.0f) ? 1.0f : -1.0f;
 
             // Texel centres are at integer+0.5: centre (x+0.5) >= minU  =>  x >= minU-0.5.
-            int x0 = static_cast<int>(std::floor(std::min({a.x, b.x, c.x}) - 0.5f));
-            int x1 = static_cast<int>(std::ceil(std::max({a.x, b.x, c.x}) - 0.5f));
-            int y0 = static_cast<int>(std::floor(std::min({a.y, b.y, c.y}) - 0.5f));
-            int y1 = static_cast<int>(std::ceil(std::max({a.y, b.y, c.y}) - 0.5f));
+            // Bounds computed in double and clamped (see clampedTexel) — never a raw float->int.
+            int x0 = clampedTexel(std::floor(static_cast<double>(std::min({a.x, b.x, c.x})) - 0.5));
+            int x1 = clampedTexel(std::ceil(static_cast<double>(std::max({a.x, b.x, c.x})) - 0.5));
+            int y0 = clampedTexel(std::floor(static_cast<double>(std::min({a.y, b.y, c.y})) - 0.5));
+            int y1 = clampedTexel(std::ceil(static_cast<double>(std::max({a.y, b.y, c.y})) - 0.5));
             // A triangle spanning a full wrap already touches every column/row once wrapped —
             // cap the walk so a heavily tiled material can't multiply the raster cost.
             if (x1 - x0 >= w) { x0 = 0; x1 = w - 1; }
@@ -170,7 +195,7 @@ void rasterizeCoverage(const std::vector<Vertex>& vertices, const std::vector<ui
                 const int xe = std::min(x1, static_cast<int>(std::floor(xHi - 0.5f)));
                 for (int x = xs; x <= xe; ++x) {
                     const int wx = ((x % w) + w) % w;
-                    covered[static_cast<std::size_t>(wy) * w + wx] = 1;
+                    covered[static_cast<std::size_t>(wy) * w + wx].store(1, std::memory_order_relaxed);
                 }
             }
         }
@@ -180,8 +205,12 @@ void rasterizeCoverage(const std::vector<Vertex>& vertices, const std::vector<ui
 // Fills every uncovered texel of `pixels` (tightly-packed RGBA8, w×h) with colour dilated from the
 // covered ones via a pull-push pyramid: PULL averages covered children upward level by level, PUSH
 // hands colours back down into the gaps. Covered texels are never modified.
-void fillFromCoverage(std::vector<uint8_t>& pixels, int w, int h,
-                      const std::vector<uint8_t>& covered) {
+void fillFromCoverage(std::vector<uint8_t>& pixels, int w, int h, const CoverageMask& covered) {
+    // The mask is only READ here, after the rasterizer's threads have joined; relaxed loads are
+    // plain loads on every target.
+    const auto isCovered = [&covered](std::size_t i) {
+        return covered[i].load(std::memory_order_relaxed) != 0;
+    };
     // Row-loop dispatcher for the pyramid passes: parallelFor spawns real threads per call, and
     // the coarse levels (a few rows of a few texels) cost more in thread spawn than their work —
     // a 4K map's ~24 per-level calls otherwise pay hundreds of pointless spawns per import.
@@ -216,7 +245,7 @@ void fillFromCoverage(std::vector<uint8_t>& pixels, int w, int h,
                         const int cx = std::min(2 * x + dx, fineW - 1);
                         const int cy = std::min(2 * y + dy, fineH - 1);
                         const std::size_t ci = static_cast<std::size_t>(cy) * fineW + cx;
-                        const bool has = fine ? (fine->has[ci] != 0) : (covered[ci] != 0);
+                        const bool has = fine ? (fine->has[ci] != 0) : isCovered(ci);
                         if (!has) {
                             continue;
                         }
@@ -268,7 +297,7 @@ void fillFromCoverage(std::vector<uint8_t>& pixels, int w, int h,
     parallelFor(h, [&](int y) {
         for (int x = 0; x < w; ++x) {
             const std::size_t ti = static_cast<std::size_t>(y) * w + x;
-            if (covered[ti]) {
+            if (isCovered(ti)) {
                 continue;
             }
             const std::size_t pi = static_cast<std::size_t>(std::min(y / 2, first.h - 1)) * first.w +
@@ -285,9 +314,12 @@ void fillFromCoverage(std::vector<uint8_t>& pixels, int w, int h,
 // samples its whole texture (the sampler REPEATs), so there is no unused background to fill — and
 // rasterizing it is pathological: every tile-spanning triangle's raster bbox clamps to the FULL
 // image, which turned one figure's tiled lash strip into ~15 s of coverage rasterization for a
-// mask that came out fully covered anyway.
+// mask that came out fully covered anyway. Also true when the UVs sit further than
+// kMaxTileMagnitude tiles from the origin: that is parked/garbage UV data, not an atlas layout,
+// and the texel-space arithmetic downstream is only meaningful near the unit square.
 bool spansMultipleTiles(const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices) {
     constexpr float kMaxTileSpan = 2.0f; // an atlas mesh sits in [0,1] (+epsilon); tiled UVs span many
+    constexpr float kMaxTileMagnitude = 64.0f;
     glm::vec2 lo(std::numeric_limits<float>::max());
     glm::vec2 hi(std::numeric_limits<float>::lowest());
     for (const uint32_t i : indices) {
@@ -295,7 +327,8 @@ bool spansMultipleTiles(const std::vector<Vertex>& vertices, const std::vector<u
         lo = glm::min(lo, uv);
         hi = glm::max(hi, uv);
     }
-    return (hi.x - lo.x) > kMaxTileSpan || (hi.y - lo.y) > kMaxTileSpan;
+    const float magnitude = std::max({std::abs(lo.x), std::abs(hi.x), std::abs(lo.y), std::abs(hi.y)});
+    return (hi.x - lo.x) > kMaxTileSpan || (hi.y - lo.y) > kMaxTileSpan || magnitude > kMaxTileMagnitude;
 }
 
 } // namespace
@@ -312,15 +345,19 @@ void fillImageGutters(std::vector<uint8_t>& pixels, uint32_t width, uint32_t hei
             return; // a tiled user leaves no fillable background (and rasterizing it is pathological)
         }
     }
-    std::vector<uint8_t> covered(static_cast<std::size_t>(w) * h, 0);
+    // Value-initialized: std::atomic's defaulted constructor zero-initializes under vector's
+    // value-init, so the mask starts fully uncovered.
+    CoverageMask covered(static_cast<std::size_t>(w) * h);
     for (const UvMeshRef& user : users) {
         if (!user.vertices || !user.indices || user.indices->size() < 3 || user.vertices->empty()) {
             continue;
         }
         rasterizeCoverage(*user.vertices, *user.indices, w, h, covered);
     }
-    const std::size_t coveredCount =
-        static_cast<std::size_t>(std::count(covered.begin(), covered.end(), uint8_t(1)));
+    std::size_t coveredCount = 0;
+    for (const std::atomic<uint8_t>& c : covered) {
+        coveredCount += (c.load(std::memory_order_relaxed) != 0) ? 1 : 0;
+    }
     if (coveredCount == 0 || coveredCount == covered.size()) {
         return;
     }

@@ -99,10 +99,14 @@ jobs:
           # the secret, gets an empty key and ships with the ping disabled.
           POSESTUDIO_PING_KEY: ${{ secrets.POSESTUDIO_PING_KEY }}
         run: |
-          if (-not $env:POSESTUDIO_PING_KEY) {
-            Write-Warning 'POSESTUDIO_PING_KEY secret is not set: this build will never send an install ping.'
+          # Only a TAGGED release build carries the signing key. A workflow_dispatch pipeline
+          # test produces real 0.x.y binaries that people download from the run page; with
+          # the key compiled in, every such launch would count as a genuine install.
+          $key = if ('${{ github.ref_type }}' -eq 'tag') { $env:POSESTUDIO_PING_KEY } else { '' }
+          if ('${{ github.ref_type }}' -eq 'tag' -and -not $key) {
+            Write-Warning 'POSESTUDIO_PING_KEY secret is not set: this release will never send an install ping.'
           }
-          cmake -B build "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR" "-DPOSESTUDIO_PING_KEY=$env:POSESTUDIO_PING_KEY"
+          cmake -B build "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR" "-DPOSESTUDIO_PING_KEY=$key"
           if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed.' }
           cmake --build build --config Release --parallel
           if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }

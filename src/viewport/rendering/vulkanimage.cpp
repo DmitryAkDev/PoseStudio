@@ -5,6 +5,8 @@
 
 #include "vulkanimage.h"
 
+#include "attachmentimage.h"
+#include "samplercache.h"
 #include "vulkanbuffer.h"
 #include "vulkancommands.h"
 #include "vulkancommon.h"
@@ -16,31 +18,6 @@
 #include <utility>
 
 namespace pose {
-
-namespace {
-
-// Inserts an image-memory barrier for a single mip level, moving it between layouts.
-void transitionMip(VkCommandBuffer cmd, VkImage image, uint32_t mip, VkImageLayout oldLayout,
-                   VkImageLayout newLayout, VkAccessFlags srcAccess, VkAccessFlags dstAccess,
-                   VkPipelineStageFlags srcStage, VkPipelineStageFlags dstStage) {
-    VkImageMemoryBarrier barrier{};
-    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    barrier.oldLayout = oldLayout;
-    barrier.newLayout = newLayout;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = image;
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier.subresourceRange.baseMipLevel = mip;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
-    barrier.srcAccessMask = srcAccess;
-    barrier.dstAccessMask = dstAccess;
-    vkCmdPipelineBarrier(cmd, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-}
-
-} // namespace
 
 VulkanTexture::VulkanTexture(VulkanContext& context, const uint8_t* pixels, uint32_t width,
                              uint32_t height, bool srgb)
@@ -66,8 +43,9 @@ void VulkanTexture::recordUpload(ImmediateBatch& batch, const uint8_t* pixels, u
     const VkDeviceSize imageSize = static_cast<VkDeviceSize>(width) * height * 4;
 
     // Mipmaps need linear blit support for this format; fall back to a single level if absent.
-    VkFormatProperties formatProps{};
-    vkGetPhysicalDeviceFormatProperties(context.physicalDevice(), m_format, &formatProps);
+    // (The format properties are cached per format on the context — a figure uploads dozens of
+    // maps of the same two formats.)
+    const VkFormatProperties& formatProps = context.formatProperties(m_format);
     const bool canMip = (formatProps.optimalTilingFeatures &
                          VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0 &&
                         (formatProps.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT) != 0 &&
@@ -75,14 +53,20 @@ void VulkanTexture::recordUpload(ImmediateBatch& batch, const uint8_t* pixels, u
     m_mipLevels = canMip
                       ? static_cast<uint32_t>(std::floor(std::log2(std::max(width, height)))) + 1
                       : 1;
+    m_sampler = context.samplers().get(SamplerDesc::linearRepeatMipmapped());
 
-    // Staging buffer with the pixel bytes.
+    // Staging buffer with the pixel bytes. Handed to the batch right away (the GPU reads it
+    // until the batch submits); the handle is kept for the copy command below.
     VulkanBuffer staging(context, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_AUTO,
                          VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
                              VMA_ALLOCATION_CREATE_MAPPED_BIT);
     std::memcpy(staging.mappedData(), pixels, static_cast<size_t>(imageSize));
+    const VkBuffer stagingHandle = staging.handle();
+    batch.retain(std::move(staging));
 
     // Device-local image. TRANSFER_SRC is needed because mip generation blits from each level.
+    // The image and its view are created BEFORE any command references the image, so a failure
+    // (caught below, which frees the image) can never leave the batch pointing at a dead image.
     VkImageCreateInfo imageInfo{};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     imageInfo.imageType = VK_IMAGE_TYPE_2D;
@@ -99,35 +83,47 @@ void VulkanTexture::recordUpload(ImmediateBatch& batch, const uint8_t* pixels, u
 
     VmaAllocationCreateInfo allocInfo{};
     allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
-    VK_CHECK(vmaCreateImage(m_allocator, &imageInfo, &allocInfo, &m_image, &m_allocation, nullptr));
+    try {
+        VK_CHECK(vmaCreateImage(m_allocator, &imageInfo, &allocInfo, &m_image, &m_allocation, nullptr));
+        m_view = createImageView(context.device(), m_image, VK_IMAGE_VIEW_TYPE_2D, m_format,
+                                 VK_IMAGE_ASPECT_COLOR_BIT, m_mipLevels);
+    } catch (...) {
+        destroy();
+        throw;
+    }
 
+    // --- Record the upload + mip chain. Barrier count is mipLevels + 1 (one all-mips transition
+    // in, one DST->SRC step per generated level, one combined transition out) — the earlier three
+    // barriers per level put ~1500 vkCmdPipelineBarriers into a single figure's import batch.
     VkCommandBuffer cmd = batch.commandBuffer();
-    // mip 0: UNDEFINED -> TRANSFER_DST, copy pixels in.
-    transitionMip(cmd, m_image, 0, VK_IMAGE_LAYOUT_UNDEFINED,
-                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
-                  VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    const VkImageSubresourceRange allMips = wholeImageRange(VK_IMAGE_ASPECT_COLOR_BIT, m_mipLevels);
+    const auto mipRange = [](uint32_t first, uint32_t count) {
+        return VkImageSubresourceRange{VK_IMAGE_ASPECT_COLOR_BIT, first, count, 0, 1};
+    };
+
+    // Every level: UNDEFINED -> TRANSFER_DST (level 0 receives the pixels, the others the blits).
+    transitionImage(cmd, m_image, allMips, VK_IMAGE_LAYOUT_UNDEFINED,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
 
     VkBufferImageCopy copy{};
     copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     copy.imageSubresource.mipLevel = 0;
     copy.imageSubresource.layerCount = 1;
     copy.imageExtent = {width, height, 1};
-    vkCmdCopyBufferToImage(cmd, staging.handle(), m_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+    vkCmdCopyBufferToImage(cmd, stagingHandle, m_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                            &copy);
 
     // Generate the mip chain by successively halving + blitting from the previous level.
     int32_t mipW = static_cast<int32_t>(width);
     int32_t mipH = static_cast<int32_t>(height);
     for (uint32_t i = 1; i < m_mipLevels; ++i) {
-        // Previous level: TRANSFER_DST -> TRANSFER_SRC (it becomes the blit source).
-        transitionMip(cmd, m_image, i - 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
-                      VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                      VK_PIPELINE_STAGE_TRANSFER_BIT);
-        // Bring level i from UNDEFINED to TRANSFER_DST so it can receive the blit.
-        transitionMip(cmd, m_image, i, VK_IMAGE_LAYOUT_UNDEFINED,
-                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
-                      VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        // Previous level: its writes (the copy or the previous blit) must land before it becomes
+        // the blit SOURCE — TRANSFER_DST -> TRANSFER_SRC.
+        transitionImage(cmd, m_image, mipRange(i - 1, 1), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        VK_ACCESS_TRANSFER_READ_BIT);
 
         VkImageBlit blit{};
         blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -141,47 +137,26 @@ void VulkanTexture::recordUpload(ImmediateBatch& batch, const uint8_t* pixels, u
         vkCmdBlitImage(cmd, m_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_image,
                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
 
-        // Previous level is finished: TRANSFER_SRC -> SHADER_READ_ONLY.
-        transitionMip(cmd, m_image, i - 1, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_READ_BIT,
-                      VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-
         mipW = std::max(mipW / 2, 1);
         mipH = std::max(mipH / 2, 1);
     }
 
-    // The last level is still TRANSFER_DST -> SHADER_READ_ONLY.
-    transitionMip(cmd, m_image, m_mipLevels - 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
-                  VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-
-    // The GPU reads the staging buffer until the batch submits; hand it ownership to keep it alive.
-    batch.retain(std::move(staging));
-
-    VkImageViewCreateInfo viewInfo{};
-    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    viewInfo.image = m_image;
-    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    viewInfo.format = m_format;
-    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    viewInfo.subresourceRange.levelCount = m_mipLevels;
-    viewInfo.subresourceRange.layerCount = 1;
-    VK_CHECK(vkCreateImageView(context.device(), &viewInfo, nullptr, &m_view));
-
-    VkSamplerCreateInfo samplerInfo{};
-    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    samplerInfo.magFilter = VK_FILTER_LINEAR;
-    samplerInfo.minFilter = VK_FILTER_LINEAR;
-    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    samplerInfo.anisotropyEnable = VK_FALSE; // samplerAnisotropy feature isn't enabled on the device
-    samplerInfo.minLod = 0.0f;
-    samplerInfo.maxLod = static_cast<float>(m_mipLevels);
-    VK_CHECK(vkCreateSampler(context.device(), &samplerInfo, nullptr, &m_sampler));
+    // Out: levels 0..n-2 are TRANSFER_SRC (they served as blit sources), the last level is still
+    // TRANSFER_DST — both to SHADER_READ_ONLY in one barrier call.
+    VkImageMemoryBarrier finals[2];
+    uint32_t finalCount = 0;
+    if (m_mipLevels > 1) {
+        finals[finalCount++] = imageBarrier(m_image, mipRange(0, m_mipLevels - 1),
+                                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                            VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT);
+    }
+    finals[finalCount++] = imageBarrier(m_image, mipRange(m_mipLevels - 1, 1),
+                                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                        VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+                         0, nullptr, 0, nullptr, finalCount, finals);
 }
 
 VulkanTexture::~VulkanTexture() { destroy(); }
@@ -190,13 +165,7 @@ void VulkanTexture::destroy() {
     if (m_context == nullptr) {
         return;
     }
-    VkDevice device = m_context->device();
-    if (m_sampler != VK_NULL_HANDLE) {
-        vkDestroySampler(device, m_sampler, nullptr);
-    }
-    if (m_view != VK_NULL_HANDLE) {
-        vkDestroyImageView(device, m_view, nullptr);
-    }
+    m_view.reset();
     if (m_image != VK_NULL_HANDLE) {
         vmaDestroyImage(m_allocator, m_image, m_allocation);
     }
@@ -204,19 +173,17 @@ void VulkanTexture::destroy() {
     m_allocator = VK_NULL_HANDLE;
     m_image = VK_NULL_HANDLE;
     m_allocation = VK_NULL_HANDLE;
-    m_view = VK_NULL_HANDLE;
     m_sampler = VK_NULL_HANDLE;
 }
 
 VulkanTexture::VulkanTexture(VulkanTexture&& other) noexcept
     : m_context(other.m_context), m_allocator(other.m_allocator), m_image(other.m_image),
-      m_allocation(other.m_allocation), m_view(other.m_view), m_sampler(other.m_sampler),
+      m_allocation(other.m_allocation), m_view(std::move(other.m_view)), m_sampler(other.m_sampler),
       m_mipLevels(other.m_mipLevels), m_format(other.m_format) {
     other.m_context = nullptr;
     other.m_allocator = VK_NULL_HANDLE;
     other.m_image = VK_NULL_HANDLE;
     other.m_allocation = VK_NULL_HANDLE;
-    other.m_view = VK_NULL_HANDLE;
     other.m_sampler = VK_NULL_HANDLE;
 }
 
@@ -227,7 +194,7 @@ VulkanTexture& VulkanTexture::operator=(VulkanTexture&& other) noexcept {
         m_allocator = other.m_allocator;
         m_image = other.m_image;
         m_allocation = other.m_allocation;
-        m_view = other.m_view;
+        m_view = std::move(other.m_view);
         m_sampler = other.m_sampler;
         m_mipLevels = other.m_mipLevels;
         m_format = other.m_format; // without this a moved linear (_UNORM) texture reports sRGB
@@ -235,7 +202,6 @@ VulkanTexture& VulkanTexture::operator=(VulkanTexture&& other) noexcept {
         other.m_allocator = VK_NULL_HANDLE;
         other.m_image = VK_NULL_HANDLE;
         other.m_allocation = VK_NULL_HANDLE;
-        other.m_view = VK_NULL_HANDLE;
         other.m_sampler = VK_NULL_HANDLE;
     }
     return *this;

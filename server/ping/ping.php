@@ -149,8 +149,8 @@ try {
     }
     $rules = [
         'install'    => '/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/', // QUuid::createUuid() = v4
-        'version'    => '/^\d{1,3}\.\d{1,3}\.\d{1,3}$/',      // the CI pipeline-test build's "0.0.0-dev" fails here
-        'os'         => '/^[a-z0-9]{1,32}$/',                 // QSysInfo::productType(): windows, macos, ubuntu...
+        'version'    => '/^\d{1,3}\.\d{1,3}\.\d{1,3}$/',      // Constants::APP_VERSION (CMake's project VERSION); pipeline-test builds ship keyless, so they never get here
+        'os'         => '/^[a-z0-9_.-]{1,32}$/',              // QSysInfo::productType(): windows, macos, ubuntu, opensuse-leap...
         'os_version' => '/^[^\x00-\x1f\x7f]{1,64}$/u',         // QSysInfo::prettyProductName()
         'arch'       => '/^[a-z0-9_]{1,16}$/',                // x86_64, arm64
         'kind'       => '/^(installer|portable)$/',

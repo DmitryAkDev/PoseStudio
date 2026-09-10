@@ -101,6 +101,30 @@ QToolTip {
 }
 
 /* ========================================================================= */
+/* [ CHECKBOXES ]                                                            */
+/* ========================================================================= */
+/* ONE indicator app-wide (the Environment tab's toggles, the General page's ping toggle, any
+   checkbox a dialog grows): a dark well with the app's hover accent; checked = the accent check
+   glyph in the well rather than a solid fill (a filled square read as a button). Only the label
+   colour/size differs per panel — see _environment.qss and _preferences.qss. */
+QCheckBox::indicator {
+    width: 15px;
+    height: 15px;
+    border: 1px solid #4a4b4d;
+    border-radius: 3px;
+    background: #2a2b2d;
+}
+
+QCheckBox::indicator:hover {
+    border-color: #5b87cc; /* the app accent (Constants::COLOR_ACCENT) — same as the DragNumberBox hover border */
+}
+
+QCheckBox::indicator:checked {
+    background: #2a2b2d;
+    image: url(:/resources/icons/check.png);
+}
+
+/* ========================================================================= */
 /* [ DIALOGS (QMessageBox, etc.) ]                                          */
 /* ========================================================================= */
 
@@ -135,4 +159,39 @@ QDialog QPushButton:pressed {
 QDialog QPushButton:default {
     /* Highlights whichever button Enter/Return will trigger */
     border: 1px solid #5b87cc;
+}
+
+/* ========================================================================= */
+/* [ SCROLLBARS ]                                                            */
+/* ========================================================================= */
+/* The app-wide vertical scrollbar theme. Unscoped on purpose: every scroll   */
+/* area gets it. It used to sit in _assetmanager.qss under a "grid scrollbar" */
+/* heading while in fact styling every vertical scrollbar in the app.         */
+
+QScrollBar:vertical {
+    width: 14px;
+    margin: 0px;
+    background-color: #1a1b1c;
+    border: none;
+}
+
+QScrollBar::handle:vertical {
+    min-height: 20px;
+    margin: 2px; 
+    background-color: #3a3b3c;
+    border-radius: 5px; 
+}
+
+QScrollBar::handle:vertical:hover {
+    background-color: #4a4b4c; 
+}
+
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
+    height: 0px; 
+}
+
+QScrollBar::add-page:vertical,
+QScrollBar::sub-page:vertical {
+    background: none;
 }

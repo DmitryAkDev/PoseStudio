@@ -1,3 +1,13 @@
+/**
+ * @file skeletongraph.cpp
+ * @brief The FBIK skeleton graph: the undirected adjacency built from the anatomical hierarchy,
+ *        BFS re-rooting into the parent/traversal view the solver walks, and active-path marking.
+ *
+ * build() roots at the first parentless node only as a placeholder: the rig re-roots at the
+ * PELVIS as soon as it is built and re-asserts that rooting per drag (the contact-rooted design
+ * this class was written for was abandoned — see the header). markActivePaths is what confines a
+ * solve to the effector and pin chains; everything else rides along rigidly. Qt-free (std only).
+ */
 #include "skeletongraph.h"
 
 namespace pose {
@@ -20,7 +30,9 @@ void SkeletonGraph::build(const std::vector<int>& parents) {
         }
     }
     if (hierarchyRoot >= 0) {
-        setRoot(hierarchyRoot); // default rooting until a solve picks a ground contact
+        // Placeholder rooting only: the rig re-roots at the pelvis as soon as it is built and
+        // re-asserts that rooting per drag (contact re-rooting was abandoned — see the header).
+        setRoot(hierarchyRoot);
     }
 }
 

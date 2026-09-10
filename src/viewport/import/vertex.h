@@ -3,8 +3,9 @@
  * @brief The interleaved vertex layout shared by every model importer, the GPU mesh, and the mesh
  *        pipeline's vertex-input state.
  *
- * This is the geometry contract importers produce: position + normal + UV, the minimum that
- * supports lit, textured meshes. It lives in import/ (alongside ModelData) because it defines what
+ * This is the geometry contract importers produce: position + normal + UV (the minimum that
+ * supports lit, textured meshes), plus the skinning weights, the baked AO and tangent, and the
+ * GPU-side corrective-run handle. It lives in import/ (alongside ModelData) because it defines what
  * an importer hands back; scene/ consumes it when uploading to the GPU. UVs are always carried (even
  * by importers that ignore textures) so adding texturing is additive and never re-churns the vertex
  * format. Pure GLM + Vulkan, no Qt.
@@ -59,7 +60,8 @@ struct Vertex {
     }
 
     /// loc0 = pos (vec3), loc1 = normal (vec3), loc2 = uv (vec2), loc3 = joints (uvec4),
-    /// loc4 = weights (vec4), loc5 = ao (float), loc6 = tangent (vec4) — matches mesh.vert.
+    /// loc4 = weights (vec4), loc5 = ao (float), loc6 = tangent (vec4),
+    /// loc7 = correctiveRange (uint) — matches mesh.vert / shadow.vert.
     static std::array<VkVertexInputAttributeDescription, 8> attributeDescriptions() {
         std::array<VkVertexInputAttributeDescription, 8> attrs{};
         attrs[0].location = 0;

@@ -5,6 +5,8 @@
 
 #include "nodeparser.h"
 
+#include "figureutils.h" // restVec3Channels — the REST-value reader (bind transforms, not dialed state)
+
 #include <nlohmann/json.hpp>
 
 #include <string>
@@ -14,27 +16,6 @@
 namespace pose {
 
 namespace {
-
-// Reads an array of three channel_float objects ([{id:x,value:..},{id:y,..},{id:z,..}]) into a vec3,
-// taking each channel's "value" (its rest value), falling back to "current_value". This is the
-// deliberate INVERSE of the project-wide "current_value wins" convention (see channelScalar in
-// materialparser.cpp): these are REST transforms — center/end points, rest orientation — where a
-// scene's dialed current_value is the posed state, and the bind must come from the rest state.
-glm::vec3 readVec3Channels(const nlohmann::json& arr) {
-    glm::vec3 out(0.0f);
-    if (!arr.is_array()) {
-        return out;
-    }
-    for (int i = 0; i < 3 && i < static_cast<int>(arr.size()); ++i) {
-        const nlohmann::json& ch = arr[i];
-        if (const auto v = ch.find("value"); v != ch.end() && v->is_number()) {
-            out[i] = v->get<float>();
-        } else if (const auto cv = ch.find("current_value"); cv != ch.end() && cv->is_number()) {
-            out[i] = cv->get<float>();
-        }
-    }
-    return out;
-}
 
 // Maps a rotation channel's id to an axis index (0/1/2), matching by id rather than array position
 // (the node's rotation array is ordered per rotation_order, not necessarily x,y,z).
@@ -98,11 +79,13 @@ std::vector<FigureBone> parseSkeleton(const nlohmann::json& nodeLibrary) {
         }
         FigureBone bone;
         bone.name = node.value("id", node.value("name", std::string()));
+        // Rest transforms read "value" first (see restVec3Channels): a scene's dialed
+        // current_value is the posed state, and the bind must come from rest.
         if (const auto cp = node.find("center_point"); cp != node.end()) {
-            bone.origin = readVec3Channels(*cp);
+            bone.origin = restVec3Channels(*cp);
         }
         if (const auto orient = node.find("orientation"); orient != node.end()) {
-            bone.orientation = readVec3Channels(*orient);
+            bone.orientation = restVec3Channels(*orient);
         }
         if (const auto rot = node.find("rotation"); rot != node.end()) {
             readRotationLimits(*rot, bone);

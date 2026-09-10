@@ -23,7 +23,7 @@
  * segment's proposed direction is clamped to its hinge/cone before placement.
  *
  * The solver only moves nodes marked active (the union of effector->root paths); everything else
- * is untouched and rides along rigidly when the Model re-poses. Qt-free (std + GLM).
+ * is untouched and rides along rigidly when the Armature re-poses. Qt-free (std + GLM).
  */
 
 #ifndef FABRIKSOLVER_H

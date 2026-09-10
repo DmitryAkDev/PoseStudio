@@ -1,7 +1,13 @@
 /**
  * @file environment.cpp
- * @brief Implementation of the procedural studio environment and the SH irradiance projection.
- *        See environment.h.
+ * @brief The procedural studio environment and the CPU IBL bakes: luminance normalization, the
+ *        SH irradiance projection, the GGX-prefiltered specular cubemap, the BRDF LUT, and
+ *        bakeEnvironment() with its dominant-light extraction. See environment.h.
+ *
+ * Every bake is a parallelFor over independent rows/slabs with the per-row partials reduced in
+ * a fixed order afterwards, so the result doesn't depend on the thread count (bit-for-bit
+ * reproducible from run to run) while a 4K panorama's ~72M SH multiply-adds no longer stall
+ * the thread that asked for it.
  */
 
 #include "environment.h"
@@ -9,7 +15,9 @@
 #include "parallelfor.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <vector>
 
 namespace pose {
 
@@ -115,25 +123,40 @@ void normalizeEnvironmentLuminance(EnvironmentImage& env, float targetAverageLum
         return;
     }
     // Solid-angle weighted average (equirect over-samples the poles, so weight rows by sin(theta)).
-    double weighted = 0.0;
-    double weight = 0.0;
-    for (int y = 0; y < env.height; ++y) {
+    // Rows are independent: each sums its own texels in parallel, and the row partials are
+    // reduced in row order afterwards (a deterministic sum whatever the thread count).
+    std::vector<double> rowWeighted(static_cast<std::size_t>(env.height), 0.0);
+    std::vector<double> rowWeight(static_cast<std::size_t>(env.height), 0.0);
+    parallelFor(env.height, [&](int y) {
         const double sinT = std::sin((y + 0.5) / env.height * kPi);
+        double weighted = 0.0;
+        double weight = 0.0;
         for (int x = 0; x < env.width; ++x) {
             const glm::vec3& c = env.texel(x, y);
             const double lum = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
             weighted += lum * sinT;
             weight += sinT;
         }
+        rowWeighted[static_cast<std::size_t>(y)] = weighted;
+        rowWeight[static_cast<std::size_t>(y)] = weight;
+    });
+    double weighted = 0.0;
+    double weight = 0.0;
+    for (int y = 0; y < env.height; ++y) {
+        weighted += rowWeighted[static_cast<std::size_t>(y)];
+        weight += rowWeight[static_cast<std::size_t>(y)];
     }
     const double avg = (weight > 0.0) ? weighted / weight : 0.0;
     if (avg <= 1e-6) {
         return;
     }
     const float scale = static_cast<float>(targetAverageLuminance / avg);
-    for (glm::vec3& p : env.pixels) {
-        p *= scale;
-    }
+    parallelFor(env.height, [&](int y) {
+        glm::vec3* row = &env.pixels[static_cast<std::size_t>(y) * env.width];
+        for (int x = 0; x < env.width; ++x) {
+            row[x] *= scale;
+        }
+    });
 }
 
 EnvironmentSH projectIrradianceSH(const EnvironmentImage& env) {
@@ -142,11 +165,15 @@ EnvironmentSH projectIrradianceSH(const EnvironmentImage& env) {
         return sh;
     }
     // Solid-angle-weighted projection: each texel covers dφ·dθ·sinθ steradians. Accumulate in double
-    // to keep precision over the ~130k-texel sum, then store as float coefficients.
-    glm::dvec3 acc[9] = {};
+    // to keep precision over the ~130k-texel (up to ~8M for a 4K panorama) sum, then store as
+    // float coefficients. Rows project in parallel into their own accumulators, reduced in row
+    // order afterwards — deterministic, and the dominant cost of a bake after the prefilter.
     const double dPhi = 2.0 * kPi / env.width;
     const double dTheta = kPi / env.height;
-    for (int y = 0; y < env.height; ++y) {
+    std::vector<std::array<glm::dvec3, 9>> rowAcc(static_cast<std::size_t>(env.height));
+    parallelFor(env.height, [&](int y) {
+        std::array<glm::dvec3, 9> acc;
+        acc.fill(glm::dvec3(0.0));
         const float theta = (y + 0.5f) / env.height * kPi;
         const double dOmega = dPhi * dTheta * std::sin(theta);
         for (int x = 0; x < env.width; ++x) {
@@ -158,6 +185,14 @@ EnvironmentSH projectIrradianceSH(const EnvironmentImage& env) {
             for (int i = 0; i < 9; ++i) {
                 acc[i] += glm::dvec3(radiance) * (static_cast<double>(b[i]) * dOmega);
             }
+        }
+        rowAcc[static_cast<std::size_t>(y)] = acc;
+    });
+    std::array<glm::dvec3, 9> acc;
+    acc.fill(glm::dvec3(0.0));
+    for (int y = 0; y < env.height; ++y) {
+        for (int i = 0; i < 9; ++i) {
+            acc[i] += rowAcc[static_cast<std::size_t>(y)][i];
         }
     }
     for (int i = 0; i < 9; ++i) {

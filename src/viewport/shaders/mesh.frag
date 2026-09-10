@@ -3,40 +3,33 @@
 // Mesh fragment shader with a selectable *shade mode* (the viewport's shader picker). One über-shader
 // branches on cam.params.x — a per-frame uniform, so every fragment in a draw takes the same branch
 // (coherent, cheap). Modes (the picker's rows map onto these through scene/shademode.h — the
-// picker's own order is NOT this numbering; matcaps 3-4 currently have no picker row):
-//   0 Rendered        1 PBR            2 Matcap Studio   3 Matcap Skin
-//   4 Matcap Metal    5 Toon           6 Clay            7 Lighting Only
-//   8 Flat Shaded     9 Normals        10 Albedo (unlit) 11 UV Checker
+// picker's own order is NOT this numbering; 3 and 4 are UNUSED numbers, kept vacant so the
+// reachable modes stay stable — the skin/metal matcaps that lived there never had a picker row):
+//   0 Rendered (the picker's "Texture Shaded")    1 PBR         2 Matcap (Studio)   3-4 unused
+//   5 Toon           6 Clay            7 Lighting Only
+//   8 Flat Shaded    9 Normals         10 Albedo (unlit) 11 UV Checker
 //   12 Ambient Occlusion (the baked vAo)   13 Silhouette (flat fill)
 //   14 Specular only (the PBR path's material specular — key GGX + environment + top coat —
 //      without diffuse or rim: the roughness and spec maps at work; HDR like PBR)
 //   15 Roughness map (the material's scalar roughness × its map, as grey: white = matte)
 // Shared across the shaded modes: a detail map (tangent-space normal = mode 1, grayscale bump = mode 2)
-// perturbs the normal via a screen-space cotangent frame (no vertex tangents); lighting is two-sided
-// (the normal faces the viewer regardless of winding); and alpha = the per-draw opacity, so the same
-// shader serves the opaque and the alpha-blended transparent pass. Two further DRAW KINDS bypass
-// the modes entirely (pc.material3.z): the wireframe overlay's edges (a flat grey) and the
-// hidden-line surface fill (depth only; its pipeline masks the colour writes).
+// perturbs the normal through the import-baked UV tangent frame (vTangent; a screen-space
+// cotangent frame is the fallback for geometry without baked tangents — see tangentFrame());
+// lighting is two-sided (the normal AND the tangent frame's handedness flip to face the viewer
+// regardless of winding); and alpha = the per-draw opacity, so the same shader serves the opaque
+// and the alpha-blended transparent pass. Two further DRAW KINDS bypass the modes entirely
+// (pc.material3.z): the wireframe overlay's edges (a flat grey) and the hidden-line surface fill
+// (depth only; its pipeline masks the colour writes).
+//
+// Pass:    the HDR scene pass (HdrTarget), opaque + transparent + wire + hidden-line variants.
+// Inputs:  set 0.0 the camera/lighting UBO (camera_ubo.glsl); set 1.0-5 the material maps; set 3
+//          the IBL maps + shadow map; push: the 128-byte MeshPushConstants block (mesh.h).
+// Outputs: location 0 -> colour attachment 0 (scene; alpha = SSS mask in the opaque pass),
+//          location 1 -> colour attachment 1 (the PBR opaque pass's specular; masked elsewhere).
 
-layout(set = 0, binding = 0) uniform CameraUbo {
-    mat4 viewProj;
-    mat4 view;
-    mat4 lightViewProj; // key light's ortho view-projection (shadow-map space)
-    vec4 cameraPos;
-    vec4 lightDir;    // key light (direction TO the light)
-    vec4 lightColor;
-    vec4 fillDir;     // fill light (softer, opposite the key)
-    vec4 fillColor;
-    vec4 rimDir;      // rim / back light (behind the subject, pops the silhouette)
-    vec4 rimColor;
-    vec4 ambient;
-    vec4 params;  // x = shade mode, y = exposure, z = specularIntensity, w = ambientFill
-    vec4 sh[9];   // environment diffuse irradiance: 9 SH coefficients (rgb in .xyz)
-    vec4 params2; // x = diffuseIntensity, y = keyIntensity, z = envRotation(rad), w = free
-    vec4 params3; // x = subsurface, y = rimIntensity, z/w = backdrop mode/blur (unused here)
-    vec4 params4; // x/y = backdrop dials (unused here), z = shadow intensity (0..1),
-                  // w = the wireframe overlay's linear grey (see shademode.h)
-} cam;
+#extension GL_GOOGLE_include_directive : enable
+#include "camera_ubo.glsl" // the set-0 camera/lighting block (cam) + rotateY
+#include "colour.glsl"     // tonemapACES (the matcap mode) + kSelectionAccent (the highlight)
 
 layout(push_constant) uniform Push {
     mat4 model;
@@ -107,35 +100,22 @@ mat3 cotangentFrame(vec3 N, vec3 p, vec2 uv) {
 }
 
 // The surface tangent frame: the import-baked UV tangents when present (cleaner + stable across
-// UDIM seams — see tangentgen.h), else the screen-space cotangent fallback.
-mat3 tangentFrame(vec3 n, vec3 p, vec2 uv) {
-    if (abs(vTangent.w) > 0.5) {
+// UDIM seams — see tangentgen.h), else the screen-space cotangent fallback. @p tangent is the
+// interpolated vTangent with its handedness (w) already flipped for a back face (see shade()).
+mat3 tangentFrame(vec3 n, vec3 p, vec2 uv, vec4 tangent) {
+    if (abs(tangent.w) > 0.5) {
         // Gram-Schmidt the interpolated tangent against the shaded normal — guarding the
         // degenerate case where interpolation across a UV-seam split lands the tangent (near-)
         // parallel to n: normalize(≈0) is NaN, and one NaN pixel spreads through the blurs.
-        vec3 tRaw = vTangent.xyz - n * dot(n, vTangent.xyz);
+        vec3 tRaw = tangent.xyz - n * dot(n, tangent.xyz);
         float len2 = dot(tRaw, tRaw);
         if (len2 > 1e-12) {
             vec3 t = tRaw * inversesqrt(len2);
-            vec3 b = cross(n, t) * vTangent.w;
+            vec3 b = cross(n, t) * tangent.w;
             return mat3(t, b, n);
         }
     }
     return cotangentFrame(n, p, uv);
-}
-
-// ACES filmic tonemap — keeps the HDR ranges of the PBR/matcap modes from clipping harshly before the
-// sRGB framebuffer does its own gamma encode.
-vec3 tonemapACES(vec3 x) {
-    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
-    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
-}
-
-// Rotates a direction about the vertical (Y) axis — used to spin the lighting environment (its SH
-// diffuse and prefiltered specular) around the subject without re-baking, from the panel's rotation dial.
-vec3 rotateY(vec3 v, float angle) {
-    float c = cos(angle), s = sin(angle);
-    return vec3(c * v.x + s * v.z, v.y, -s * v.x + c * v.z);
 }
 
 // Reconstructs the environment's diffuse irradiance E(n) from the 9 SH coefficients in the camera
@@ -204,28 +184,13 @@ float keyShadow(vec3 worldPos, vec3 geomN, float ndlGeom) {
     return sum / 9.0;
 }
 
-// --- Procedural matcaps: shade a "material sphere" from the view-space normal (vn.z points at eye) ---
+// --- Procedural matcap: shade a "material sphere" from the view-space normal (vn.z points at eye) ---
 vec3 matcapStudio(vec3 vn) {
     float t = smoothstep(-0.85, 1.0, vn.y);
     vec3 c = mix(vec3(0.06, 0.07, 0.09), vec3(0.82, 0.85, 0.90), t);
     c += vec3(1.0) * pow(max(dot(vn, normalize(vec3(-0.5, 0.55, 0.65))), 0.0), 28.0) * 0.9; // key
     c += vec3(0.18, 0.20, 0.26) * pow(max(dot(vn, normalize(vec3(0.6, 0.1, 0.6))), 0.0), 4.0); // fill
     c += vec3(0.25, 0.30, 0.42) * pow(1.0 - max(vn.z, 0.0), 3.0); // rim
-    return c;
-}
-vec3 matcapSkin(vec3 vn) {
-    float t = smoothstep(-0.7, 1.0, vn.y);
-    vec3 c = mix(vec3(0.30, 0.12, 0.10), vec3(0.96, 0.76, 0.66), t);
-    c += vec3(1.0, 0.96, 0.90) * pow(max(dot(vn, normalize(vec3(-0.4, 0.5, 0.75))), 0.0), 20.0) * 0.30;
-    c += vec3(0.70, 0.25, 0.18) * pow(1.0 - max(vn.z, 0.0), 2.5) * 0.55; // warm subsurface rim
-    return c;
-}
-vec3 matcapMetal(vec3 vn) {
-    float t = smoothstep(-1.0, 1.0, vn.y);
-    vec3 c = mix(vec3(0.02, 0.03, 0.05), vec3(0.45, 0.50, 0.60), t);
-    c += vec3(1.0) * pow(max(dot(vn, normalize(vec3(-0.35, 0.6, 0.7))), 0.0), 220.0); // sharp key
-    c += vec3(0.25, 0.28, 0.34) * pow(max(dot(vn, normalize(vec3(0.5, -0.4, 0.6))), 0.0), 6.0); // bounce
-    c += vec3(0.55, 0.60, 0.75) * pow(1.0 - max(vn.z, 0.0), 1.6) * 0.7; // bright rim
     return c;
 }
 
@@ -250,8 +215,15 @@ void shade() {
     int mode = int(cam.params.x + 0.5);
 
     vec3 n = normalize(vWorldNormal);
+    vec4 tangent = vTangent;
     if (!gl_FrontFacing) {
-        n = -n; // light back faces as if they faced us (no back-face culling; winding is inconsistent)
+        // Light back faces as if they faced us (no back-face culling; winding is inconsistent).
+        // The baked handedness flips WITH the normal: the frame's bitangent is cross(n, t) * w,
+        // so negating n alone mirrored the frame and a detail map on a back face perturbed toward
+        // the wrong side of its tangent — the flipped-winding "front" faces some imports produce
+        // shaded their normal maps inverted.
+        n = -n;
+        tangent.w = -tangent.w;
     }
 
     // Detail-map normal perturbation (uniform branch on the per-draw normalMode). material.y packs
@@ -263,7 +235,7 @@ void shade() {
     if (nm == 1) {
         vec3 mapN = texture(uDetail, vUv).xyz * 2.0 - 1.0;
         mapN.xy *= detailStrength; // authored strength steepens/flattens the mapped slope
-        n = normalize(tangentFrame(n, vWorldPos, vUv) * mapN);
+        n = normalize(tangentFrame(n, vWorldPos, vUv, tangent) * mapN);
     } else if (nm == 2) {
         vec2 texel = 1.0 / vec2(textureSize(uDetail, 0));
         float hL = texture(uDetail, vUv - vec2(texel.x, 0.0)).r;
@@ -284,7 +256,7 @@ void shade() {
         vec2 dBroad = vec2(bR - bL, bU - bD) * 0.25; // normalized to the fine gradient's units
         // 1.5 = height→slope base for the remaining grain, scaled by the authored strength.
         vec2 dH = (dFine - dBroad) * 1.5 * detailStrength;
-        n = normalize(tangentFrame(n, vWorldPos, vUv) * vec3(-dH.x, -dH.y, 1.0));
+        n = normalize(tangentFrame(n, vWorldPos, vUv, tangent) * vec3(-dH.x, -dH.y, 1.0));
     }
 
     // Micro-detail (pore) normal: the newer skin shader's tiled grain layer, applied over the base
@@ -296,7 +268,7 @@ void shade() {
         float detailWeight = fract(detailPacked);
         vec3 dn = texture(uMicroNormal, vUv * detailTiles).xyz * 2.0 - 1.0;
         dn.xy *= detailWeight;
-        n = normalize(tangentFrame(n, vWorldPos, vUv) * normalize(dn));
+        n = normalize(tangentFrame(n, vWorldPos, vUv, tangent) * normalize(dn));
     }
 
     // Alpha = per-draw opacity × the diffuse texel's alpha. The decode layer bakes any opacity
@@ -368,11 +340,11 @@ void shade() {
         return;
     }
 
-    // --- Matcaps (view-space normal) ---
-    if (mode >= 2 && mode <= 4) {
+    // --- Matcap (view-space normal): the procedural studio sphere. Its HDR range is tonemapped
+    // inline — unlike the PBR family it writes a display-ready value (the composite passes it through).
+    if (mode == 2) {
         vec3 vn = normalize(mat3(cam.view) * n);
-        vec3 c = (mode == 2) ? matcapStudio(vn) : (mode == 3) ? matcapSkin(vn) : matcapMetal(vn);
-        outColor = vec4(tonemapACES(c), alpha);
+        outColor = vec4(tonemapACES(matcapStudio(vn)), alpha);
         return;
     }
 
@@ -690,7 +662,7 @@ void shade() {
 void main() {
     shade();
     if (vSelect > 0.001) {
-        const vec3  kSelectionAccent = vec3(0.1046, 0.2423, 0.6038); // linear #5b87cc (kSelectionAccentLinear)
+        // kSelectionAccent (colour.glsl): linear #5b87cc, the same value PostProcess pushes for the outline.
         const float kAccentLum = 0.239;  // its Rec.709 luminance
         const float kStrength = 0.75;    // tint at full weight
         float lum = max(dot(outColor.rgb, vec3(0.2126, 0.7152, 0.0722)), 0.08);

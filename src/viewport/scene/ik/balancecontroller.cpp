@@ -1,3 +1,15 @@
+/**
+ * @file balancecontroller.cpp
+ * @brief The balance controller's mass model, center of mass, support polygon and correction.
+ *
+ * Segment masses come from a tolerant NAME-FRAGMENT table (biomechanical fractions; same-class
+ * same-side bones split a share so a Bend+Twist pair is one thigh; unclassified bones get a token
+ * mass so they perturb, never dominate) — a rig whose names match nothing degrades to token
+ * masses everywhere. The support polygon is Andrew's monotone-chain hull of the contacts in XZ;
+ * degenerate one- and two-point hulls get a foot-area slack radius (kDegenerateSupportRadius) so
+ * point-feet never demand exact-line balance and the controller does not fight the pins forever.
+ * Qt-free (std + GLM).
+ */
 #include "balancecontroller.h"
 
 #include <algorithm>

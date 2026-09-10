@@ -5,6 +5,8 @@
 
 #include "skinparser.h"
 
+#include "figureutils.h"
+
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -12,18 +14,17 @@
 
 namespace pose {
 
-namespace {
-// The sparse weight list of a joint is stored either as {"count":N,"values":[...]} or a bare array.
-const nlohmann::json& valuesArray(const nlohmann::json& node) {
-    if (node.is_object()) {
-        const auto it = node.find("values");
-        if (it != node.end()) {
-            return *it;
+const nlohmann::json* findSkinBinding(const nlohmann::json& modifierLibrary) {
+    if (!modifierLibrary.is_array()) {
+        return nullptr;
+    }
+    for (const auto& mod : modifierLibrary) {
+        if (const auto skin = mod.find("skin"); skin != mod.end()) {
+            return &(*skin);
         }
     }
-    return node;
+    return nullptr;
 }
-} // namespace
 
 std::vector<VertexSkin> parseSkinWeights(
     const nlohmann::json& skin, int vertexCount,

@@ -69,6 +69,9 @@
    ========================================================================= */
 
 #AssetManagerTree {
+    /* The app-wide separator grey (Constants::COLOR_SEPARATOR, QMenu::separator in
+       _menumanager.qss), injected into the C++ delegate's separator rows via Q_PROPERTY. */
+    qproperty-separatorColor: #6a6b6e;
     padding: 4px;
     background-color: #252627;
     border: none;
@@ -88,12 +91,6 @@
 #AssetManagerTree::item:selected {
     background-color: #314d7a;
     color: #ffffff;
-}
-
-QTreeView#AssetManagerTree {
-    /* Inject our custom color into the C++ delegate! The app-wide separator grey
-       (Constants::COLOR_SEPARATOR, QMenu::separator in _menumanager.qss). */
-    qproperty-separatorColor: #6a6b6e;
 }
 
 /* =========================================================================
@@ -140,37 +137,6 @@ QTreeView#AssetManagerTree {
 
 #AssetManagerAddLibraryHint {
     font-size: 14px;
-}
-
-/* =========================================================================
-   [ GRID SCROLLBAR ]
-   ========================================================================= */
-QScrollBar:vertical {
-    width: 14px;
-    margin: 0px;
-    background-color: #1a1b1c;
-    border: none;
-}
-
-QScrollBar::handle:vertical {
-    min-height: 20px;
-    margin: 2px; 
-    background-color: #3a3b3c;
-    border-radius: 5px; 
-}
-
-QScrollBar::handle:vertical:hover {
-    background-color: #4a4b4c; 
-}
-
-QScrollBar::add-line:vertical,
-QScrollBar::sub-line:vertical {
-    height: 0px; 
-}
-
-QScrollBar::add-page:vertical,
-QScrollBar::sub-page:vertical {
-    background: none;
 }
 
 /* ========================================================================= */

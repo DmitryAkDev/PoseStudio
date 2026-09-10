@@ -5,18 +5,25 @@
  *
  * The scene (backdrop, meshes, grid, overlays) renders here instead of straight into the
  * swapchain, in LINEAR HDR — the PBR shader no longer tonemaps inline. The resolved texture then
- * feeds the post-processing chain (bloom bright-extract, and the fullscreen composite that
- * tonemaps into the swapchain). The render pass mirrors the swapchain's MSAA structure
- * (colour(0)/depth(1)/resolve(2), same sample count) so every scene pipeline builds against this
- * pass unchanged; it depends only on formats, so resize() rebuilds images + framebuffer but keeps
- * the pass — scene pipelines never rebuild. Pure Vulkan + std, no Qt.
+ * feeds the post-processing chain (the screen-space SSS blur, bloom bright-extract, and the
+ * fullscreen composite that tonemaps into the swapchain). The pass carries TWO colour
+ * attachments — the scene (diffuse in the PBR mode, whose alpha is the SSS mask) and the PBR
+ * opaque pass's SPECULAR, kept apart so the SSS blur can never smear glints into a wet film —
+ * each with its own single-sample resolve, plus a depth attachment, all at the context's MSAA
+ * count; every scene pipeline builds against this pass. It depends only on formats, so
+ * resize() rebuilds images + framebuffer but keeps the pass — scene pipelines never rebuild.
+ * Pure Vulkan + std, no Qt.
  */
 
 #ifndef HDRTARGET_H
 #define HDRTARGET_H
 
-#include <vk_mem_alloc.h>
+#include "attachmentimage.h"
+#include "vulkanhandles.h"
+
 #include <vulkan/vulkan.h>
+
+#include <cstdint>
 
 namespace pose {
 
@@ -25,7 +32,7 @@ class VulkanContext;
 class HdrTarget {
 public:
     HdrTarget(VulkanContext& context, VkExtent2D extent);
-    ~HdrTarget();
+    ~HdrTarget() = default; // members clean up in reverse declaration order
 
     HdrTarget(const HdrTarget&) = delete;
     HdrTarget& operator=(const HdrTarget&) = delete;
@@ -34,8 +41,8 @@ public:
     /// must have made the device idle (the renderer's resize path already does).
     void resize(VkExtent2D extent);
 
-    VkRenderPass  renderPass() const { return m_renderPass; }
-    VkFramebuffer framebuffer() const { return m_framebuffer; }
+    VkRenderPass  renderPass() const { return m_renderPass.get(); }
+    VkFramebuffer framebuffer() const { return m_framebuffer.get(); }
 
     /// The resolved (single-sample) HDR texture, in SHADER_READ_ONLY layout after the pass.
     VkDescriptorImageInfo resolveInfo() const;
@@ -46,6 +53,8 @@ public:
     VkDescriptorImageInfo specResolveInfo() const;
 
     /// Number of attachments in the pass — the render-pass-begin clear array must cover them.
+    /// Attachment order (the clear array follows it): MSAA = colourMS(0) / depth(1) /
+    /// resolve(2) / specMS(3) / specResolve(4); single-sample = colour(0) / depth(1) / spec(2).
     uint32_t attachmentCount() const { return m_attachmentCount; }
 
     static constexpr VkFormat kColorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
@@ -54,29 +63,20 @@ private:
     void createImages();
     void destroyImages();
 
-    VulkanContext& m_context;
-    VkExtent2D     m_extent{};
-    VkRenderPass   m_renderPass = VK_NULL_HANDLE;
-    VkSampler      m_sampler = VK_NULL_HANDLE;
-    uint32_t       m_attachmentCount = 0;
+    VulkanContext&   m_context;
+    VkExtent2D       m_extent{};
+    UniqueRenderPass m_renderPass;
+    VkSampler        m_sampler = VK_NULL_HANDLE; // borrowed from the context's SamplerCache
+    uint32_t         m_attachmentCount = 0;
 
     // MSAA colour + specular (transient) + MSAA depth + their single-sample resolve targets.
-    VkImage       m_colorImage = VK_NULL_HANDLE;
-    VmaAllocation m_colorAlloc = VK_NULL_HANDLE;
-    VkImageView   m_colorView = VK_NULL_HANDLE;
-    VkImage       m_depthImage = VK_NULL_HANDLE;
-    VmaAllocation m_depthAlloc = VK_NULL_HANDLE;
-    VkImageView   m_depthView = VK_NULL_HANDLE;
-    VkImage       m_resolveImage = VK_NULL_HANDLE;
-    VmaAllocation m_resolveAlloc = VK_NULL_HANDLE;
-    VkImageView   m_resolveView = VK_NULL_HANDLE;
-    VkImage       m_specImage = VK_NULL_HANDLE;
-    VmaAllocation m_specAlloc = VK_NULL_HANDLE;
-    VkImageView   m_specView = VK_NULL_HANDLE;
-    VkImage       m_specResolveImage = VK_NULL_HANDLE;
-    VmaAllocation m_specResolveAlloc = VK_NULL_HANDLE;
-    VkImageView   m_specResolveView = VK_NULL_HANDLE;
-    VkFramebuffer m_framebuffer = VK_NULL_HANDLE;
+    // Single-sample fallback: the colour/spec images ARE the sampleable results (no resolves).
+    AttachmentImage   m_color;
+    AttachmentImage   m_depth;
+    AttachmentImage   m_resolve;
+    AttachmentImage   m_spec;
+    AttachmentImage   m_specResolve;
+    UniqueFramebuffer m_framebuffer; // last: it references the views above
 };
 
 } // namespace pose

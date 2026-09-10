@@ -16,7 +16,7 @@ Full step-by-step instructions, including screenshots of the SmartScreen warning
 
 **System requirements:** 64-bit Windows 10 or 11, and a Vulkan-capable GPU (virtually any graphics card from 2016 onward) with reasonably current drivers.
 
-**Privacy:** each time it starts, the app sends a small anonymous ping (a random install ID, the version, and your OS/CPU type — nothing else) so we can count active installs. Switch it off any time in Edit → Preferences → General.
+**Privacy:** each time it starts, the app sends a small anonymous ping (a random install ID, the version, your OS/CPU type, installed-vs-portable, the Qt version, and the time — nothing else) so we can count active installs. Switch it off any time in Edit → Preferences → General.
 
 ## 💡 Quick Tips — the stuff that isn't obvious
 

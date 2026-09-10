@@ -1,15 +1,22 @@
 /**
  * @file vulkanimage.h
- * @brief A sampled RGBA8 texture: device-local image + view + sampler, with a full mip chain.
+ * @brief A sampled RGBA8 texture: device-local image + view, with a full mip chain, and the
+ *        shared sampler it is bound with.
  *
  * Takes already-decoded, tightly-packed RGBA8 pixels (the Qt layer decodes image files via
  * QImage and hands the raw bytes down — keeping rendering/ free of any image-codec dependency).
- * Move-only RAII. Pixels are treated as sRGB albedo (the view uses an _SRGB format so the
- * hardware linearises on sample). Qt-free.
+ * Move-only RAII. The colour space is the caller's choice per map: colour maps (diffuse,
+ * translucency) are created sRGB, so the view's _SRGB format linearises on sample; data maps
+ * (normal, bump, roughness, spec mask, micro-detail) are created linear (_UNORM) and sampled
+ * verbatim. The sampler is NOT owned — every texture uses the same repeat/trilinear sampler,
+ * borrowed from the context's SamplerCache (one VkSampler for the whole app instead of one per
+ * map). Qt-free.
  */
 
 #ifndef VULKANIMAGE_H
 #define VULKANIMAGE_H
+
+#include "vulkanhandles.h"
 
 #include <vk_mem_alloc.h>
 #include <vulkan/vulkan.h>
@@ -23,7 +30,7 @@ class ImmediateBatch;
 
 /**
  * @class VulkanTexture
- * @brief Owns one sampled image (image + allocation + view + sampler). Move-only.
+ * @brief Owns one sampled image (image + allocation + view); borrows its sampler. Move-only.
  */
 class VulkanTexture {
 public:
@@ -46,23 +53,25 @@ public:
     VulkanTexture(VulkanTexture&& other) noexcept;
     VulkanTexture& operator=(VulkanTexture&& other) noexcept;
 
-    VkImageView imageView() const { return m_view; }
+    VkImageView imageView() const { return m_view.get(); }
+    /// The shared sampler this texture is meant to be bound with (borrowed — never destroy it).
     VkSampler   sampler()   const { return m_sampler; }
 
 private:
-    /// Allocates the image, records its upload + mip-chain generation into @p batch, retains the
-    /// staging buffer in @p batch, and creates the view + sampler. Shared by both constructors.
+    /// Allocates the image + view, records its upload + mip-chain generation into @p batch, and
+    /// retains the staging buffer in @p batch. Shared by both constructors. On a throw the image
+    /// is freed before the exception propagates (a throwing constructor runs no destructor).
     void recordUpload(ImmediateBatch& batch, const uint8_t* pixels, uint32_t width, uint32_t height);
     void destroy();
 
-    VulkanContext* m_context    = nullptr;
-    VmaAllocator   m_allocator  = VK_NULL_HANDLE; // borrowed from the context
-    VkImage        m_image      = VK_NULL_HANDLE;
-    VmaAllocation  m_allocation = VK_NULL_HANDLE;
-    VkImageView    m_view       = VK_NULL_HANDLE;
-    VkSampler      m_sampler    = VK_NULL_HANDLE;
-    uint32_t       m_mipLevels  = 1;
-    VkFormat       m_format     = VK_FORMAT_R8G8B8A8_SRGB; // _UNORM for linear data (normal/bump) maps
+    VulkanContext*  m_context    = nullptr;
+    VmaAllocator    m_allocator  = VK_NULL_HANDLE; // borrowed from the context
+    VkImage         m_image      = VK_NULL_HANDLE;
+    VmaAllocation   m_allocation = VK_NULL_HANDLE;
+    UniqueImageView m_view;
+    VkSampler       m_sampler    = VK_NULL_HANDLE; // borrowed from the context's SamplerCache
+    uint32_t        m_mipLevels  = 1;
+    VkFormat        m_format     = VK_FORMAT_R8G8B8A8_SRGB; // _UNORM for linear data (normal/bump) maps
 };
 
 } // namespace pose

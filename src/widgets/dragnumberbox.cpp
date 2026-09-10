@@ -5,6 +5,9 @@
 
 #include "dragnumberbox.h"
 
+#include <QEvent>
+#include <QFocusEvent>
+#include <QHideEvent>
 #include <QKeyEvent>
 #include <QLineEdit>
 #include <QMouseEvent>
@@ -163,6 +166,53 @@ void DragNumberBox::resizeEvent(QResizeEvent* event) {
     }
 }
 
+// The mouse release can be lost mid-gesture: a popup grab (Alt opening the menu bar, a context
+// menu), the widget being hidden, or another window taking activation all steal the implicit
+// mouse grab, and the release then goes to them. Without this, m_pressed stayed set and — worse
+// — a scrub's editingStarted was never balanced, so a listener's depth-counted undo bracket
+// stuck open for the rest of the session (the Environment panel registered no lighting undo
+// entries after one such scrub). Ending the gesture here keeps the bracket balanced; the
+// scrubbed value has already landed through setValue.
+void DragNumberBox::abandonScrub() {
+    if (!m_pressed) {
+        return;
+    }
+    const bool wasScrub = m_dragging;
+    m_pressed = false;
+    m_dragging = false;
+    if (wasScrub) {
+        emit editingFinished(); // balances the editingStarted the scrub emitted
+    }
+}
+
+bool DragNumberBox::event(QEvent* event) {
+    if (event->type() == QEvent::UngrabMouse) {
+        abandonScrub(); // Qt took the mouse grab away: no release is coming
+    }
+    return QWidget::event(event);
+}
+
+void DragNumberBox::hideEvent(QHideEvent* event) {
+    abandonScrub();
+    QWidget::hideEvent(event);
+}
+
+void DragNumberBox::focusOutEvent(QFocusEvent* event) {
+    // Only the reasons that mean the input went elsewhere mid-gesture (a popup opened, the menu
+    // bar took Alt, the window was deactivated). Other reasons — Tab, the inline editor taking
+    // focus after a click — are ordinary focus traffic.
+    switch (event->reason()) {
+    case Qt::PopupFocusReason:
+    case Qt::MenuBarFocusReason:
+    case Qt::ActiveWindowFocusReason:
+        abandonScrub();
+        break;
+    default:
+        break;
+    }
+    QWidget::focusOutEvent(event);
+}
+
 void DragNumberBox::enterEvent(QEnterEvent*) {
     m_hovered = true;
     update();
@@ -178,19 +228,23 @@ void DragNumberBox::beginEdit() {
         m_editor = new QLineEdit(this);
         m_editor->setObjectName(QStringLiteral("DragNumberBoxEditor"));
         m_editor->setAlignment(Qt::AlignCenter);
-        // Self-contained styling (the widget must look right in any container, styled or not):
-        // same surface as the painted box, accent border to signal edit mode.
-        m_editor->setStyleSheet(QStringLiteral(
-            "#DragNumberBoxEditor {"
-            "  background-color: #2a2b2d;"
-            "  color: #e0e0e0;"
-            "  border: 1px solid #5b87cc;"
-            "  border-radius: 4px;"
-            "  selection-background-color: #5b87cc;"
-            "}"));
         m_editor->installEventFilter(this); // Esc = cancel (QLineEdit has no cancel signal)
         connect(m_editor, &QLineEdit::editingFinished, this, &DragNumberBox::commitEdit);
     }
+    // Self-contained styling (the widget must look right in any container, styled or not):
+    // same surface and text as the painted box, the hover-accent border to signal edit mode.
+    // Built from the colour properties on every edit — not hard-coded — so a QSS re-theme
+    // (qproperty-backgroundColor etc.) restyles the editor along with the painted look.
+    m_editor->setStyleSheet(QStringLiteral(
+                                "#DragNumberBoxEditor {"
+                                "  background-color: %1;"
+                                "  color: %2;"
+                                "  border: 1px solid %3;"
+                                "  border-radius: 4px;"
+                                "  selection-background-color: %3;"
+                                "}")
+                                .arg(m_backgroundColor.name(), m_textColor.name(),
+                                     m_hoverBorderColor.name()));
     m_editing = true;
     emit editingStarted(); // balanced by editingFinished in commitEdit/cancelEdit
     m_editor->setGeometry(rect());

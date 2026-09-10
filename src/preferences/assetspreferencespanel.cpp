@@ -5,7 +5,9 @@
 
 #include "assetspreferencespanel.h"
 
+#include "assetlibraries.h"
 #include "constants.h"
+#include "librarypaths.h"
 #include "preferencesmanager.h"
 
 #include <QVBoxLayout>
@@ -17,9 +19,6 @@
 #include <QFileDialog>
 #include <QDir>
 #include <QFileInfo>
-#include <QSqlDatabase>
-#include <QSqlQuery>
-#include <QSqlError>
 #include <QMessageBox>
 
 // QListWidgetItem data roles used in m_libraryList:
@@ -28,7 +27,8 @@
 //
 // The built-in "Maquettes" library (AssetLibraryIsBuiltIn = 1) is deliberately excluded from
 // this list — it's always present and not user-manageable, so it has nothing to add/remove
-// here. It still appears in the Asset Manager tree itself.
+// here. It still appears in the Asset Manager tree itself. Every table access goes through
+// the AssetLibraries repository (core/assetlibraries.h), never hand-written SQL.
 
 AssetsPreferencesPanel::AssetsPreferencesPanel(QWidget* parent)
     : PreferencesPanel(QStringLiteral("Assets"), parent) {
@@ -67,62 +67,49 @@ AssetsPreferencesPanel::AssetsPreferencesPanel(QWidget* parent)
 void AssetsPreferencesPanel::reloadLibraries() {
     m_libraryList->clear();
 
-    QSqlQuery q(QSqlDatabase::database(QStringLiteral("db_conn")));
-    if (!q.exec(QStringLiteral(
-            "SELECT AssetLibraryID, AssetLibraryPath FROM AssetLibraries "
-            "WHERE AssetLibraryIsBuiltIn = 0 ORDER BY AssetLibraryPath COLLATE NOCASE"))) {
-        // Surface the failure — an empty list from a silent error reads as "my libraries are gone".
-        qWarning() << "[!] Failed to load asset libraries:" << q.lastError().text();
-        return;
-    }
-    while (q.next()) {
-        const QString path = q.value(1).toString();
-
-        auto* item = new QListWidgetItem(path, m_libraryList);
-        item->setData(Qt::UserRole, q.value(0).toInt());
-        item->setData(Qt::UserRole + 1, path);
+    // userManaged() logs a query failure itself; the list simply stays empty.
+    const QList<AssetLibraries::Library> libraries = AssetLibraries::userManaged();
+    for (const AssetLibraries::Library& lib : libraries) {
+        auto* item = new QListWidgetItem(lib.path, m_libraryList);
+        item->setData(Qt::UserRole, lib.id);
+        item->setData(Qt::UserRole + 1, lib.path);
         // Set row height here rather than via QSS ::item top/bottom padding — on the default
         // delegate, vertical QSS padding inflates the selection box past the layout rect (the
-        // oversized highlight + hover clipping). A fixed sizeHint keeps the row tight.
+        // oversized highlight + hover clipping). A fixed sizeHint keeps the row tight. (The
+        // Preferences nav list applies the same fix — PreferencesDialog::addPanel.)
         item->setSizeHint(QSize(0, 28));
     }
 }
 
 void AssetsPreferencesPanel::promptAddLibrary() {
     // Start the browser in the parent of the last folder added (persisted in Preferences), so
-    // adding several sibling libraries doesn't mean re-navigating from home each time.
-    QString startDir = PreferencesManager::instance()
-                           .getValue(Constants::PREF_LAST_ASSET_FOLDER_PARENT, QDir::homePath())
-                           .toString();
-    if (startDir.isEmpty() || !QDir(startDir).exists()) {
-        startDir = QDir::homePath(); // stored folder was moved/deleted, or nothing saved yet
-    }
+    // adding several sibling libraries doesn't mean re-navigating from home each time; a stored
+    // folder that was since moved/deleted falls back to home.
+    const QString startDir = PreferencesManager::instance().rememberedDirectory(
+        Constants::PREF_LAST_ASSET_FOLDER_PARENT, QDir::homePath());
 
     const QString folderPath = QFileDialog::getExistingDirectory(
         this, "Select Asset Library Folder", startDir);
     if (folderPath.isEmpty()) return;
 
-    QSqlQuery q(QSqlDatabase::database(QStringLiteral("db_conn")));
-    q.prepare(QStringLiteral("INSERT OR IGNORE INTO AssetLibraries (AssetLibraryPath) VALUES (:path)"));
-    q.bindValue(":path", folderPath);
-    if (!q.exec()) {
-        qWarning() << "[!] Failed to add asset library:" << q.lastError().text();
-        return;
-    }
-
-    // INSERT OR IGNORE swallows the UNIQUE(AssetLibraryPath) conflict, so a duplicate add
-    // "succeeds" with zero rows. Tell the user instead of silently doing nothing — without
-    // feedback a re-add of an existing folder looks like the add simply failed.
-    if (q.numRowsAffected() == 0) {
+    switch (AssetLibraries::add(folderPath)) {
+    case AssetLibraries::AddResult::Failed:
+        return; // logged by the repository
+    case AssetLibraries::AddResult::AlreadyRegistered:
+        // Tell the user instead of silently doing nothing — without feedback a re-add of an
+        // existing folder looks like the add simply failed.
         QMessageBox::information(this, QStringLiteral("Already Added"),
                                  QStringLiteral("That folder is already registered as an asset "
                                                 "library:\n%1").arg(folderPath));
         return;
+    case AssetLibraries::AddResult::Added:
+        break;
     }
 
     // Remember this folder's parent as the default location for the next add.
     PreferencesManager::instance().setValue(Constants::PREF_LAST_ASSET_FOLDER_PARENT,
                                             QFileInfo(folderPath).absolutePath());
+    LibraryPaths::invalidateCache(); // the new folder may BE "My PoseStudio Library"
     reloadLibraries();
     emit librariesChanged();
 }
@@ -131,14 +118,11 @@ void AssetsPreferencesPanel::removeSelectedLibrary() {
     QListWidgetItem* selected = m_libraryList->currentItem();
     if (!selected) return;
 
-    QSqlQuery q(QSqlDatabase::database(QStringLiteral("db_conn")));
-    q.prepare(QStringLiteral("DELETE FROM AssetLibraries WHERE AssetLibraryID = :id"));
-    q.bindValue(":id", selected->data(Qt::UserRole).toInt());
-    if (!q.exec()) {
-        qWarning() << "[!] Failed to remove asset library:" << q.lastError().text();
-        return;
+    if (!AssetLibraries::remove(selected->data(Qt::UserRole).toInt())) {
+        return; // logged by the repository
     }
 
+    LibraryPaths::invalidateCache(); // the removed folder may have been the resolved user library
     reloadLibraries();
     emit librariesChanged();
 }

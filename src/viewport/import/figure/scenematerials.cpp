@@ -1,0 +1,257 @@
+/**
+ * @file scenematerials.cpp
+ * @brief Implementation of applySceneMaterials / applyAnimationMaterials. See scenematerials.h.
+ */
+
+#include "scenematerials.h"
+
+#include "figuredata.h"
+#include "figuredocument.h"
+#include "figureutils.h"
+#include "materialparser.h"
+#include "uriresolver.h"
+
+#include <nlohmann/json.hpp>
+
+#include <algorithm>
+#include <exception>
+#include <memory>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+namespace pose {
+
+void applySceneMaterials(FigureData& fig, const nlohmann::json& root, UriResolver& resolver,
+                         const std::string& referringDir) {
+    if (!root.contains("scene") || !root["scene"].contains("materials")) {
+        return;
+    }
+    static const nlohmann::json kNoLibrary = nlohmann::json::array();
+    const nlohmann::json& imageLibrary =
+        root.contains("image_library") ? root["image_library"] : kNoLibrary;
+
+    // parseMaterials merges each scene material with the base it extends by url, but only within
+    // the same file ("#id"). Newer skin materials extend a CROSS-FILE base
+    // ("/data/.../#<SkinShaderBase>") whose channel defaults would otherwise be lost (the old
+    // "roughness falls back to default" limitation). Pre-resolve those here: load the referenced
+    // document (cached by the resolver), hand its base material to parseMaterials as an EXTRA
+    // base, and record the scene material's url as the same-file "#fragment" form parseMaterials
+    // handles — without copying the scene materials or the material library (both were once
+    // deep-copied and mutated; the overrides map replaces that).
+    const nlohmann::json& sceneMaterials = root["scene"]["materials"];
+    const nlohmann::json* libraryPtr = &kNoLibrary;
+    if (const auto lib = root.find("material_library"); lib != root.end() && lib->is_array()) {
+        libraryPtr = &(*lib);
+    }
+    MaterialBaseOverrides overrides;
+    std::vector<std::shared_ptr<const FigureDocument>> baseDocs; // keep the referenced documents alive
+    std::unordered_set<std::string> importedBases; // fragments already looked up (found or not)
+    if (sceneMaterials.is_array()) {
+        for (const auto& mat : sceneMaterials) {
+            const std::string url = mat.value("url", std::string());
+            if (url.size() < 2 || url[0] == '#') {
+                continue; // same-file (or no) base — parseMaterials handles it directly
+            }
+            try {
+                const ResolvedUri ru = resolver.resolve(url, referringDir);
+                if (!ru.resolved() || ru.fragment.empty()) {
+                    continue;
+                }
+                // The FIRST document naming a fragment supplies its base; the fragment counts as
+                // visited even if that load fails, so it isn't retried per material.
+                if (importedBases.insert(ru.fragment).second) {
+                    const std::shared_ptr<const FigureDocument> baseDoc = resolver.loadDocument(ru);
+                    baseDocs.push_back(baseDoc);
+                    if (const auto ml = baseDoc->root().find("material_library");
+                        ml != baseDoc->root().end() && ml->is_array()) {
+                        for (const auto& baseMat : *ml) {
+                            if (baseMat.value("id", std::string()) == ru.fragment) {
+                                overrides.extraBases.emplace(ru.fragment, &baseMat);
+                                break;
+                            }
+                        }
+                    }
+                }
+                overrides.urlRewrites.emplace(&mat, "#" + ru.fragment);
+            } catch (const std::exception&) {
+                // Unresolvable base: the scene material still parses from its own overrides alone.
+            }
+        }
+    }
+
+    const std::unordered_map<std::string, MaterialRefs> refs =
+        parseMaterials(sceneMaterials, *libraryPtr, imageLibrary, &overrides);
+    for (FigureMesh& mesh : fig.meshes) {
+        const auto it = refs.find(mesh.materialZone);
+        if (it == refs.end()) {
+            continue;
+        }
+        const MaterialRefs& ref = it->second;
+        mesh.material.baseColor = ref.baseColor;
+        mesh.material.roughness = ref.roughness;
+        mesh.material.specularWeight = ref.specularWeight;
+        mesh.material.specularWeightWithMap = ref.specularWeightWithMap;
+        mesh.material.metallic = ref.metallic;
+        mesh.material.lobe1Roughness = ref.lobe1Roughness;
+        mesh.material.lobe2Roughness = ref.lobe2Roughness;
+        mesh.material.lobeRatio = ref.lobeRatio;
+        mesh.material.topCoatWeight = ref.topCoatWeight;
+        mesh.material.topCoatRoughness = ref.topCoatRoughness;
+        mesh.material.translucencyWeight = ref.translucencyWeight;
+        mesh.material.opacity = ref.opacity;
+        if (!ref.roughnessImageUri.empty()) {
+            mesh.material.roughnessMapPath = resolver.resolve(ref.roughnessImageUri, referringDir).path;
+        }
+        if (!ref.specWeightImageUri.empty()) {
+            mesh.material.specMaskMapPath = resolver.resolve(ref.specWeightImageUri, referringDir).path;
+        }
+        if (!ref.translucencyImageUri.empty()) {
+            mesh.material.translucencyMapPath =
+                resolver.resolve(ref.translucencyImageUri, referringDir).path;
+        }
+        if (!ref.detailNormalImageUri.empty()) {
+            mesh.material.detailNormalMapPath =
+                resolver.resolve(ref.detailNormalImageUri, referringDir).path;
+            mesh.material.detailWeight = ref.detailWeight;
+            mesh.material.detailTiles = ref.detailTiles;
+        }
+        if (!ref.diffuseImageUri.empty()) {
+            mesh.material.diffuseMapPath = resolver.resolve(ref.diffuseImageUri, referringDir).path;
+        }
+        if (!ref.normalImageUri.empty()) {
+            mesh.material.normalMapPath = resolver.resolve(ref.normalImageUri, referringDir).path;
+            mesh.material.normalStrength = ref.normalStrength;
+        }
+        if (!ref.bumpImageUri.empty()) {
+            mesh.material.bumpMapPath = resolver.resolve(ref.bumpImageUri, referringDir).path;
+            mesh.material.bumpStrength = ref.bumpStrength;
+        }
+        if (!ref.opacityImageUri.empty()) {
+            mesh.material.opacityMapPath = resolver.resolve(ref.opacityImageUri, referringDir).path;
+        }
+    }
+}
+
+// Unlike a scene-materials document, the hierarchical preset form carries its values as
+// single-key animation tracks — each entry's url addresses one material property:
+//   "<node>#materials/<zone>:?diffuse/image_file"
+//   "<node>#materials/<zone>:?extra/studio_material_channels/channels/<Channel>/value"
+// with keys[0][1] holding the value. Only the properties the renderer consumes are read; the rest
+// (tiling, gloss layering, …) are skipped. Zones are matched by name alone (the node prefix is
+// ignored) — within one figure-plus-addons import, zone names don't collide in practice.
+void applyAnimationMaterials(FigureData& fig, const nlohmann::json& root, UriResolver& resolver,
+                             const std::string& referringDir) {
+    const nlohmann::json* animations = childOf(childOf(&root, "scene"), "animations");
+    if (!animations || !animations->is_array()) {
+        return;
+    }
+
+    struct ZoneOverride {
+        glm::vec3   baseColor{0.0f};
+        std::string diffuseUri, normalUri, bumpUri, opacityUri;
+        float       roughness = 0.0f;
+        float       cutout = 1.0f;
+        float       refraction = 0.0f;
+        bool        hasBaseColor = false, hasRoughness = false, hasCutout = false,
+                    hasRefraction = false;
+    };
+    std::unordered_map<std::string, ZoneOverride> zones;
+
+    for (const auto& entry : *animations) {
+        const std::string url = entry.value("url", std::string());
+        const auto keys = entry.find("keys");
+        if (keys == entry.end() || !keys->is_array() || keys->empty() || !(*keys)[0].is_array() ||
+            (*keys)[0].size() < 2) {
+            continue;
+        }
+        const nlohmann::json& value = (*keys)[0][1];
+
+        // "<node>#materials/<zone>:?<property>" -> zone + property (both URL-encoded).
+        const std::size_t hash = url.find('#');
+        if (hash == std::string::npos) {
+            continue;
+        }
+        std::string rest = url.substr(hash + 1);
+        constexpr const char* kMaterialsPrefix = "materials/";
+        if (rest.rfind(kMaterialsPrefix, 0) != 0) {
+            continue;
+        }
+        rest = rest.substr(std::string(kMaterialsPrefix).size());
+        const std::size_t sep = rest.find(":?");
+        if (sep == std::string::npos) {
+            continue;
+        }
+        const std::string zone = urlDecode(rest.substr(0, sep));
+        const std::string prop = urlDecode(rest.substr(sep + 2));
+        ZoneOverride& zo = zones[zone];
+
+        constexpr const char* kChannelsPrefix = "extra/studio_material_channels/channels/";
+        if (prop == "diffuse/value" && value.is_array() && value.size() >= 3) {
+            zo.baseColor = glm::vec3(value[0].get<float>(), value[1].get<float>(),
+                                     value[2].get<float>());
+            zo.hasBaseColor = true;
+        } else if (prop == "diffuse/image_file" && value.is_string()) {
+            zo.diffuseUri = value.get<std::string>();
+        } else if (prop == "transparency/value" && value.is_number()) {
+            zo.cutout = value.get<float>(); // legacy core opacity property (see parseMaterials)
+            zo.hasCutout = true;
+        } else if (prop == "transparency/image_file" && value.is_string()) {
+            zo.opacityUri = value.get<std::string>();
+        } else if (prop.rfind(kChannelsPrefix, 0) == 0) {
+            const std::string channel = prop.substr(std::string(kChannelsPrefix).size());
+            if (channel == "Cutout Opacity/value" && value.is_number()) {
+                zo.cutout = value.get<float>();
+                zo.hasCutout = true;
+            } else if (channel == "Cutout Opacity/image_file" && value.is_string()) {
+                zo.opacityUri = value.get<std::string>();
+            } else if (channel == "Refraction Weight/value" && value.is_number()) {
+                zo.refraction = value.get<float>();
+                zo.hasRefraction = true;
+            } else if (channel == "Glossy Roughness/value" && value.is_number()) {
+                zo.roughness = value.get<float>();
+                zo.hasRoughness = true;
+            } else if (channel == "Normal Map/image_file" && value.is_string()) {
+                zo.normalUri = value.get<std::string>();
+            } else if (channel == "Bump Strength/image_file" && value.is_string()) {
+                zo.bumpUri = value.get<std::string>();
+            }
+        }
+    }
+
+    for (FigureMesh& mesh : fig.meshes) {
+        const auto it = zones.find(mesh.materialZone);
+        if (it == zones.end()) {
+            continue;
+        }
+        const ZoneOverride& zo = it->second;
+        if (zo.hasBaseColor) {
+            mesh.material.baseColor = zo.baseColor;
+        }
+        if (zo.hasRoughness) {
+            mesh.material.roughness = zo.roughness;
+        }
+        // Same transparency rule as parseMaterials: cutout is the opacity, and a strong refraction
+        // weight marks a clear shell (here: the anime eye's lens over the iris card).
+        if (zo.hasCutout || zo.hasRefraction) {
+            mesh.material.opacity = zo.hasCutout ? zo.cutout : 1.0f;
+            if (zo.refraction > 0.5f) {
+                mesh.material.opacity = std::min(mesh.material.opacity, 0.05f);
+            }
+        }
+        if (!zo.diffuseUri.empty()) {
+            mesh.material.diffuseMapPath = resolver.resolve(zo.diffuseUri, referringDir).path;
+        }
+        if (!zo.normalUri.empty()) {
+            mesh.material.normalMapPath = resolver.resolve(zo.normalUri, referringDir).path;
+        }
+        if (!zo.bumpUri.empty()) {
+            mesh.material.bumpMapPath = resolver.resolve(zo.bumpUri, referringDir).path;
+        }
+        if (!zo.opacityUri.empty()) {
+            mesh.material.opacityMapPath = resolver.resolve(zo.opacityUri, referringDir).path;
+        }
+    }
+}
+
+} // namespace pose

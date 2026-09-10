@@ -1,7 +1,8 @@
 /**
  * @file vulkanbuffer.h
- * @brief A thin RAII wrapper over a VMA-allocated buffer, plus the two creation helpers the
- *        mesh path needs (a staged device-local buffer and a persistently-mapped uniform buffer).
+ * @brief A thin RAII wrapper over a VMA-allocated buffer, plus the three creation helpers the
+ *        mesh path needs (a staged device-local buffer — blocking or batched — and a
+ *        persistently-mapped uniform buffer).
  *
  * Like the rest of rendering/, this is Qt-free (plain Vulkan + VMA + std). VulkanBuffer owns its
  * VkBuffer + VmaAllocation and frees both on destruction; it is move-only so it can live in a
@@ -46,7 +47,6 @@ private:
     VmaAllocator  m_allocator  = VK_NULL_HANDLE; // borrowed from VulkanContext
     VkBuffer      m_buffer     = VK_NULL_HANDLE;
     VmaAllocation m_allocation = VK_NULL_HANDLE;
-    VkDeviceSize  m_size       = 0;
     void*         m_mappedData = nullptr;
 };
 
@@ -63,6 +63,11 @@ VulkanBuffer createDeviceLocalBuffer(VulkanContext& context, const void* data, V
 
 /// Creates a host-visible, persistently-mapped uniform buffer (write via mappedData() each frame).
 VulkanBuffer createMappedUniformBuffer(VulkanContext& context, VkDeviceSize size);
+
+/// A host-mapped, zero-filled STORAGE buffer of @p bytes (rewritten in place via mappedData()):
+/// the per-frame pose-corrective weight buffers, and the placeholder bound where a model has no
+/// correctives so its descriptor set stays complete.
+VulkanBuffer makeZeroedHostStorageBuffer(VulkanContext& context, VkDeviceSize bytes);
 
 } // namespace pose
 

@@ -6,13 +6,15 @@
 //
 // Technique: unproject the quad's near- and far-plane points per pixel; the fragment shader
 // then intersects that eye ray with the ground plane. See grid.frag.
+//
+// Pass:    the HDR scene pass, after the meshes (blended overlay, depth-tested, no depth write).
+// Inputs:  push: the camera view-projection — the first 64 bytes of the grid's 128-byte block.
+//          A stage may declare a PREFIX of the pipeline's push range, so the fragment-only
+//          members (the key-light rows + the shadow dials) are simply not declared here.
+// Outputs: the per-pixel near/far world points for grid.frag.
 
 layout(push_constant) uniform PC {
     mat4 viewProj;     // camera view-projection; inverted here to unproject
-    vec4 lightRow0;    // key-light matrix rows + shadow dials — fragment-stage only (ground
-    vec4 lightRow1;    // shadow); declared for block parity with grid.frag
-    vec4 lightRow2;
-    vec4 shadowParams;
 } pc;
 
 layout(location = 0) out vec3 vNearPoint; // world-space point on the near plane for this pixel

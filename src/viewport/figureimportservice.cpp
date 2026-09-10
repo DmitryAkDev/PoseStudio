@@ -5,10 +5,8 @@
 
 #include "figureimportservice.h"
 
-#include "aobaker.h"
 #include "modeldata.h"
-#include "tangentgen.h"
-#include "modelimportservice.h" // decodeModelTextures (shared with the model path)
+#include "modelimportservice.h" // ImportProgress + uploadModelData (shared with the model path)
 #include "import/figure/figuredata.h"
 #include "import/figure/figureimporter.h"
 #include "rendering/vulkanrenderer.h"
@@ -21,11 +19,9 @@
 #include <QApplication>
 #include <QDebug>
 #include <QDir>
-#include <QElapsedTimer>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QMessageBox>
-#include <QProgressDialog>
 #include <QPushButton>
 #include <QStringList>
 
@@ -43,6 +39,8 @@ namespace {
 // Walks up from the imported file to the content root — the first ancestor directory that
 // contains a "data" folder (the anchor every "/data/..." and "/Runtime/..." URI resolves against).
 // Returns an empty list if none is found (the importer then can't resolve the base geometry).
+// The 16-level cap bounds the walk on pathological paths (a figure filed absurdly deep, or a
+// filesystem whose parent_path never converges); real libraries are 3-6 levels deep.
 std::vector<std::string> detectContentRoots(const QString& path) {
     std::vector<std::string> roots;
     std::error_code ec;
@@ -265,25 +263,14 @@ void showImportFailureMessage(const QString& path, const QString& detail, bool n
     QMessageBox::warning(QApplication::activeWindow(), QStringLiteral("Import Failed"), body);
 }
 
-// One import attempt with a fixed set of content roots. Throws std::runtime_error on failure; drives
+// One import attempt with a fixed set of content roots: roots -> FigureImporter::load ->
+// toModelData -> the shared post-parse pipeline (ModelImportService::uploadModelData: texture
+// decode, AO + tangents, GPU upload, timing log). Throws std::runtime_error on failure; drives
 // the modal staged progress dialog when showProgress is set.
 void runFigureImport(VulkanRenderer& renderer, const QString& path,
                      const std::vector<std::string>& roots, bool showProgress) {
-    std::unique_ptr<QProgressDialog> progress;
-    if (showProgress) {
-        progress = std::make_unique<QProgressDialog>(QStringLiteral("Reading figure…"),
-                                                     QString() /*no cancel*/, 0, 0,
-                                                     QApplication::activeWindow());
-        progress->setWindowTitle(QStringLiteral("Importing Figure"));
-        progress->setWindowModality(Qt::ApplicationModal);
-        progress->setMinimumDuration(0);
-        progress->setValue(0);
-        progress->show();
-        QApplication::processEvents();
-    }
-
-    QElapsedTimer timer;
-    timer.start();
+    ModelImportService::ImportProgress progress(showProgress, QStringLiteral("Importing Figure"),
+                                                QStringLiteral("Reading figure…"));
 
     if (roots.empty()) {
         qWarning() << "[viewport] Figure import: no content root (a folder containing 'data') "
@@ -292,52 +279,14 @@ void runFigureImport(VulkanRenderer& renderer, const QString& path,
     }
 
     FigureImporter importer;
-    FigureData figure = importer.load(path.toStdString(), roots);
-    const qint64 msParse = timer.elapsed();
+    FigureData     figure = importer.load(path.toStdString(), roots);
+    progress.parsed();
 
     ModelData data = toModelData(std::move(figure));
-    const int meshCount = static_cast<int>(data.meshes.size());
-    const int correctiveCount = static_cast<int>(data.correctives.size());
-    const int total = 5; // parse, decode, bake, upload, done
-    int step = 0;
-    if (progress) {
-        progress->setRange(0, total);
-        progress->setValue(++step); // parse complete
-    }
-
-    // Decode every unique texture once — figure zones share atlas files, so decodes are shared
-    // across meshes and run across cores (see ModelImportService::decodeModelTextures).
-    if (progress) {
-        progress->setLabelText(QStringLiteral("Decoding textures…"));
-        progress->setValue(++step);
-    }
-    ModelImportService::decodeModelTextures(data);
-    const qint64 msDecode = timer.elapsed();
-
-    // Bake per-vertex ambient occlusion + UV tangents on the final render mesh (post-morph,
-    // post-subdivision, all zones together — the AO parallel across cores). See aobaker.h /
-    // tangentgen.h.
-    if (progress) {
-        progress->setLabelText(QStringLiteral("Baking ambient occlusion…"));
-        progress->setValue(++step);
-    }
-    bakeVertexAO(data);
-    computeTangents(data);
-
-    if (progress) {
-        progress->setLabelText(QStringLiteral("Uploading to GPU…"));
-        progress->setValue(++step);
-    }
-    renderer.addModel(data);
-    const qint64 msUpload = timer.elapsed();
-    if (progress) {
-        progress->setValue(total);
-    }
-
-    qDebug().nospace() << "[viewport] imported figure " << path << " in " << msUpload << "ms (parse "
-                       << msParse << ", decode " << (msDecode - msParse) << ", upload "
-                       << (msUpload - msDecode) << "), " << meshCount << " zones, " << correctiveCount
-                       << " pose correctives";
+    const QString counts = QStringLiteral(", %1 zones, %2 pose correctives")
+                               .arg(data.meshes.size())
+                               .arg(data.correctives.size());
+    ModelImportService::uploadModelData(renderer, data, progress, "figure ", path, counts);
 }
 
 } // namespace

@@ -9,7 +9,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cstring>
 
 namespace pose {
 
@@ -20,46 +19,22 @@ VulkanPipeline::VulkanPipeline(VulkanContext& context, VkRenderPass renderPass,
     : m_context(context) {
     VkDevice device = m_context.device();
 
-    VkShaderModule vertModule = VK_NULL_HANDLE;
-    VkShaderModule fragModule = VK_NULL_HANDLE;
-
-    // Failure guard: a throwing constructor never runs ~VulkanPipeline, so anything created
-    // before a mid-sequence VK_CHECK throw must be released here or it leaks until device
-    // destruction (and trips validation's object-leak check). Disarmed on success.
-    struct BuildGuard {
-        VkDevice device;
-        VkShaderModule* vert;
-        VkShaderModule* frag;
-        VkPipelineLayout* layout;
-        bool armed = true;
-        ~BuildGuard() {
-            if (!armed) {
-                return;
-            }
-            if (*frag != VK_NULL_HANDLE) {
-                vkDestroyShaderModule(device, *frag, nullptr);
-            }
-            if (*vert != VK_NULL_HANDLE) {
-                vkDestroyShaderModule(device, *vert, nullptr);
-            }
-            if (*layout != VK_NULL_HANDLE) {
-                vkDestroyPipelineLayout(device, *layout, nullptr);
-                *layout = VK_NULL_HANDLE;
-            }
-        }
-    } guard{device, &vertModule, &fragModule, &m_layout};
-
-    vertModule = createShaderModule(vertSpirv);
-    fragModule = createShaderModule(fragSpirv);
+    // Every handle created here is an RAII owner: a throwing constructor never runs
+    // ~VulkanPipeline, but the owners' own destructors still release whatever was created
+    // before a mid-sequence VK_CHECK throw (otherwise it leaks until device destruction and
+    // trips validation's object-leak check). The shader modules are locals — they can be
+    // destroyed as soon as the pipeline is built, whatever the outcome.
+    const UniqueShaderModule vertModule = createShaderModule(vertSpirv);
+    const UniqueShaderModule fragModule = createShaderModule(fragSpirv);
 
     std::array<VkPipelineShaderStageCreateInfo, 2> stages{};
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = vertModule;
+    stages[0].module = vertModule.get();
     stages[0].pName = "main";
     stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = fragModule;
+    stages[1].module = fragModule.get();
     stages[1].pName = "main";
 
     // Vertex input: empty config => no vertex buffers (grid generates verts from gl_VertexIndex);
@@ -91,15 +66,16 @@ VulkanPipeline::VulkanPipeline(VulkanContext& context, VkRenderPass renderPass,
     raster.polygonMode = config.polygonMode; // FILL, or LINE for the wireframe shade modes
     raster.cullMode = config.cullMode; // default NONE; mesh/grid both opt out of culling
     raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    raster.lineWidth = config.lineWidth;
+    raster.lineWidth = 1.0f; // any other width needs the wideLines feature, which isn't enabled
     // Static depth bias (the shadow pass): pushes stored depth away from the light to kill acne.
     raster.depthBiasEnable =
         (config.depthBiasConstant != 0.0f || config.depthBiasSlope != 0.0f) ? VK_TRUE : VK_FALSE;
     raster.depthBiasConstantFactor = config.depthBiasConstant;
     raster.depthBiasSlopeFactor = config.depthBiasSlope;
 
-    // Must match the target render pass's sample count: the shared MSAA swapchain pass for the
-    // scene pipelines, single-sample for offscreen depth-only passes (the shadow map).
+    // Must match the target render pass's sample count: the context's MSAA count for the HDR
+    // scene pass and the outline mask, single-sample for the depth-only shadow pass, the post
+    // chain and the swapchain composite.
     VkPipelineMultisampleStateCreateInfo multisample{};
     multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
     multisample.rasterizationSamples =
@@ -135,6 +111,17 @@ VulkanPipeline::VulkanPipeline(VulkanContext& context, VkRenderPass renderPass,
                VK_COLOR_COMPONENT_A_BIT)
             : 0u;
     blendAttachments[1].blendEnable = VK_FALSE;
+    if (config.colorAttachmentCount > 1 && !m_context.supportsIndependentBlend()) {
+        // Without the independentBlend feature every element of pAttachments must be IDENTICAL
+        // (VUID-VkPipelineColorBlendStateCreateInfo-pAttachments-00605), so the specular
+        // attachment inherits attachment 0's blend + write mask. On such a device the specular
+        // target then receives whatever each pipeline writes to location 1 — the opaque mesh
+        // pass's real specular, but also the (undeclared, hence undefined) location-1 output of
+        // the overlays and the transparent pass — and the SSS V-pass adds that back over the
+        // diffused image: a visual degradation of the skin's specular, not a crash. Every desktop
+        // GPU and MoltenVK has the feature; this keeps an exotic device conformant.
+        blendAttachments[1] = blendAttachments[0];
+    }
 
     VkPipelineColorBlendStateCreateInfo colorBlend{};
     colorBlend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
@@ -164,7 +151,9 @@ VulkanPipeline::VulkanPipeline(VulkanContext& context, VkRenderPass renderPass,
         config.descriptorSetLayouts.empty() ? nullptr : config.descriptorSetLayouts.data();
     layoutInfo.pushConstantRangeCount = (config.pushConstantSize > 0) ? 1 : 0;
     layoutInfo.pPushConstantRanges = (config.pushConstantSize > 0) ? &pushRange : nullptr;
-    VK_CHECK(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &m_layout));
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    VK_CHECK(vkCreatePipelineLayout(device, &layoutInfo, nullptr, &layout));
+    m_layout.reset(device, layout);
 
     VkGraphicsPipelineCreateInfo pipelineInfo{};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -178,34 +167,16 @@ VulkanPipeline::VulkanPipeline(VulkanContext& context, VkRenderPass renderPass,
     pipelineInfo.pDepthStencilState = &depthStencil;
     pipelineInfo.pColorBlendState = &colorBlend;
     pipelineInfo.pDynamicState = &dynamicState;
-    pipelineInfo.layout = m_layout;
+    pipelineInfo.layout = m_layout.get();
     pipelineInfo.renderPass = renderPass;
     pipelineInfo.subpass = 0;
 
-    const VkResult result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1,
-                                                      &pipelineInfo, nullptr, &m_pipeline);
-
-    // Shader modules can be destroyed as soon as the pipeline is built, regardless of outcome.
-    vkDestroyShaderModule(device, fragModule, nullptr);
-    vkDestroyShaderModule(device, vertModule, nullptr);
-    fragModule = VK_NULL_HANDLE; // so the guard can't double-destroy if VK_CHECK throws below
-    vertModule = VK_NULL_HANDLE;
-
-    VK_CHECK(result);
-    guard.armed = false; // success: the destructor owns m_pipeline/m_layout from here
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline));
+    m_pipeline.reset(device, pipeline);
 }
 
-VulkanPipeline::~VulkanPipeline() {
-    VkDevice device = m_context.device();
-    if (m_pipeline != VK_NULL_HANDLE) {
-        vkDestroyPipeline(device, m_pipeline, nullptr);
-    }
-    if (m_layout != VK_NULL_HANDLE) {
-        vkDestroyPipelineLayout(device, m_layout, nullptr);
-    }
-}
-
-VkShaderModule VulkanPipeline::createShaderModule(const std::vector<char>& spirv) const {
+UniqueShaderModule VulkanPipeline::createShaderModule(const std::vector<char>& spirv) const {
     if (spirv.empty() || (spirv.size() % 4) != 0) {
         throw VulkanError("SPIR-V bytecode is empty or not a multiple of 4 bytes.");
     }
@@ -217,7 +188,7 @@ VkShaderModule VulkanPipeline::createShaderModule(const std::vector<char>& spirv
 
     VkShaderModule module = VK_NULL_HANDLE;
     VK_CHECK(vkCreateShaderModule(m_context.device(), &ci, nullptr, &module));
-    return module;
+    return UniqueShaderModule(m_context.device(), module);
 }
 
 } // namespace pose

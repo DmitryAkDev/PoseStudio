@@ -15,6 +15,8 @@
 #ifndef ENVIRONMENT_H
 #define ENVIRONMENT_H
 
+#include "ibldata.h" // PrefilteredSpecular + BrdfLut: the bake products the GPU layer uploads
+
 #include <glm/glm.hpp>
 
 #include <array>
@@ -57,30 +59,14 @@ struct EnvironmentSH {
 /// irradiance E(n), so the CPU side stays a plain projection.
 EnvironmentSH projectIrradianceSH(const EnvironmentImage& env);
 
-/// A GGX-prefiltered specular cubemap, baked on the CPU: `faces[face][mip]` holds the RGBA texels of
-/// one cube face at one mip. Mip 0 is a sharp reflection (roughness 0); each successive mip is
-/// prefiltered for a higher roughness (mip/(mipCount-1)), so the shader samples mip = roughness ·
-/// (mipCount-1) to get a roughness-appropriate environment reflection (the specular half of split-sum).
-struct PrefilteredSpecular {
-    int                                              baseSize = 0;
-    int                                              mipCount = 0;
-    std::vector<std::vector<std::vector<glm::vec4>>> faces; // [6][mip][texel], row-major per face
-};
-
-/// Prefilters @p env into a specular cubemap. @p baseSize is the mip-0 face resolution; @p mipCount
-/// the roughness levels. @p samples is the GGX importance-sample count for the rough mips.
+/// Prefilters @p env into a specular cubemap (PrefilteredSpecular — see rendering/ibldata.h, the
+/// GPU layer's upload contract). @p baseSize is the mip-0 face resolution; @p mipCount the
+/// roughness levels. @p samples is the GGX importance-sample count for the rough mips.
 PrefilteredSpecular prefilterSpecular(const EnvironmentImage& env, int baseSize = 128, int mipCount = 5,
                                       int samples = 128);
 
-/// The environment BRDF integration LUT (the other half of split-sum): at (NdotV, roughness) it stores
-/// the scale (.x) and bias (.y) to apply to F0. Environment-independent, so it's baked once. `data` is
-/// row-major, size×size, y = roughness, x = NdotV.
-struct BrdfLut {
-    int                    size = 0;
-    std::vector<glm::vec2> data;
-};
-
-/// Numerically integrates the environment BRDF into a @p size × @p size LUT with @p samples per texel.
+/// Numerically integrates the environment BRDF (the other half of split-sum) into a @p size × @p size
+/// LUT (BrdfLut, ibldata.h) with @p samples per texel. Environment-independent, so it's baked once.
 BrdfLut integrateBrdfLut(int size = 128, int samples = 512);
 
 /// The CPU-baked, view-independent IBL products for one environment — SH diffuse irradiance and the

@@ -1,3 +1,22 @@
+/**
+ * @file ikconstraints.cpp
+ * @brief Position-level joint constraints for the FABRIK solver: deriving a segment's hinge /
+ *        asymmetric-cone / locked constraint from its joint's authored per-axis Euler limits,
+ *        clamping a proposed segment direction to it, and the twist machinery (the solve-side
+ *        fold-plane search and its exact inverse, the extraction's twist witness).
+ *
+ * The derivation classifies the oriented axis most parallel to the child segment as twist and
+ * the other two as swing: one free swing axis is a hinge (knee, elbow, finger), two authored
+ * ranges make an ASYMMETRIC cone (a symmetric aperture let limbs fold the impossible way), both
+ * locked is a rigid twist-bone pass-through. The clamp carries the STRAIGHT-LIMB ESCAPE (a
+ * collinear chain can never decide a bend direction; the caller pushes a stalled one-sided joint
+ * deeper into its dominant side, exploratorily) and clamps a hinge to its CIRCULARLY nearest
+ * bound (a deep valid bend proposed past 180 degrees must not snap to the hyperextension side).
+ * With twist freedom the whole joint frame may rotate about the parent segment within the
+ * authored range: searched numerically (a coarse sweep, then a ternary refine), PREFERRING the
+ * twist the current pose already carries so a reachable direction never flips its fold plane
+ * from one solve to the next. Qt-free (std + GLM).
+ */
 #include "ikconstraints.h"
 
 #include "ikmath.h"

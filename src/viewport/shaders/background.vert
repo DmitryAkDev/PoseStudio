@@ -4,18 +4,17 @@
 // ray (near/far unprojection — the grid's technique), which the fragment stage points into the
 // environment cubemap. Drawn FIRST in the main pass (depth test/write off) so everything else
 // renders over it; PBR mode only (Scene::record gates it).
+//
+// Pass:    the HDR scene pass, first draw.
+// Inputs:  set 0.0 the camera UBO (only viewProj is read; the shared block declares it all).
+// Outputs: the per-pixel near/far world points for background.frag.
 
-// Only the first member of the shared camera UBO is needed (std140 offset 0 — same partial-block
-// pattern as mesh.vert).
-layout(set = 0, binding = 0) uniform CameraUbo {
-    mat4 viewProj;
-} cam;
+#extension GL_GOOGLE_include_directive : enable
+#include "camera_ubo.glsl"
+#include "fullscreen.glsl"
 
 layout(location = 0) out vec3 vNearPoint;
 layout(location = 1) out vec3 vFarPoint;
-
-// One triangle that covers the screen (no vertex buffers).
-const vec2 kTri[3] = vec2[](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
 
 void main() {
     vec2 p = kTri[gl_VertexIndex];
