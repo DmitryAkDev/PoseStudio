@@ -449,10 +449,15 @@ private:
     // wheel rotates that joint about the matching Euler channel (its own oriented frame, limits
     // enforced) instead of zooming. One hold = one undo entry (the pose is snapshotted at the
     // press, the settled-pose hook + the commit run at the release); a focus loss, a mouse
-    // press, undo/redo, or any other pose edit ends the hold too.
+    // press, undo/redo, or any other pose edit ends the hold too. DURING an IK drag the hold
+    // works as well — the grabbed joint's own rotation is the user's, the IK places it and
+    // leaves its orientation alone (Armature::holdNudgedBoneThroughDrag) — but then it is part
+    // of the drag's edit: no snapshot of its own, no commit at the release (the drag's settle
+    // commits), and the drag's mouse-up ends the hold with it.
     void beginAxisRotate(int axis);
     void endAxisRotate();
     int  m_axisRotateKey = -1; // 0/1/2 while X/Y/Z is held, else -1
+    bool m_axisRotateInDrag = false; // the hold began inside an IK drag (see above)
 
     // =========================================================================================
     // Pose edits and undo (vulkanwindow_pose.cpp)

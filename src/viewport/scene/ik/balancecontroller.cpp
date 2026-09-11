@@ -68,6 +68,13 @@ char sideOf(const std::string& normalized) {
 }
 
 int classify(const std::string& normalized) {
+    // Rig HELPER bones named after the segment they hang off ("l_hand_anchor" on the newest
+    // generation) are not body segments and must not split the segment's share: the hand's
+    // 0.006 halved to 0.003 read as token mass, and a hand reaching the floor mid-drag then
+    // planted its ELBOW (the first real-mass joint above) 40cm up.
+    if (normalized.find("anchor") != std::string::npos) {
+        return -1;
+    }
     for (std::size_t t = 0; t < std::size(kSegmentTable); ++t) {
         if (normalized.find(kSegmentTable[t].fragment) != std::string::npos) {
             return static_cast<int>(t);

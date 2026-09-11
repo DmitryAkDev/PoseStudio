@@ -40,6 +40,14 @@ void Armature::applyIkSolution(const std::vector<glm::vec3>& solved, const std::
     // world rotation to where the solve put its active children, so descendants extract against
     // their parent's ALREADY-CLAMPED frame and constraint error never compounds down a limb.
     const int rigRoot = m_ikRig->rootNode(); // callers (dragIkTo / settleIkTick) hold a live rig
+    // Bones with a PIN somewhere below them: a multi-child fit aims those children first (see
+    // the bisector fit below) — a pin is a constraint, a drag goal only a wish.
+    std::vector<char> servesPin(m_bones.size(), 0);
+    for (const IkEffector& pin : m_ikRig->pins()) {
+        for (int cur = pin.node; cur >= 0; cur = m_bones[static_cast<std::size_t>(cur)].parent) {
+            servesPin[static_cast<std::size_t>(cur)] = 1;
+        }
+    }
     for (std::size_t i = 0; i < m_bones.size(); ++i) {
         Bone& bone = m_bones[i];
         const glm::mat4 parentGlobal =
@@ -82,6 +90,34 @@ void Armature::applyIkSolution(const std::vector<glm::vec3>& solved, const std::
             // 2 of the 3 rotation DoF, and the unconstrained one is exactly what places the
             // grandchild (the shin off a thigh, the hand off a forearm): extraction then failed
             // to reproduce the solve and every drag move compounded the difference.
+            // PIN-AWARE aim (see the bisector note below): among the aim-worthy active
+            // children, those with a pin below them come first — a pin is a constraint, a
+            // drag goal only a wish. Two or more of them (the pelvis with both feet planted)
+            // are aimed by their BISECTOR; exactly one (the upper chest with a pinned hand and
+            // a dragged one) becomes the primary, aimed exactly.
+            glm::vec3 pinRestSum(0.0f);
+            glm::vec3 pinDirSum(0.0f);
+            int       pinChild = -1;
+            int       pinChildren = 0;
+            for (const int c : m_children[i]) {
+                if (!active[static_cast<std::size_t>(c)] || !servesPin[static_cast<std::size_t>(c)]) {
+                    continue;
+                }
+                const glm::vec3 rest = glm::vec3(m_bones[static_cast<std::size_t>(c)].localBind[3]);
+                const glm::vec3 dir = solved[static_cast<std::size_t>(c)] - jointPos;
+                if (glm::length(rest) < 0.02f || glm::length(dir) < 0.02f) {
+                    continue;
+                }
+                pinRestSum += glm::normalize(rest);
+                pinDirSum += glm::normalize(dir);
+                pinChild = c;
+                ++pinChildren;
+            }
+            const bool bisector = pinChildren >= 2 && glm::length(pinRestSum) > 0.1f &&
+                                  glm::length(pinDirSum) > 0.1f;
+            if (pinChildren == 1) {
+                primary = pinChild;
+            }
             int aimTarget = primary;
             while (aimTarget >= 0) {
                 int next = -1;
@@ -103,9 +139,23 @@ void Armature::applyIkSolution(const std::vector<glm::vec3>& solved, const std::
                 aimTarget = next;
             }
             if (aimTarget >= 0) {
+                // The BISECTOR fit (several pin-serving children — the pelvis with both hip
+                // sockets planted): aim the bisector of their rest directions at the bisector
+                // of their solved ones, and let every child refine the twist. The solve places
+                // each socket by its own swing and can bend the pelvis between them; aiming
+                // one socket exactly dumped that whole stretch on the OTHER foot (2-3cm high
+                // after a stepping lean), the bisector splits it in half and the release
+                // settle's contact refinement lands both (see kContactRefineBand). With ONE
+                // pin-serving child (the upper chest with a pinned hand and a dragged one)
+                // that child is the primary, aimed exactly — the drag goal's side absorbs the
+                // stretch, and the finisher closes it; a bisector there shook the legs under
+                // the far drag.
                 const glm::vec3 restOffset =
-                    m_ikBindPos[static_cast<std::size_t>(aimTarget)] - m_ikBindPos[i];
-                glm::vec3 aimDir = solved[static_cast<std::size_t>(aimTarget)] - jointPos;
+                    bisector ? pinRestSum
+                             : m_ikBindPos[static_cast<std::size_t>(aimTarget)] - m_ikBindPos[i];
+                glm::vec3 aimDir =
+                    bisector ? pinDirSum : solved[static_cast<std::size_t>(aimTarget)] - jointPos;
+                const int aimCount = bisector ? pinChildren : 1;
                 const float aimLen = glm::length(aimDir);
                 if (aimLen > 1e-5f && glm::dot(restOffset, restOffset) > 1e-10f) {
                     aimDir /= aimLen;
@@ -117,15 +167,15 @@ void Armature::applyIkSolution(const std::vector<glm::vec3>& solved, const std::
                     const glm::vec3 restAim = glm::normalize(restOffset);
                     glm::quat fitted = shortestArc(current * restAim, aimDir) * current;
                     // Secondary children refine the twist about the aim direction (e.g. the hip
-                    // fitting both thighs and the spine). Samples need real off-axis projections
-                    // — a direction nearly parallel to the aim axis carries no twist information,
-                    // only noise.
+                    // fitting both thighs and the spine; with a bisector aim EVERY child is a
+                    // twist sample). Samples need real off-axis projections — a direction nearly
+                    // parallel to the aim axis carries no twist information, only noise.
                     float twist = 0.0f;
                     int twistSamples = 0;
                     int witnessedAxis = -1; // the Euler channel the twist witness determined
                     float witnessBlend = 0.0f; // how fully (by the bend that draws the plane)
                     for (const int c : m_children[i]) {
-                        if (c == primary || !active[static_cast<std::size_t>(c)]) {
+                        if ((aimCount < 2 && c == primary) || !active[static_cast<std::size_t>(c)]) {
                             continue;
                         }
                         const glm::vec3 rest =
@@ -149,7 +199,8 @@ void Armature::applyIkSolution(const std::vector<glm::vec3>& solved, const std::
                     // that child is a hinge / asymmetric-cone joint whose own child is active,
                     // the plane the solve bent the grandchild in IS the witness — the fold
                     // plane's azimuth about this segment is this bone's twist (the upper arm's
-                    // twist places the elbow's fold plane; the thigh's the knee's). The solver
+                    // twist places the elbow's fold plane; a knee carries no twist freedom, so
+                    // a thigh twist bone never witnesses one). The solver
                     // bends within the authored twist range; this realizes the twist it chose.
                     // A bend to the joint's MINOR side flips the tangent, hence the half-turn
                     // wrap. Requires a real bend (2cm of perpendicular reach) to read a plane.
@@ -235,6 +286,20 @@ void Armature::applyIkSolution(const std::vector<glm::vec3>& solved, const std::
                                               glm::mat3_cast(fitted) * glm::mat3(bone.orient);
                     const glm::vec3 previous = m_boneEuler[i];
                     const glm::vec3 unlimited = eulerFromMatrix(channel, bone.rotationOrder);
+                    // This bone's TWIST channel: the oriented axis along its aim direction. The
+                    // aim fit determines the other two (swing); this one only the witness can.
+                    int twistChannel = 0;
+                    {
+                        float bestAlign = -1.0f;
+                        for (int a = 0; a < 3; ++a) {
+                            const float align = std::abs(glm::dot(
+                                glm::normalize(glm::vec3(bone.orient[a])), restAim));
+                            if (align > bestAlign) {
+                                bestAlign = align;
+                                twistChannel = a;
+                            }
+                        }
+                    }
                     for (int a = 0; a < 3; ++a) {
                         // Angular rate limit (kIkMaxJointDeltaDeg): bound per-event pose change.
                         m_boneEuler[i][a] =
@@ -246,8 +311,14 @@ void Armature::applyIkSolution(const std::vector<glm::vec3>& solved, const std::
                         // synthetic rig's straight-resting arm lost its reach).
                         const float priorScale =
                             (a == witnessedAxis) ? (1.0f - witnessBlend) : 1.0f;
+                        // The dragged limb's SWING channels are exempt (the finisher determines
+                        // them); its twist channel keeps the prior (see m_ikRotPriorSwingExempt).
+                        const bool exempt =
+                            (i < m_ikRotPriorExempt.size() && m_ikRotPriorExempt[i]) ||
+                            (a != twistChannel && i < m_ikRotPriorSwingExempt.size() &&
+                             m_ikRotPriorSwingExempt[i]);
                         if (rotationPrior && priorScale > 0.0f && i < m_ikStartEuler.size() &&
-                            !(i < m_ikRotPriorExempt.size() && m_ikRotPriorExempt[i])) {
+                            !exempt) {
                             // Rotational prior (see m_ikStartEuler): decay toward the drag-start
                             // angle. Components the fit determines are re-imposed next tick;
                             // undetermined drift (unwitnessed twist ratcheting into the clamps'

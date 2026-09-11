@@ -101,6 +101,9 @@ bool VulkanWindow::beginIkDrag() {
 }
 
 void VulkanWindow::beginIkRelease() {
+    if (m_axisRotateInDrag) {
+        endAxisRotate(); // a wheel hold opened inside the drag ends with it (no commit of its own)
+    }
     m_ik.hasTarget = false;
     m_ik.dragging = false;
     m_ik.settling = true; // the timer keeps ticking through the animated settle
@@ -109,6 +112,9 @@ void VulkanWindow::beginIkRelease() {
 void VulkanWindow::abortIkDrag() {
     if (!m_ik.dragging) {
         return;
+    }
+    if (m_axisRotateInDrag) {
+        endAxisRotate();
     }
     scene().endBoneIkDrag();
     m_ik.dragging = false;
@@ -264,7 +270,10 @@ void VulkanWindow::beginAxisRotate(int axis) {
         return;
     }
     endAxisRotate(); // a different axis key while one is held: close that edit, open a new one
-    m_preEditPose = scene().capturePose(); // one undo entry per hold
+    m_axisRotateInDrag = m_ik.dragging;
+    if (!m_axisRotateInDrag) {
+        m_preEditPose = scene().capturePose(); // one undo entry per hold
+    } // inside an IK drag the drag's own snapshot (taken at its press) covers the hold
     m_axisRotateKey = axis;
     emit axisRotateKeyChanged(axis);
 }
@@ -274,9 +283,13 @@ void VulkanWindow::endAxisRotate() {
         return;
     }
     m_axisRotateKey = -1;
-    if (m_renderer) {
+    const bool inDrag = m_axisRotateInDrag;
+    m_axisRotateInDrag = false;
+    if (m_renderer && !inDrag) {
         scene().finalizePose(); // the settled-pose hook (correctives already followed the wheel live)
         commitPoseUndo();       // no-op if the wheel never moved
+    }
+    if (m_renderer) {
         requestUpdate();
     }
     emit axisRotateKeyChanged(-1);

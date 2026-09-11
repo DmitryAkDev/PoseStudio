@@ -64,6 +64,10 @@ namespace Constants {
     inline constexpr const char* PREF_INSTALL_ID = "InstallId";
     // "1"/"0" — the Preferences → General toggle. Absent = on.
     inline constexpr const char* PREF_PING_ENABLED = "InstallPingEnabled";
+    // The startup update check (src/core/updatecheck.h): "1"/"0", absent = on; and the one
+    // release version the user chose to skip ("0.3.14"), silenced at startup until a newer one.
+    inline constexpr const char* PREF_UPDATE_CHECK_ENABLED = "UpdateCheckEnabled";
+    inline constexpr const char* PREF_UPDATE_SKIPPED_VERSION = "UpdateCheckSkippedVersion";
 
     // =========================================================================
     // UI DIMENSIONS & LAYOUT

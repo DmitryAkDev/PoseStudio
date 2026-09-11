@@ -151,6 +151,49 @@ float FabrikSolver::solve(const SkeletonGraph& graph, const std::vector<char>& a
     // frame: with the chest pre-bent, the shoulder clamped toward anatomically wrong directions.
     std::vector<glm::quat> frame = frameSeed;
 
+    // RIGID multi-child joints (see JointConstraint::parentAxis): a joint with several ACTIVE
+    // children — the pelvis with both hip sockets, the upper chest with both collars — placed
+    // with ONE shared rotation (fitted to all of them, clamped on the parent's own limits)
+    // instead of one swing per edge. EXPERIMENT, DEFAULT OFF (IK_RIGID_GROUPS=1 enables it):
+    // per-edge placement lets the solve bend the pelvis between its sockets, and the
+    // extraction's rigid pelvis then lands the second foot 2-3cm high after a stepping lean on
+    // the newest and oldest rigs; every rigid formulation measured (rigid in the main pass and
+    // the restorations; rigid only in a final polish; free restorations then a rigid
+    // re-landing every iteration) fixed those landings but tripled the standing knees'
+    // tick-to-tick reversals under a lateral lean on the base rig (the roll a lean needs is
+    // discovered by the free sockets; rigid, the two sockets ask for opposite rotations and
+    // the lean lands in the knees). The extraction's bisector fit plus the settle's contact
+    // refinement carry the landing instead (Armature::applyIkSolution / refinePins).
+    static const bool kRigidGroups = std::getenv("IK_RIGID_GROUPS") != nullptr;
+    std::vector<glm::quat> groupLocal(static_cast<std::size_t>(n), glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+    std::vector<char>      placedInGroup(static_cast<std::size_t>(n), 0);
+    const auto isGrouped = [&](int p) {
+        return kRigidGroups && p >= 0 && p != root &&
+               activeChildren[static_cast<std::size_t>(p)].size() > 1;
+    };
+    // Each grouped rotation starts at the POSE's own (the bone's rotation relative to its
+    // parent bone) and is under-relaxed toward every iteration's fit: refitted outright from
+    // the forward pass's proposals it alternated between two pelvis tilts iteration to
+    // iteration, and the knees shook under every lean and walk.
+    for (int p = 0; p < n; ++p) {
+        const int q = graph.parentOf(p);
+        if (q >= 0 && isGrouped(p)) {
+            groupLocal[static_cast<std::size_t>(p)] = glm::normalize(
+                glm::inverse(frameSeed[static_cast<std::size_t>(q)]) * frameSeed[static_cast<std::size_t>(p)]);
+        }
+    }
+    static const float kGroupRelaxation = [] {
+        const char* v = std::getenv("IK_GROUP_RELAX"); // A/B diagnostics
+        return v != nullptr ? static_cast<float>(std::atof(v)) : 0.5f;
+    }();
+    // The restoration chains EXPLORE with free socket edges (the pre-group behaviour: a foot's
+    // chain may swing its own hip socket, and the stretch it leaves is what lets a lateral
+    // lean discover the pelvis ROLL that serves both feet — held rigid there, the two sockets
+    // demanded opposite rotations, no roll ever developed, the whole lean landed in the knees
+    // and they flipped every tick). Rigidity is imposed by the main pass and by the FINAL
+    // polish (see the end of solve()), so the returned state is one a rigid pelvis realizes.
+    bool socketsRigid = true;
+
     // Reach leashes: with a FLOATING root, the drag goal must never hoist the body off its
     // planted contacts — anatomically, the hips can never be farther from a planted foot than
     // the leg is long. Each pinned effector contributes a ball (its chain length to the root)
@@ -238,6 +281,9 @@ float FabrikSolver::solve(const SkeletonGraph& graph, const std::vector<char>& a
         if (p == anatomicalRoot) {
             // Root-owned edge: frozen at its current pose direction (see the note above).
             clamped = frameSeed[static_cast<std::size_t>(p)] * restDir;
+        } else if (isGrouped(p) && socketsRigid) {
+            // A grouped child (see groupLocal): rigid with its parent's shared rotation.
+            clamped = glm::normalize(parentFrame * (groupLocal[static_cast<std::size_t>(p)] * restDir));
         } else {
             clamped = constrainSegmentDirection(edgeConstraint[static_cast<std::size_t>(node)],
                                                 parentFrame, restDir, dir, bias,
@@ -309,6 +355,78 @@ float FabrikSolver::solve(const SkeletonGraph& graph, const std::vector<char>& a
 #endif
     };
 
+    // The shared rotation of a grouped parent @p p from its children's PROPOSED positions (the
+    // forward pass's): the longest edge is aligned exactly (shortest arc), the others fit the
+    // twist about it, and the result is clamped as a rotation vector on the parent's three
+    // authored channels — then every child is placed with it through placeChild's rigid path.
+    auto placeGroup = [&](int p) {
+        const std::vector<int>& kids = activeChildren[static_cast<std::size_t>(p)];
+        const glm::quat& F = frame[static_cast<std::size_t>(p)];
+        const glm::vec3& pp = positions[static_cast<std::size_t>(p)];
+        int   prim = kids[0];
+        float primLen = -1.0f;
+        for (const int c : kids) {
+            if (lengthToParent[static_cast<std::size_t>(c)] > primLen) {
+                primLen = lengthToParent[static_cast<std::size_t>(c)];
+                prim = c;
+            }
+        }
+        const auto proposedDir = [&](int c) {
+            const glm::vec3 d = positions[static_cast<std::size_t>(c)] - pp;
+            const float l = glm::length(d);
+            return l > kZeroLength ? d / l
+                                   : glm::normalize(F * edgeRestDir[static_cast<std::size_t>(c)]);
+        };
+        const glm::vec3 primRest = glm::normalize(F * edgeRestDir[static_cast<std::size_t>(prim)]);
+        const glm::vec3 primDir = proposedDir(prim);
+        glm::quat R = shortestArc(primRest, primDir);
+        float twistSum = 0.0f;
+        int   twistCount = 0;
+        for (const int c : kids) {
+            if (c == prim) {
+                continue;
+            }
+            glm::vec3 v = R * (F * edgeRestDir[static_cast<std::size_t>(c)]);
+            glm::vec3 d = proposedDir(c);
+            v -= primDir * glm::dot(v, primDir);
+            d -= primDir * glm::dot(d, primDir);
+            if (glm::dot(v, v) > 0.01f && glm::dot(d, d) > 0.01f) {
+                twistSum += signedAngleAround(glm::normalize(v), glm::normalize(d), primDir);
+                ++twistCount;
+            }
+        }
+        if (twistCount > 0) {
+            R = glm::normalize(glm::angleAxis(twistSum / static_cast<float>(twistCount), primDir) * R);
+        }
+        // Clamp on the parent's channels (rotation-vector components ≈ Euler angles at the
+        // ranges involved: a pelvis tilts ±25°).
+        {
+            const JointConstraint& jc = edgeConstraint[static_cast<std::size_t>(prim)];
+            glm::quat q = R;
+            if (q.w < 0.0f) {
+                q = -q;
+            }
+            const glm::vec3 v(q.x, q.y, q.z);
+            const float vl = glm::length(v);
+            const glm::vec3 w = vl > 1e-9f ? v * (2.0f * std::atan2(vl, q.w) / vl) : glm::vec3(0.0f);
+            glm::vec3 clampedW(0.0f);
+            for (int a = 0; a < 3; ++a) {
+                const glm::vec3 ax = glm::normalize(F * jc.parentAxis[a]);
+                clampedW += ax * glm::clamp(glm::dot(w, ax), jc.parentMin[a], jc.parentMax[a]);
+            }
+            const float cl = glm::length(clampedW);
+            R = cl > 1e-6f ? glm::angleAxis(cl, clampedW / cl) : glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+        }
+        const glm::quat fit = glm::normalize(glm::inverse(F) * R * F);
+        glm::quat& kept = groupLocal[static_cast<std::size_t>(p)];
+        kept = glm::normalize(glm::slerp(kept, glm::dot(kept, fit) < 0.0f ? -fit : fit,
+                                         kGroupRelaxation));
+        for (const int c : kids) {
+            placeChild(c, p, 0.0f); // the rigid path: parentFrame * groupLocal * rest (+ floor)
+            placedInGroup[static_cast<std::size_t>(c)] = 1;
+        }
+    };
+
     auto worstError = [&]() {
         float worst = 0.0f;
         for (const IkEffector& e : effectors) {
@@ -375,8 +493,17 @@ float FabrikSolver::solve(const SkeletonGraph& graph, const std::vector<char>& a
     // backward walk re-imposes lengths and limits — iterated for up to @p maxRounds rounds,
     // keeping the chain's BEST configuration. Called per effector after every iteration's main
     // passes, and once more as the hard-pin POLISH on the final best state (see below).
-    // @p earlyPhase enables the straight-limb escape kick.
-    const auto restoreChain = [&](std::size_t ei, int maxRounds, bool earlyPhase) {
+    // @p earlyPhase enables the straight-limb escape kick. With @p throughBranches the chain
+    // runs THROUGH branching ancestors up to the root (still stopping at other effectors and
+    // inactive nodes): a HARD pin's chain. A pinned hand's limb stops at the chest, and once a
+    // drag has pulled the chest a centimetre out of that arm's reach nothing in the solve
+    // brings it back — the pin misses, the goals back off to 100% (the drag makes no progress
+    // at all), and the Armature's root-translation refinement then holds the pin by shifting
+    // the pelvis, which the next solve undoes: the legs trembled under every pinned-hand drag.
+    // Restored through the spine, the pin bends the trunk to itself first and the goal's chain
+    // (restored after, from the moved chest) adapts — the pin is the declared intent.
+    const auto restoreChain = [&](std::size_t ei, int maxRounds, bool earlyPhase,
+                                  bool throughBranches) {
         const IkEffector& e = effectors[ei];
         if (e.node < 0 || e.node >= n || !active[static_cast<std::size_t>(e.node)]) {
             return;
@@ -397,7 +524,7 @@ float FabrikSolver::solve(const SkeletonGraph& graph, const std::vector<char>& a
             // the far foot's pin) would undo that goal every round and the two would fight
             // forever.
             if (p == root || !active[static_cast<std::size_t>(p)] ||
-                activeChildren[static_cast<std::size_t>(p)].size() > 1 ||
+                (!throughBranches && activeChildren[static_cast<std::size_t>(p)].size() > 1) ||
                 effectorAt[static_cast<std::size_t>(p)] >= 0) {
                 break;
             }
@@ -575,19 +702,145 @@ float FabrikSolver::solve(const SkeletonGraph& graph, const std::vector<char>& a
                     {
                         const JointConstraint& midJc = edgeConstraint[static_cast<std::size_t>(
                             chain[static_cast<std::size_t>(mid - 1)])];
+                        const glm::vec3& midRest =
+                            edgeRestDir[static_cast<std::size_t>(chain[static_cast<std::size_t>(mid - 1)])];
                         glm::vec3 tangent(0.0f);
-                        if (dominantBendTangent(
-                                midJc,
-                                edgeRestDir[static_cast<std::size_t>(chain[static_cast<std::size_t>(mid - 1)])],
-                                tangent)) {
-                            glm::vec3 pref =
-                                -(frame[static_cast<std::size_t>(chain[static_cast<std::size_t>(mid)])] *
-                                  tangent);
+                        const bool hasTangent = dominantBendTangent(midJc, midRest, tangent);
+                        if (hasTangent) {
+                            const glm::quat& midFrame =
+                                frame[static_cast<std::size_t>(chain[static_cast<std::size_t>(mid)])];
+                            glm::vec3 pref = -(midFrame * tangent);
+                            // A HINGE with twist freedom (an elbow) folds in the plane the pose
+                            // CURRENTLY carries, not the chained frame's zero-twist plane: the
+                            // chained frames are swing-only, so the zero-twist flexion side can
+                            // sit a quarter turn from where the extraction's twist channel
+                            // actually is (a return-to-rest parks the upper-arm twist at its
+                            // limit), and an elbow seeded there is one the pose cannot realize —
+                            // the solver's arm and the applied arm disagreed by 5cm at the elbow
+                            // every tick until a fast flick ran away. The twist search and the
+                            // witness then move the plane from the current one continuously.
+                            if (midJc.type == JointConstraint::Type::Hinge &&
+                                midJc.twistMax - midJc.twistMin > 1e-6f) {
+                                const glm::vec3 u = glm::normalize(midFrame * midJc.twistAxis);
+                                const glm::quat& seedFrame = frameSeed[static_cast<std::size_t>(
+                                    chain[static_cast<std::size_t>(mid)])];
+                                glm::vec3 hChain = midFrame * midJc.hingeAxis;
+                                glm::vec3 hSeed = seedFrame * midJc.hingeAxis;
+                                hChain -= u * glm::dot(hChain, u);
+                                hSeed -= u * glm::dot(hSeed, u);
+                                if (glm::dot(hChain, hChain) > 0.01f && glm::dot(hSeed, hSeed) > 0.01f) {
+                                    const float phiCur = glm::clamp(
+                                        signedAngleAround(glm::normalize(hChain), glm::normalize(hSeed), u),
+                                        midJc.twistMin, midJc.twistMax);
+                                    pref = glm::angleAxis(phiCur, u) * pref;
+                                }
+                            }
                             pref -= axis * glm::dot(pref, axis);
                             const float prefLen = glm::length(pref);
                             if (prefLen > 1e-5f && (perpLen <= 1e-5f || glm::dot(perp, pref) < 0.0f)) {
                                 perp = pref;
                                 perpLen = prefLen;
+                            }
+                            // (A cone-aware elbow azimuth — walking the mid-joint circle for
+                            // the azimuth the SHOULDER's cone admits nearest the preferred one
+                            // — was built and measured for a hand planted on the floor under
+                            // a descending trunk (the live-contact round): it did not make the
+                            // arm's chain converge (the collar and clavicle cones and the kinked
+                            // rigid wrist link are what the restoration rounds diverge on), it
+                            // slid the planted hands 50% farther, and it perturbed the
+                            // suspension's dangling arms. Dropped; the joint-space refinement
+                            // holds live contacts instead.)
+                        }
+                        // A near-hinge CONE (a knee) has no twist of its own: its fold plane is
+                        // carried by the thigh's swing, so the ONE azimuth on the circle where
+                        // that plane contains the goal is where the knee belongs — over the
+                        // foot. The forward-of-the-thigh-frame side above put the knee straight
+                        // ahead of the hip socket while the foot stands 12cm outboard of it; the
+                        // shin then had to angle out to the pin through a plane far from the
+                        // knee's, which the solve could only serve with THIGH TWIST (when the
+                        // knee had that freedom: every crouch ran it to the 75° limit, knees
+                        // 10-20cm inward, planted feet rotated 45°) or not at all (11cm chain
+                        // error, the foot buried). Solved on the circle: the knee's hinge axis
+                        // — the base frame carried down the seeded upper segment by shortest arc
+                        // — must be perpendicular to the shin, on the flexion side. An ELBOW (a
+                        // true hinge under a twist bone) keeps the side rule: its fold plane IS a
+                        // free degree of freedom the solve's twist search chooses.
+                        if (hasTangent && midJc.type == JointConstraint::Type::Cone &&
+                            midJc.perAxis && r2 > 1e-8f && perpLen > 1e-5f) {
+                            const float reach0 = std::max(-midJc.swing0Min, midJc.swing0Max);
+                            const float reach1 = std::max(-midJc.swing1Min, midJc.swing1Max);
+                            const glm::vec3 hingeRest =
+                                reach0 >= reach1 ? midJc.swingAxis0 : midJc.swingAxis1;
+                            const glm::vec3 e1 = perp / perpLen;
+                            const glm::vec3 e2 = glm::cross(axis, e1);
+                            const float rad = std::sqrt(r2);
+                            const glm::quat& baseFrame =
+                                frame[static_cast<std::size_t>(chain[static_cast<std::size_t>(base)])];
+                            // f(psi) = shin · hinge axis at knee K(psi); side > 0 = flexion side.
+                            const auto evalAt = [&](float psi, float& side) {
+                                const glm::vec3 K =
+                                    center + (e1 * std::cos(psi) + e2 * std::sin(psi)) * rad;
+                                const glm::vec3 upDir = glm::normalize(K - basePos);
+                                glm::quat f = baseFrame;
+                                for (int k = base - 1; k >= mid; --k) {
+                                    const glm::vec3& restK = edgeRestDir[static_cast<std::size_t>(
+                                        chain[static_cast<std::size_t>(k)])];
+                                    f = glm::normalize(shortestArc(f * restK, upDir) * f);
+                                }
+                                const glm::vec3 shin = goal - K;
+                                side = glm::dot(shin, f * tangent);
+                                return glm::dot(shin, f * hingeRest);
+                            };
+                            constexpr int   kAzimuthSamples = 24;
+                            constexpr float kPi = 3.14159265f;
+                            const float step = 2.0f * kPi / static_cast<float>(kAzimuthSamples);
+                            float bestPsi = 0.0f;
+                            float bestCost = 1e30f;
+                            bool  found = false;
+                            float side = 0.0f;
+                            float prevF = evalAt(-kPi, side);
+                            for (int i = 1; i <= kAzimuthSamples; ++i) {
+                                const float psi = -kPi + step * static_cast<float>(i);
+                                const float fv = evalAt(psi, side);
+                                if ((fv <= 0.0f) != (prevF <= 0.0f)) {
+                                    float lo = psi - step;
+                                    float hi = psi;
+                                    float flo = prevF;
+                                    for (int b = 0; b < 12; ++b) {
+                                        const float m = 0.5f * (lo + hi);
+                                        const float fm = evalAt(m, side);
+                                        if ((fm <= 0.0f) == (flo <= 0.0f)) {
+                                            lo = m;
+                                            flo = fm;
+                                        } else {
+                                            hi = m;
+                                        }
+                                    }
+                                    const float root = 0.5f * (lo + hi);
+                                    evalAt(root, side);
+                                    if (side > 0.0f) {
+                                        // Flexion side. Of several (rare), the one nearest the
+                                        // seed side above (pose continuity).
+                                        const float cost = -std::cos(root);
+                                        if (cost < bestCost) {
+                                            bestCost = cost;
+                                            bestPsi = root;
+                                            found = true;
+                                        }
+                                    }
+                                }
+                                prevF = fv;
+                            }
+                            if (found) {
+                                perp = e1 * std::cos(bestPsi) + e2 * std::sin(bestPsi);
+                                perpLen = 1.0f;
+                            }
+                            static const bool kAzimuthTrace = std::getenv("IK_TWOBONE_TRACE") != nullptr;
+                            if (kAzimuthTrace) {
+                                std::printf("[2bone] eff=%d knee azimuth %s psi=%.1f deg (cur side dot %.3f)\n",
+                                            e.node, found ? "found" : "NOT found",
+                                            glm::degrees(bestPsi),
+                                            glm::dot(glm::normalize(curMid - center), e1));
                             }
                         }
                     }
@@ -821,6 +1074,7 @@ float FabrikSolver::solve(const SkeletonGraph& graph, const std::vector<char>& a
                 effTarget[static_cast<std::size_t>(rootEffector)];
         }
         frame[static_cast<std::size_t>(root)] = frameSeed[static_cast<std::size_t>(root)];
+        socketsRigid = false; // the main pass and the first restoration explore per edge
         for (const int node : order) {
             if (node == root || !active[static_cast<std::size_t>(node)]) {
                 continue;
@@ -844,8 +1098,50 @@ float FabrikSolver::solve(const SkeletonGraph& graph, const std::vector<char>& a
         // limb moves — the body keeps the global solution. The fold-escape kick lives HERE and
         // only here, because fold need is geometrically well-defined per chain (see below) —
         // this is also what lets a straight arm bend its elbow to bring the hand inward.
+        // Hard pins first, through the trunk (see restoreChain); then everything else from its
+        // sub-base — a goal whose chain hangs off a node the pins just moved adapts to them.
+        // Sockets are FREE here (see socketsRigid): this pass DISCOVERS what each limb wants
+        // of its socket — a lateral lean's pelvis roll is the mean of the two legs' wishes.
         for (std::size_t ei = 0; ei < effectors.size(); ++ei) {
-            restoreChain(ei, kRestoreRounds, earlyPhase);
+            if (effectors[ei].hard) {
+                restoreChain(ei, kRestoreRounds, earlyPhase, true);
+            }
+        }
+        for (std::size_t ei = 0; ei < effectors.size(); ++ei) {
+            if (!effectors[ei].hard) {
+                restoreChain(ei, kRestoreRounds, earlyPhase, false);
+            }
+        }
+        // Then RIGIDIFY: each group's rotation is fitted from where the free restoration left
+        // its sockets (the stretch's rigid part — the roll — is kept, the rest removed) and
+        // the children re-placed with it; every chain is restored once more from those rigid
+        // sockets so the pins land on a configuration a rigid pelvis realizes. Rigidity only
+        // in the main pass never found the roll (the two sockets ask for opposite rotations
+        // and a fit from the forward pass's proposals has none): the lean then went into the
+        // knees, which flipped every tick.
+        if (kRigidGroups) {
+            socketsRigid = true;
+            std::fill(placedInGroup.begin(), placedInGroup.end(), 0);
+            for (const int node : order) {
+                if (node == root || !active[static_cast<std::size_t>(node)] ||
+                    placedInGroup[static_cast<std::size_t>(node)]) {
+                    continue;
+                }
+                const int p = graph.parentOf(node);
+                if (isGrouped(p)) {
+                    placeGroup(p);
+                }
+            }
+            for (std::size_t ei = 0; ei < effectors.size(); ++ei) {
+                if (effectors[ei].hard) {
+                    restoreChain(ei, kRestoreRounds, false, true);
+                }
+            }
+            for (std::size_t ei = 0; ei < effectors.size(); ++ei) {
+                if (!effectors[ei].hard) {
+                    restoreChain(ei, kRestoreRounds, false, false);
+                }
+            }
         }
 
         IK_NAN_CHECK("restore", iter);
@@ -865,11 +1161,13 @@ float FabrikSolver::solve(const SkeletonGraph& graph, const std::vector<char>& a
         frame = bestFrame;
     }
     // HARD-PIN POLISH (see kHardPinPolishRounds): one well-converged restoration of each hard
-    // pin's chain on the final state — no kick (pure), frames consistent with the kept state.
+    // pin's chain on the final state — no kick (pure), frames consistent with the kept state,
+    // sockets rigid (the kept state is a rigidified one).
     if (anyHardPin) {
+        socketsRigid = true;
         for (std::size_t ei = 0; ei < effectors.size(); ++ei) {
             if (effectors[ei].hard) {
-                restoreChain(ei, kHardPinPolishRounds, false);
+                restoreChain(ei, kHardPinPolishRounds, false, true);
             }
         }
         bestError = worstError();

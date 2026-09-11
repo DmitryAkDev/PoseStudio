@@ -5,6 +5,7 @@
 
 #include "generalpreferencespanel.h"
 #include "installping.h"
+#include "updatecheck.h"
 
 #include <QCheckBox>
 #include <QVBoxLayout>
@@ -40,5 +41,17 @@ GeneralPreferencesPanel::GeneralPreferencesPanel(QWidget* parent)
 
     connect(pingToggle, &QCheckBox::toggled, this, [](bool enabled) {
         InstallPing::setEnabled(enabled);
+    });
+
+    // --- Update check ---
+    auto* updateToggle = new QCheckBox(QStringLiteral("Check for updates at startup"), this);
+    updateToggle->setChecked(UpdateCheck::isEnabled());
+    contentLayout()->addWidget(updateToggle);
+    addDescription(
+        "A few seconds after it starts, PoseStudio asks GitHub for the latest release and, when a newer "
+        "one exists, shows a message with a link to its download page. Nothing but the request itself "
+        "is sent. Help → Check for Updates… does the same on demand.");
+    connect(updateToggle, &QCheckBox::toggled, this, [](bool enabled) {
+        UpdateCheck::setEnabled(enabled);
     });
 }

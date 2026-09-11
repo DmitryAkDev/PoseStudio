@@ -253,6 +253,12 @@ void VulkanWindow::wheelEvent(QWheelEvent* event) {
         glm::vec3 delta(0.0f);
         delta[m_axisRotateKey] = steps * kDegreesPerWheelNotch;
         scene().nudgeSelectedBone(delta);
+        if (m_ik.dragging) {
+            // Inside an IK drag the rotation is part of the drag's edit: the release must settle
+            // and commit it even if the cursor never moved (a press + wheel + release is not a
+            // click, and abortIkDrag would drop the entry).
+            m_ik.poseChanged = true;
+        }
         requestUpdate();
         return;
     }
@@ -322,12 +328,14 @@ void VulkanWindow::keyPressEvent(QKeyEvent* event) {
     // X / Y / Z held with a joint selected: the mouse wheel rotates that joint about the channel
     // for as long as the key is down (see beginAxisRotate); the strip shows the axis badge. The
     // key's auto-repeats are swallowed so a long hold doesn't re-open the edit; no modifiers
-    // (Ctrl+Z is undo, and Ctrl+X/Y/Z stay free). Refused while a drag owns the pose; a settle
-    // or fall still animating is landed first.
+    // (Ctrl+Z is undo, and Ctrl+X/Y/Z stay free). Allowed DURING an IK drag — the wheel then
+    // rotates the grabbed joint while the IK places it (the drag's edit absorbs it, see
+    // beginAxisRotate); refused while a Ctrl FK drag owns the pose; a settle or fall still
+    // animating is landed first.
     if (m_renderer && event->modifiers() == Qt::NoModifier &&
         (event->key() == Qt::Key_X || event->key() == Qt::Key_Y || event->key() == Qt::Key_Z)) {
         const int axis = event->key() == Qt::Key_X ? 0 : event->key() == Qt::Key_Y ? 1 : 2;
-        if (!event->isAutoRepeat() && !dragInFlight() && m_axisRotateKey != axis &&
+        if (!event->isAutoRepeat() && !m_posingBone && m_axisRotateKey != axis &&
             scene().hasSelectedBone()) {
             closeSettlingEdits(); // ends a hold on another axis as its own undo step
             beginAxisRotate(axis);

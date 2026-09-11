@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <random>
 #include <string>
 #include <vector>
@@ -32,6 +33,68 @@ std::vector<ArmatureBone> scaledBones(const std::vector<ArmatureBone>& bones, fl
         b.localBindTranslation *= scale;
     }
     return out;
+}
+
+namespace {
+
+// Canonical (G8-generation) bone name -> the other generations' names for the same joint.
+// Filled from real skeleton dumps; a name absent here resolves only to itself.
+struct BoneAlias {
+    const char* canonical;
+    const char* alternates[4];
+};
+const BoneAlias kBoneAliases[] = {
+    {"lHand", {"l_hand"}},
+    {"rHand", {"r_hand"}},
+    {"lFoot", {"l_foot"}},
+    {"rFoot", {"r_foot"}},
+    {"lShin", {"l_shin"}},
+    {"rShin", {"r_shin"}},
+    {"lThigh", {"l_thigh"}},
+    {"rThigh", {"r_thigh"}},
+    // The newest generation's thigh twist bones hang OFF the chain (siblings of the shin); the
+    // oldest generations have none — the leg diagnostics then skip the twist metric.
+    {"lThighTwist", {"l_thightwist1"}},
+    {"rThighTwist", {"r_thightwist1"}},
+    {"lForeArm", {"lForearmBend", "l_forearm"}},
+    {"rForeArm", {"rForearmBend", "r_forearm"}},
+    {"lShldr", {"lShldrBend", "l_upperarm"}},
+    {"rShldr", {"rShldrBend", "r_upperarm"}},
+    {"lCollar", {"l_shoulder"}},
+    {"rCollar", {"r_shoulder"}},
+    {"lIndex3", {"l_index3"}},
+    {"lEye", {"l_eye"}},
+    {"head", {"head"}},
+    {"neck", {"neckLower", "neck1"}},
+    {"hip", {"hip"}},
+    {"abdomenLower", {"abdomen", "spine1"}},
+    {"chest", {"chestLower", "spine3"}},
+    {"chest_2", {"chestUpper", "spine4", "chest"}}, // the two-bone-chest generations: the top
+};
+
+} // namespace
+
+int resolveBone(const Armature& arm, const std::string& canonical) {
+    int idx = arm.boneIndex(canonical);
+    if (idx >= 0) {
+        return idx;
+    }
+    for (const BoneAlias& alias : kBoneAliases) {
+        if (canonical != alias.canonical) {
+            continue;
+        }
+        for (const char* alt : alias.alternates) {
+            if (alt != nullptr && (idx = arm.boneIndex(alt)) >= 0) {
+                return idx;
+            }
+        }
+    }
+    return -1;
+}
+
+std::string resolveBoneName(const Armature& arm, const std::string& canonical) {
+    const int idx = resolveBone(arm, canonical);
+    return idx >= 0 ? arm.boneName(static_cast<std::size_t>(idx)) : canonical;
 }
 
 double rotationAngleDeg(const glm::mat3& a, const glm::mat3& b) {
@@ -51,7 +114,7 @@ RunResult runScenario(const std::vector<ArmatureBone>& baseBones, const Scenario
     arm.build(bones);
     const std::size_t n = arm.boneCount();
     for (const auto& [bone, euler] : sc.prePose) {
-        if (!arm.setBoneRotation(bone, euler)) {
+        if (!arm.setBoneRotation(resolveBoneName(arm, bone), euler)) {
             r.error = "pre-pose bone not found: " + bone;
             return r;
         }
@@ -60,7 +123,7 @@ RunResult runScenario(const std::vector<ArmatureBone>& baseBones, const Scenario
         auto pose = arm.capturePose();
         // The rig root is the first multi-child descendant of the anatomical root (the hip on
         // real figures); the hover goes on the hip's pose translation like the engine writes it.
-        int hip = arm.boneIndex("hip");
+        int hip = resolveBone(arm, "hip");
         if (hip < 0) {
             hip = 0;
         }
@@ -69,14 +132,18 @@ RunResult runScenario(const std::vector<ArmatureBone>& baseBones, const Scenario
         arm.applyPose(pose);
     }
     for (const std::string& pin : sc.userPins) {
-        const int idx = arm.selectBoneByName(pin);
+        const int idx = resolveBone(arm, pin);
         if (idx < 0) {
             r.error = "pin bone not found: " + pin;
             return r;
         }
+        arm.setSelectedBone(idx);
         arm.togglePinSelectedBone();
     }
-    r.grabIndex = arm.selectBoneByName(sc.grab);
+    r.grabIndex = resolveBone(arm, sc.grab);
+    if (r.grabIndex >= 0) {
+        arm.setSelectedBone(r.grabIndex);
+    }
     if (r.grabIndex < 0) {
         r.error = "grab bone not found: " + sc.grab;
         return r;
@@ -92,6 +159,7 @@ RunResult runScenario(const std::vector<ArmatureBone>& baseBones, const Scenario
         r.startPos[i] = arm.boneWorldPosition(i);
     }
     r.grabStart = r.startPos[static_cast<std::size_t>(r.grabIndex)];
+    r.grabEulerStart = arm.boneEuler(static_cast<std::size_t>(r.grabIndex));
     std::vector<glm::vec3> contactStart;
     for (const int c : r.contactPins) {
         contactStart.push_back(r.startPos[static_cast<std::size_t>(c)]);
@@ -107,22 +175,36 @@ RunResult runScenario(const std::vector<ArmatureBone>& baseBones, const Scenario
     std::vector<glm::vec3> userPinPos;
     std::vector<glm::mat3> userPinRot;
     for (const std::string& pin : sc.userPins) {
-        const int idx = arm.boneIndex(pin);
+        const int idx = resolveBone(arm, pin);
         userPinIdx.push_back(idx);
         userPinPos.push_back(arm.boneWorldPosition(static_cast<std::size_t>(idx)));
         userPinRot.push_back(glm::mat3(arm.poseGlobal(static_cast<std::size_t>(idx))));
     }
-    const int hip = arm.boneIndex("hip");
-    const int head = arm.boneIndex("head");
-    const int chest = arm.boneIndex("chest");
-    // The feet, for the suspension / floor checks.
+    const int hip = resolveBone(arm, "hip");
+    const int head = resolveBone(arm, "head");
+    const int chest = resolveBone(arm, "chest");
+    // The feet, for the suspension / floor checks; the hands, for the live-contact phases.
     std::vector<int> feet;
     for (const char* f : {"lFoot", "rFoot"}) {
-        const int idx = arm.boneIndex(f);
+        const int idx = resolveBone(arm, f);
         if (idx >= 0) {
             feet.push_back(idx);
         }
     }
+    std::vector<int> hands;
+    for (const char* h : {"lHand", "rHand"}) {
+        const int idx = resolveBone(arm, h);
+        if (idx >= 0) {
+            hands.push_back(idx);
+        }
+    }
+    const auto handsNow = [&]() {
+        double y = 1e9;
+        for (const int h : hands) {
+            y = std::min(y, static_cast<double>(arm.boneWorldPosition(static_cast<std::size_t>(h)).y));
+        }
+        return y;
+    };
     // Bind heights of every joint (penetration check).
     std::vector<float> bindY(n, 0.0f);
     {
@@ -142,6 +224,86 @@ RunResult runScenario(const std::vector<ArmatureBone>& baseBones, const Scenario
             }
         }
     }
+    // Leg diagnostics (see RunResult): each leg's hip socket, thigh twist bone (its one free
+    // channel = the widest authored range), knee and ankle; plus each contact-pinned foot's
+    // drag-start rotation.
+    struct Leg {
+        int       socket = -1, twist = -1, knee = -1, ankle = -1, twistAxis = 1;
+        float     twistStart = 0.0f;
+        glm::vec3 prevKnee{0.0f}, prevKneeStep{0.0f};
+        double    osc = 0.0;
+    };
+    std::vector<Leg> legs;
+    for (const char* side : {"l", "r"}) {
+        Leg leg;
+        const std::string s(side);
+        leg.socket = resolveBone(arm, s + "Thigh");
+        leg.twist = resolveBone(arm, s + "ThighTwist");
+        leg.knee = resolveBone(arm, s + "Shin");
+        leg.ankle = resolveBone(arm, s + "Foot");
+        if (leg.socket < 0 || leg.knee < 0 || leg.ankle < 0) {
+            continue;
+        }
+        if (leg.twist >= 0) {
+            const ArmatureBone& tb = bones[static_cast<std::size_t>(leg.twist)];
+            float widest = -1.0f;
+            for (int a = 0; a < 3; ++a) {
+                const float range = tb.rotationLimited[a] ? tb.rotationMax[a] - tb.rotationMin[a] : 360.0f;
+                if (range > widest) {
+                    widest = range;
+                    leg.twistAxis = a;
+                }
+            }
+            leg.twistStart = arm.boneEuler(static_cast<std::size_t>(leg.twist))[leg.twistAxis];
+        }
+        leg.prevKnee = arm.boneWorldPosition(static_cast<std::size_t>(leg.knee));
+        legs.push_back(leg);
+    }
+    const auto wrapDeg = [](float d) {
+        while (d > 180.0f) d -= 360.0f;
+        while (d <= -180.0f) d += 360.0f;
+        return d;
+    };
+    const auto kneeTwist = [&](const Leg& leg) {
+        if (leg.twist < 0) {
+            return 0.0; // a generation without thigh twist bones: no twist channel to read
+        }
+        return static_cast<double>(std::abs(wrapDeg(
+            arm.boneEuler(static_cast<std::size_t>(leg.twist))[leg.twistAxis] - leg.twistStart)));
+    };
+    const auto kneeInward = [&](const Leg& leg) {
+        const glm::vec3 socket = arm.boneWorldPosition(static_cast<std::size_t>(leg.socket));
+        const glm::vec3 ankle = arm.boneWorldPosition(static_cast<std::size_t>(leg.ankle));
+        const glm::vec3 knee = arm.boneWorldPosition(static_cast<std::size_t>(leg.knee));
+        glm::vec3 axis = ankle - socket;
+        const float len = glm::length(axis);
+        if (len < 1e-4f) {
+            return 0.0;
+        }
+        axis /= len;
+        const glm::vec3 off = (knee - socket) - axis * glm::dot(knee - socket, axis);
+        glm::vec3 inward(0.0f); // toward the other leg's socket, perpendicular to the line
+        for (const Leg& other : legs) {
+            if (other.socket != leg.socket) {
+                inward = arm.boneWorldPosition(static_cast<std::size_t>(other.socket)) - socket;
+            }
+        }
+        inward -= axis * glm::dot(inward, axis);
+        const float il = glm::length(inward);
+        return il > 1e-4f ? static_cast<double>(glm::dot(off, inward / il)) : 0.0;
+    };
+    std::vector<glm::mat3> contactStartRot;
+    for (const int c : r.contactPins) {
+        contactStartRot.push_back(glm::mat3(arm.poseGlobal(static_cast<std::size_t>(c))));
+    }
+    const auto footRotNow = [&]() {
+        double worst = 0.0;
+        for (std::size_t c = 0; c < r.contactPins.size(); ++c) {
+            worst = std::max(worst, rotationAngleDeg(contactStartRot[c],
+                                                     glm::mat3(arm.poseGlobal(static_cast<std::size_t>(r.contactPins[c])))));
+        }
+        return worst;
+    };
     IkCursorFilter filter;
     filter.seed(r.grabStart);
     std::mt19937 rng(12345);
@@ -181,6 +343,11 @@ RunResult runScenario(const std::vector<ArmatureBone>& baseBones, const Scenario
             raw += glm::vec3(noise(rng), noise(rng), noise(rng)) * sc.cursorNoise;
         }
         PhaseStats& ph = r.phases[seg];
+        for (const auto& [nudgeTick, delta] : sc.nudges) {
+            if (nudgeTick == tick) {
+                arm.nudgeSelectedBone(delta); // the X/Y/Z wheel mid-drag (the window's path)
+            }
+        }
         const bool moved = arm.dragIkTo(filter.update(raw));
         ++ph.ticks;
         ++r.dragTicks;
@@ -215,9 +382,15 @@ RunResult runScenario(const std::vector<ArmatureBone>& baseBones, const Scenario
         prevEff = eff;
         prevEffSpeed = effSpeed;
         // Per-joint steps: jumps, idle oscillation, contact drift, pin fidelity, floor.
+        // IK_HARNESS_POSE_TRACE=1 also dumps the pose at the first few ticks any joint jumps
+        // more than 3cm — a basin flip caught in the act.
+        static const bool kJumpTrace = std::getenv("IK_HARNESS_POSE_TRACE") != nullptr;
+        static int jumpDumps = 0;
+        double tickJump = 0.0;
         for (std::size_t i = 0; i < n; ++i) {
             const glm::vec3 p = arm.boneWorldPosition(i);
             const double step = glm::length(p - prev[i]);
+            tickJump = std::max(tickJump, step);
             ph.maxJump = std::max(ph.maxJump, step);
             r.minJointY = std::min(r.minJointY, static_cast<double>(p.y - bindY[i]));
             if (bodyNode[i]) {
@@ -228,6 +401,19 @@ RunResult runScenario(const std::vector<ArmatureBone>& baseBones, const Scenario
                 }
             }
             prev[i] = p;
+        }
+        if (kJumpTrace && tickJump > 0.03 && jumpDumps < 6) {
+            ++jumpDumps;
+            std::printf("[pose] tick %d: a joint jumped %.1f mm; cursor(%.3f %.3f %.3f) grab(%.3f %.3f %.3f)\n",
+                        tick, tickJump * 1000.0, raw.x, raw.y, raw.z, eff.x, eff.y, eff.z);
+            for (std::size_t i = 0; i < n; ++i) {
+                const glm::vec3& e = arm.boneEuler(i);
+                if (std::max({std::abs(e.x), std::abs(e.y), std::abs(e.z)}) > 3.0f) {
+                    std::printf("[pose]   %-18s euler(%7.1f %7.1f %7.1f) step %.1f mm\n",
+                                arm.boneName(i).c_str(), e.x, e.y, e.z,
+                                glm::length(arm.boneWorldPosition(i) - prev[i]) * 1000.0);
+                }
+            }
         }
         for (std::size_t c = 0; c < r.contactPins.size(); ++c) {
             const glm::vec3 p = arm.boneWorldPosition(static_cast<std::size_t>(r.contactPins[c]));
@@ -244,11 +430,88 @@ RunResult runScenario(const std::vector<ArmatureBone>& baseBones, const Scenario
             r.suspended = true;
         }
         r.stepsTaken = rig->stepsTaken();
+        {
+            const std::vector<IkEffector>& pins = rig->pins();
+            r.pinsMax = std::max(r.pinsMax, static_cast<int>(pins.size()));
+            int live = 0;
+            for (std::size_t p = 0; p < pins.size(); ++p) {
+                if (!rig->pinIsLive(p)) {
+                    continue;
+                }
+                ++live;
+                const glm::vec3 pos(arm.poseGlobal(static_cast<std::size_t>(pins[p].node))[3]);
+                r.livePinSlideMax = std::max(
+                    r.livePinSlideMax,
+                    static_cast<double>(glm::length(
+                        glm::vec2(pos.x - pins[p].target.x, pos.z - pins[p].target.z))));
+            }
+            r.livePinsMax = std::max(r.livePinsMax, live);
+        }
+        r.handsMinY = std::min(r.handsMinY, handsNow());
+        // Leg diagnostics per drag tick (IK_HARNESS_LEG_TRACE=1 prints them).
+        static const bool kLegTrace = std::getenv("IK_HARNESS_LEG_TRACE") != nullptr;
+        for (Leg& leg : legs) {
+            r.kneeTwistMaxDeg = std::max(r.kneeTwistMaxDeg, kneeTwist(leg));
+            r.kneeInwardMax = std::max(r.kneeInwardMax, kneeInward(leg));
+            const glm::vec3 knee = arm.boneWorldPosition(static_cast<std::size_t>(leg.knee));
+            if (kLegTrace) {
+                // ... plus the pelvis bone's Euler and the hip's world position, so a knee
+                // alternation can be traced to the pelvis tilt or to the leg itself.
+                const int pelvisBone = resolveBone(arm, "pelvis");
+                const glm::vec3 pe = pelvisBone >= 0 ? arm.boneEuler(static_cast<std::size_t>(pelvisBone))
+                                                      : glm::vec3(0.0f);
+                const glm::vec3 hipPos = hip >= 0 ? arm.boneWorldPosition(static_cast<std::size_t>(hip))
+                                                  : glm::vec3(0.0f);
+                std::printf("[leg] tick %d %s knee(%.4f %.4f %.4f) twist %.2f inward %.4f pelvis(%.2f %.2f %.2f) hip(%.4f %.4f %.4f)\n",
+                            tick, arm.boneName(static_cast<std::size_t>(leg.knee)).c_str(), knee.x,
+                            knee.y, knee.z, kneeTwist(leg), kneeInward(leg), pe.x, pe.y, pe.z, hipPos.x,
+                            hipPos.y, hipPos.z);
+            }
+            const glm::vec3 kneeStep = knee - leg.prevKnee;
+            const float kl = glm::length(kneeStep);
+            r.kneeStepMax = std::max(r.kneeStepMax, static_cast<double>(kl));
+            const float pl = glm::length(leg.prevKneeStep);
+            if (pl > 1e-6f && kl > 1e-6f) {
+                const float against = -glm::dot(kneeStep, leg.prevKneeStep) / pl;
+                if (against > 0.0f) {
+                    leg.osc += std::min(static_cast<double>(against), static_cast<double>(pl));
+                }
+            }
+            leg.prevKneeStep = kneeStep;
+            leg.prevKnee = knee;
+        }
+        r.footRotMaxDeg = std::max(r.footRotMaxDeg, footRotNow());
+    }
+    for (const Leg& leg : legs) {
+        r.kneeOscMax = std::max(r.kneeOscMax, leg.osc);
     }
     // (Idle-joint tremble metrics come from runIdleMetrics — a second, identical run that keeps
     // the per-joint step history; the main loop stays a plain mirror of the viewport's tick.)
     r.grabEnd = arm.boneWorldPosition(static_cast<std::size_t>(r.grabIndex));
     r.cursorEnd = raw;
+    r.pinsAtRelease = static_cast<int>(rig->pins().size());
+    // IK_HARNESS_POSE_TRACE=1: the joints the drag rotated most (Euler degrees) and any pose
+    // translation, at mouse-up — which part of the body served the gesture.
+    static const bool kPoseTrace = std::getenv("IK_HARNESS_POSE_TRACE") != nullptr;
+    if (kPoseTrace) {
+        std::vector<std::pair<float, std::size_t>> byMagnitude;
+        for (std::size_t i = 0; i < n; ++i) {
+            const glm::vec3& e = arm.boneEuler(i);
+            const float mag = std::max({std::abs(e.x), std::abs(e.y), std::abs(e.z)});
+            if (mag > 3.0f || glm::length(arm.boneTranslation(i)) > 0.005f) {
+                byMagnitude.emplace_back(mag, i);
+            }
+        }
+        std::sort(byMagnitude.begin(), byMagnitude.end(), std::greater<>());
+        std::printf("[pose] at mouse-up, %zu joints past 3 deg:\n", byMagnitude.size());
+        for (std::size_t k = 0; k < byMagnitude.size() && k < 24; ++k) {
+            const std::size_t i = byMagnitude[k].second;
+            const glm::vec3& e = arm.boneEuler(i);
+            const glm::vec3& t = arm.boneTranslation(i);
+            std::printf("[pose]   %-18s euler(%7.1f %7.1f %7.1f) trans(%.3f %.3f %.3f)\n",
+                        arm.boneName(i).c_str(), e.x, e.y, e.z, t.x, t.y, t.z);
+        }
+    }
     r.dragEndPos.resize(n);
     for (std::size_t i = 0; i < n; ++i) {
         r.dragEndPos[i] = arm.boneWorldPosition(i);
@@ -288,6 +551,8 @@ RunResult runScenario(const std::vector<ArmatureBone>& baseBones, const Scenario
             if (++guard > 200) {
                 break;
             }
+            r.footRotMaxDeg = std::max(r.footRotMaxDeg, footRotNow());
+            r.handsMinY = std::min(r.handsMinY, handsNow());
         }
         const std::vector<IkEffector>& pins = rig->pins();
         for (std::size_t p = 0; p < pins.size(); ++p) {
@@ -299,6 +564,15 @@ RunResult runScenario(const std::vector<ArmatureBone>& baseBones, const Scenario
         }
     }
     r.holdDrift = glm::length(arm.boneWorldPosition(static_cast<std::size_t>(r.grabIndex)) - r.grabEnd);
+    r.grabEulerEnd = arm.boneEuler(static_cast<std::size_t>(r.grabIndex));
+    for (const Leg& leg : legs) {
+        r.kneeTwistEndDeg = std::max(r.kneeTwistEndDeg, kneeTwist(leg));
+        r.kneeInwardEnd = std::max(r.kneeInwardEnd, kneeInward(leg));
+    }
+    if (r.kneeInwardMax < -1e8) {
+        r.kneeInwardMax = 0.0;
+    }
+    r.footRotEndDeg = footRotNow();
     arm.endIkDrag();
     r.endPos.resize(n);
     for (std::size_t i = 0; i < n; ++i) {
@@ -320,6 +594,10 @@ RunResult runScenario(const std::vector<ArmatureBone>& baseBones, const Scenario
     for (const int f : feet) {
         r.feetMinY = std::min(r.feetMinY, static_cast<double>(r.endPos[static_cast<std::size_t>(f)].y));
     }
+    r.handsEndY = handsNow();
+    for (const Leg& leg : legs) {
+        r.kneesEndY = std::min(r.kneesEndY, static_cast<double>(r.endPos[static_cast<std::size_t>(leg.knee)].y));
+    }
     r.ok = true;
     if (verbose) {
         for (const PhaseStats& ph : r.phases) {
@@ -340,20 +618,25 @@ IdleMetrics runIdleMetrics(const std::vector<ArmatureBone>& baseBones, const Sce
     Armature arm;
     arm.build(sc.scale == 1.0f ? baseBones : scaledBones(baseBones, sc.scale));
     for (const auto& [bone, euler] : sc.prePose) {
-        arm.setBoneRotation(bone, euler);
+        arm.setBoneRotation(resolveBoneName(arm, bone), euler);
     }
     for (const std::string& pin : sc.userPins) {
-        if (arm.selectBoneByName(pin) >= 0) {
+        const int idx = resolveBone(arm, pin);
+        if (idx >= 0) {
+            arm.setSelectedBone(idx);
             arm.togglePinSelectedBone();
         }
     }
-    const int grab = arm.selectBoneByName(sc.grab);
+    const int grab = resolveBone(arm, sc.grab);
+    if (grab >= 0) {
+        arm.setSelectedBone(grab);
+    }
     if (grab < 0 || !arm.beginIkDrag()) {
         return m;
     }
     std::vector<int> idle;
     for (const std::string& name : sc.idleJoints) {
-        const int idx = arm.boneIndex(name);
+        const int idx = resolveBone(arm, name);
         if (idx >= 0) {
             idle.push_back(idx);
         }
@@ -387,6 +670,11 @@ IdleMetrics runIdleMetrics(const std::vector<ArmatureBone>& baseBones, const Sce
         }
         if (sc.cursorNoise > 0.0f) {
             raw += glm::vec3(noise(rng), noise(rng), noise(rng)) * sc.cursorNoise;
+        }
+        for (const auto& [nudgeTick, delta] : sc.nudges) {
+            if (nudgeTick == tick) {
+                arm.nudgeSelectedBone(delta); // mirror the main pass's wheel nudges
+            }
         }
         arm.dragIkTo(filter.update(raw));
         for (std::size_t k = 0; k < idle.size(); ++k) {

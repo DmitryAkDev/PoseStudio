@@ -121,9 +121,21 @@ int main(int argc, char** argv) {
                                     info("feet min y at the end (m)", r.feetMinY),
                                     info("steps", r.stepsTaken),
                                     info("suspended", r.suspended ? 1.0 : 0.0),
-                                    info("user pin max distance (mm)", r.userPinDistMax * 1000.0)};
+                                    info("user pin max distance (mm)", r.userPinDistMax * 1000.0),
+                                    info("pins max / at mouse-up", r.pinsMax * 100 + r.pinsAtRelease),
+                                    info("live pins max", r.livePinsMax),
+                                    info("live pin slide (mm)", r.livePinSlideMax * 1000.0)};
             if (!r.ok) {
                 gates.push_back(gateMin(("error: " + r.error).c_str(), 0.0, 1.0));
+            }
+            // Where a few named joints ended up at mouse-up (world height) — the floor checks.
+            for (const char* name : {"lHand", "rHand", "head", "lShin", "rShin"}) {
+                for (std::size_t i = 0; i < bones.size() && i < r.dragEndPos.size(); ++i) {
+                    if (bones[i].name == name) {
+                        gates.push_back(info((std::string(name) + " y at mouse-up (m)").c_str(),
+                                             r.dragEndPos[i].y));
+                    }
+                }
             }
             if (r.penetrationNode >= 0) {
                 std::printf("         worst floor penetration: %s\n",

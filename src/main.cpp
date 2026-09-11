@@ -14,6 +14,7 @@
 #include "constants.h"
 #include "preferencesmanager.h"
 #include "installping.h"
+#include "updatecheck.h"
 #include "assetmanagerwidget.h"
 #include "apptheme.h"
 #include "environmentpanel.h"
@@ -139,6 +140,10 @@ int main(int argc, char *argv[]) {
     // without a signing key or when the user has switched it off. Owned by the main window, NOT
     // the application object — see scheduleAtStartup for why that distinction matters at exit.
     InstallPing::scheduleAtStartup(&mainWindow);
+    // The update check (see updatecheck.h): a few seconds in, asks GitHub for the latest release
+    // and prompts — with a link to its page — only when it is newer than this build and the user
+    // has not skipped it. Same ownership rule as the ping.
+    UpdateCheck::scheduleAtStartup(&mainWindow);
 
     return app.exec();
 }

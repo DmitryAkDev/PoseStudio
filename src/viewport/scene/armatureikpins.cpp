@@ -101,7 +101,10 @@ constexpr float kPinRootUnit = 0.002f;
 // stays eased instead of snapping; the orientation band, inside which the sole's drag-start
 // orientation is re-imposed exactly (outside it the extraction's capped flat-sole hold brings
 // it in); and the row weight that makes a USER pin outrank a contact sharing its chain.
-constexpr float kContactRefineBand = 0.010f;
+// 2cm (was 1cm): the solver may leave the pelvis bent between its two hip sockets, and the
+// extraction's rigid pelvis (bisector fit) then lands each foot up to ~1.3cm off after a
+// stepping lean on the newest and oldest rigs — extraction residual, exactly what this closes.
+constexpr float kContactRefineBand = 0.020f;
 constexpr float kContactRefineStep = 0.003f;
 constexpr float kContactRefineRotBand = 0.05235988f; // 3 degrees
 constexpr float kPinUserRowWeight = 4.0f;
@@ -124,6 +127,16 @@ constexpr float kPinUserRowWeight = 4.0f;
 // (gated in the harness).
 constexpr float kFloorLiftTol = 0.001f;
 constexpr float kFloorLiftStep = 0.010f;
+// LIVE contacts (a hand or knee that reached the floor mid-drag — IkRig::updateContacts) are
+// held in FULL position through their limb every drag tick, capped per tick and band-limited,
+// unlike the drag-start feet: they carry no stepper strain signal to preserve, and the solver
+// alone cannot be trusted to keep them — an arm's FABRIK chain hangs off the upper chest and
+// the clavicle (15° and 27° cones on 10cm bones) through a kinked rigid wrist link, and under
+// a descending trunk its restoration rounds diverge from a correct two-bone seed, leaving the
+// solved hand 6-9cm above a pin the joints can plainly serve (the all-fours harness phase).
+// The joint-space fit folds the elbow instead. Beyond the band the gap is the solver's.
+constexpr float kLiveRefineStep = 0.020f;
+constexpr float kLiveRefineBand = 0.10f;
 // The DRAG target's correction (the grabbed joint is closed onto the cursor every drag tick, see
 // refinePins) is a FINISHER: full within kDragRefineFull of the target, fading linearly to
 // nothing at kDragRefineFade. Per-tick residuals of an ordinary drag (the relaxation's leftover,
@@ -131,6 +144,16 @@ constexpr float kFloorLiftStep = 0.010f;
 // posture choice until the limb is nearly there.
 constexpr float kDragRefineFull = 0.02f;
 constexpr float kDragRefineFade = 0.06f;
+// The drag finisher also gets the TRUNK — the joints from the limb's junction with the axial
+// skeleton up to (excluding) the solve root — as extra degrees of freedom at this cost per
+// unit rotation relative to a limb channel (a weighted least-squares fit: the limb takes
+// ~16/17 of a residual it can serve, the trunk only what the limb cannot). A hand pulled 10cm
+// sideways at constant height sits at the edge of the arm's reach; the limb-only fit blocked
+// at the collar and left the hand 14mm short of the cursor — where the solve's own trunk
+// stiffness had settled — for good ("the hand never quite arrives"). A degree or two of spine
+// closes it exactly, as a person leans a hair to reach. Not under UPWARD intent (the solve
+// held the trunk fixed on purpose: a raised limb works against a fixed chest).
+constexpr float kDragTrunkWeight = 4.0f;
 
 } // namespace
 
@@ -145,6 +168,7 @@ void Armature::refinePins(bool settling, const glm::vec3* dragTarget) {
         int              node = -1;
         glm::vec3        target{0.0f};
         std::vector<int> chain; // the pin's parent first, up to (excluding) the limb junction
+        std::vector<int> trunk; // the drag target only: the junction up to (excluding) the root
         int              flat = -1; // index into m_ikFlatNodes/m_ikFlatRot (orientation), or -1
         int              row = 0;   // first residual row
         int              rows = 3;  // 3 = position only, 6 = position + orientation
@@ -163,7 +187,7 @@ void Armature::refinePins(bool settling, const glm::vec3* dragTarget) {
     };
 
     // kind: 0 = contact pin (exact in the settle; floor-lifted during the drag), 1 = user pin,
-    // 2 = the drag target.
+    // 2 = the drag target, 3 = a LIVE contact (a contact pin held in full during the drag too).
     const auto addRef = [&](int node, const glm::vec3& target, int kind) {
         const bool user = kind == 1;
         if (node < 0 || node >= n || node == stepping) {
@@ -221,7 +245,23 @@ void Armature::refinePins(bool settling, const glm::vec3* dragTarget) {
             // settle's per-tick residual); and the sole's orientation is re-imposed only once
             // the extraction's flat-sole hold has brought it within the rotation band.
             const glm::vec3 pos(m_poseGlobal[static_cast<std::size_t>(node)][3]);
-            if (!settling) {
+            if (kind == 3) {
+                // A LIVE contact (see kLiveRefineStep): full position, capped, band-limited —
+                // in the release settle too: the settle's solve lets a planted hand's diverging
+                // arm chain lift it several centimetres while the feet land (the monotone
+                // guard watches only the WORST pin), and the contact band below is too narrow
+                // to bring it back (the oldest rigs' hands rose 5cm off the floor on release).
+                const glm::vec3 delta = target - pos;
+                const float dist = glm::length(delta);
+                if (dist <= kFloorLiftTol || dist > kLiveRefineBand) {
+                    return;
+                }
+                // The settle keeps its per-tick landing pace (the 2cm settle cap is a contract
+                // — a 2cm refinement step on top of it moved joints 3.2cm in one settle tick).
+                const float step = settling ? kContactRefineStep : kLiveRefineStep;
+                ref.target = dist > step ? pos + delta * (step / dist) : target;
+                ref.flat = -1;
+            } else if (!settling) {
                 // DRAG ticks: the FLOOR LIFT only (see kFloorLiftTol). A planted contact that
                 // the applied pose has pushed below its pin height is raised back to that
                 // height — through its own leg, vertically, keeping whatever lateral slip the
@@ -256,13 +296,35 @@ void Armature::refinePins(bool settling, const glm::vec3* dragTarget) {
              cur = m_bones[static_cast<std::size_t>(cur)].parent) {
             ref.chain.push_back(cur);
         }
+        if (kind == 2 && !m_ikRig->lastSolveExcludedTrunk()) {
+            // The trunk, weighted (see kDragTrunkWeight): what the limb cannot close, the spine
+            // does — never under an upward-intent solve, whose fixed trunk is deliberate, and
+            // never a joint that carries a PIN: a foot drag's "trunk" is the pelvis bone, whose
+            // rotation swings the standing leg off its plant while that leg has no row in this
+            // fit (contacts are only floor-lifted during a drag); the spine above the hip
+            // carries no foot, and a pinned hand on it has its rows here.
+            for (int cur = junction; cur >= 0 && cur != rigRoot;
+                 cur = m_bones[static_cast<std::size_t>(cur)].parent) {
+                bool carriesPin = false;
+                for (const IkEffector& pin : pins) {
+                    for (int up = pin.node; up >= 0 && !carriesPin;
+                         up = m_bones[static_cast<std::size_t>(up)].parent) {
+                        carriesPin = up == cur;
+                    }
+                }
+                if (!carriesPin) {
+                    ref.trunk.push_back(cur);
+                }
+            }
+        }
         ref.rows = ref.flat >= 0 ? 6 : 3;
         ref.row = m;
         m += ref.rows;
         refs.push_back(std::move(ref));
     };
     for (std::size_t p = 0; p < pins.size(); ++p) {
-        addRef(pins[p].node, pins[p].target, m_ikRig->pinIsUser(p) ? 1 : 0);
+        addRef(pins[p].node, pins[p].target,
+               m_ikRig->pinIsUser(p) ? 1 : (m_ikRig->pinIsLive(p) ? 3 : 0));
     }
     if (settling && m_ikRig->dragEffector() >= 0 && !m_ikRig->effectorIsTrunk()) {
         // The release settle holds the let-go joint at its mouse-up position (the pose
@@ -297,27 +359,39 @@ void Armature::refinePins(bool settling, const glm::vec3* dragTarget) {
         int  axis;
         bool translation;
     };
-    std::vector<Dof>  dofs;
-    std::vector<char> dofJoint(m_bones.size(), 0);
-    const auto addJointDofs = [&](int j) {
-        if (dofJoint[static_cast<std::size_t>(j)]) {
+    std::vector<Dof>   dofs;
+    std::vector<float> dofWeight; // per dof: the least-squares cost per unit rotation (>= 1)
+    std::vector<int>   dofFirst(m_bones.size(), -1); // per joint: its first dof index, or -1
+    const auto addJointDofs = [&](int j, float weight) {
+        const int first = dofFirst[static_cast<std::size_t>(j)];
+        if (first >= 0) {
+            // Already a dof (a joint on one pin's limb and another's trunk): the lighter cost.
+            for (std::size_t d = static_cast<std::size_t>(first); d < dofs.size() && dofs[d].joint == j; ++d) {
+                dofWeight[d] = std::min(dofWeight[d], weight);
+            }
             return;
         }
-        dofJoint[static_cast<std::size_t>(j)] = 1;
+        dofFirst[static_cast<std::size_t>(j)] = static_cast<int>(dofs.size());
         const Bone& b = m_bones[static_cast<std::size_t>(j)];
         for (int a = 0; a < 3; ++a) {
             if (b.rotLimited[a] && b.rotMax[a] - b.rotMin[a] < 1e-3f) {
                 continue; // locked channel
             }
             dofs.push_back({j, a, false});
+            dofWeight.push_back(weight);
         }
     };
     for (const PinRef& ref : refs) {
         for (const int j : ref.chain) {
-            addJointDofs(j);
+            addJointDofs(j, 1.0f);
         }
         if (ref.rows == 6) {
-            addJointDofs(ref.node);
+            addJointDofs(ref.node, 1.0f);
+        }
+    }
+    for (const PinRef& ref : refs) {
+        for (const int j : ref.trunk) {
+            addJointDofs(j, kDragTrunkWeight);
         }
     }
     const std::size_t rotDofs = dofs.size();
@@ -325,43 +399,48 @@ void Armature::refinePins(bool settling, const glm::vec3* dragTarget) {
     if (anyUser && rigRoot >= 0 && rigRoot < n) {
         for (int a = 0; a < 3; ++a) {
             dofs.push_back({rigRoot, a, true});
+            dofWeight.push_back(1.0f);
         }
     }
     const std::size_t D = dofs.size();
-    const auto influences = [](const PinRef& ref, const Dof& dof) {
+    // True when rotating @p joint moves @p ref's pin: the joint is the pin itself or one of
+    // its ancestors. Kinematic truth, not chain membership — the drag target's trunk joints
+    // move a hand pinned on the same trunk, and the fit must know it to keep that pin.
+    const auto influences = [&](const PinRef& ref, const Dof& dof) {
         if (dof.translation) {
             // The root stage serves USER pins only — never the drag target: the pelvis is the
             // FABRIK layer's decision, and letting the cursor recruit it here dragged a pinned
             // foot 6mm off its pin under a chest drag (the two rows competed for the root).
             return !ref.drag;
         }
-        if (dof.joint == ref.node) {
-            return true;
-        }
-        for (const int c : ref.chain) {
-            if (c == dof.joint) {
+        for (int cur = ref.node; cur >= 0; cur = m_bones[static_cast<std::size_t>(cur)].parent) {
+            if (cur == dof.joint) {
                 return true;
             }
         }
         return false;
     };
-    // The pin's world matrix with the chain's poseLocal re-composed from joint @p top down to
-    // the pin (m_poseGlobal above @p top is read as-is; @p top is on the chain or the pin).
+    // The pin's world matrix with every poseLocal from joint @p top (an ancestor of the pin,
+    // or the pin itself) down to the pin re-composed; m_poseGlobal above @p top is read as-is.
     const auto pinPoseFrom = [&](const PinRef& ref, int top) {
-        int startIdx = -1;
-        for (std::size_t c = 0; c < ref.chain.size(); ++c) {
-            if (ref.chain[c] == top) {
-                startIdx = static_cast<int>(c);
-                break;
-            }
+        int path[64];
+        int len = 0;
+        int cur = ref.node;
+        while (cur >= 0 && cur != top && len < 64) {
+            path[len++] = cur;
+            cur = m_bones[static_cast<std::size_t>(cur)].parent;
+        }
+        if (cur != top) {
+            return m_poseGlobal[static_cast<std::size_t>(ref.node)]; // not an ancestor: unmoved
         }
         const int parentOfTop = m_bones[static_cast<std::size_t>(top)].parent;
         glm::mat4 g = parentOfTop >= 0 ? m_poseGlobal[static_cast<std::size_t>(parentOfTop)]
                                        : glm::mat4(1.0f);
-        for (int c = startIdx; c >= 0; --c) {
-            g = g * m_bones[static_cast<std::size_t>(ref.chain[static_cast<std::size_t>(c)])].poseLocal;
+        g = g * m_bones[static_cast<std::size_t>(top)].poseLocal;
+        for (int k = len - 1; k >= 0; --k) {
+            g = g * m_bones[static_cast<std::size_t>(path[k])].poseLocal;
         }
-        return g * m_bones[static_cast<std::size_t>(ref.node)].poseLocal;
+        return g;
     };
     // Residual rows of @p ref for world matrix @p g: the position error, then (oriented pins)
     // the rotation vector taking g's rotation onto the drag-start rotation, scaled to metres.
@@ -415,11 +494,34 @@ void Armature::refinePins(bool settling, const glm::vec3* dragTarget) {
         }
     }
 
+    // Three stages, each a FALLBACK for the one before: the limbs; then the drag target's
+    // trunk; then the root translation (user pins). A later stage opens only once the earlier
+    // one has stalled — its channels blocked at their limits, or its iterations spent above
+    // tolerance. The trunk in particular must never share an ordinary tick's correction: a
+    // weighted fit gave it 1/17 of every residual, and over a sustained tracking drag (the hand
+    // 8mm behind a rising cursor, closed every tick) that share accumulated into a 7cm head
+    // drift the solve's own trunk prior could not take back.
     std::vector<char> blocked(D, 0); // channels the limit clamp stopped: dropped from the fit
+    bool anyTrunk = false;
+    for (std::size_t d = 0; d < rotDofs; ++d) {
+        if (dofWeight[d] > 1.0f) {
+            blocked[d] = 1; // the trunk waits for the limb stage to stall
+            anyTrunk = true;
+        }
+    }
     for (std::size_t d = rotDofs; d < D; ++d) {
         blocked[d] = 1; // stage 1: joints only
     }
+    bool trunkStage = !anyTrunk;
     bool rootStage = false;
+    const auto enableTrunk = [&]() {
+        trunkStage = true;
+        for (std::size_t d = 0; d < rotDofs; ++d) {
+            if (dofWeight[d] > 1.0f) {
+                blocked[d] = 0;
+            }
+        }
+    };
     const auto enableRoot = [&]() {
         rootStage = true;
         for (std::size_t d = rotDofs; d < D; ++d) {
@@ -432,12 +534,21 @@ void Armature::refinePins(bool settling, const glm::vec3* dragTarget) {
     std::vector<float> y;
     float tmp[6];
     int   itersUsed = 0;
-    for (int iter = 0; iter < 2 * kPinRefineIters && D > 0; ++iter) {
+    int   stageStart = 0; // the iteration the current stage opened at
+    for (int iter = 0; iter < 3 * kPinRefineIters && D > 0; ++iter) {
         if (worstResidual(res) < kPinRefineTol) {
             break;
         }
-        if (!rootStage && iter >= kPinRefineIters) {
-            enableRoot();
+        if (iter - stageStart >= kPinRefineIters) {
+            if (!trunkStage) {
+                enableTrunk();
+                stageStart = iter;
+            } else if (!rootStage) {
+                enableRoot();
+                stageStart = iter;
+            } else {
+                break;
+            }
         }
         ++itersUsed;
         // Jacobian of the residual, rows = residual components, columns = channels: numeric
@@ -470,6 +581,10 @@ void Armature::refinePins(bool settling, const glm::vec3* dragTarget) {
             const float save = m_boneEuler[static_cast<std::size_t>(j)][a];
             m_boneEuler[static_cast<std::size_t>(j)][a] = save + kPinJacobianDeltaDeg;
             recomposePoseLocal(static_cast<std::size_t>(j));
+            // Column scaled by the dof's cost (a weighted least-squares fit: the step below is
+            // divided by it again, so an expensive channel moves 1/cost^2 as much per unit of
+            // residual as a free one).
+            const float colScale = 1.0f / (kPinJacobianDeltaDeg * dofWeight[d]);
             for (const PinRef& ref : refs) {
                 if (!influences(ref, dofs[d])) {
                     continue;
@@ -477,8 +592,8 @@ void Armature::refinePins(bool settling, const glm::vec3* dragTarget) {
                 residual(ref, pinPoseFrom(ref, j), tmp);
                 for (int k = 0; k < ref.rows; ++k) {
                     J[static_cast<std::size_t>(ref.row + k) * D + d] =
-                        (tmp[k] - res[static_cast<std::size_t>(ref.row + k)]) /
-                        kPinJacobianDeltaDeg * rowWeight[static_cast<std::size_t>(ref.row + k)];
+                        (tmp[k] - res[static_cast<std::size_t>(ref.row + k)]) * colScale *
+                        rowWeight[static_cast<std::size_t>(ref.row + k)];
                 }
             }
             m_boneEuler[static_cast<std::size_t>(j)][a] = save;
@@ -512,6 +627,7 @@ void Armature::refinePins(bool settling, const glm::vec3* dragTarget) {
             for (int k = 0; k < m; ++k) {
                 dTheta += J[static_cast<std::size_t>(k) * D + d] * y[static_cast<std::size_t>(k)];
             }
+            dTheta /= dofWeight[d]; // the weighted fit's second division (see colScale)
             dTheta = glm::clamp(dTheta, -kPinRefineMaxStepDeg, kPinRefineMaxStepDeg);
             if (std::abs(dTheta) < 1e-6f) {
                 continue;
@@ -534,8 +650,14 @@ void Armature::refinePins(bool settling, const glm::vec3* dragTarget) {
             moved = true;
         }
         if (!moved) {
+            if (!trunkStage) {
+                enableTrunk(); // the limb has nothing left to give: the trunk stage
+                stageStart = iter;
+                continue;
+            }
             if (!rootStage) {
                 enableRoot(); // the joints have nothing left to give: the pelvis stage
+                stageStart = iter;
                 continue;
             }
             break;

@@ -46,6 +46,24 @@ void IkRig::landStep(const std::vector<glm::vec3>& positions) {
     pin.target = m_stepTo;
     pin.leashRadius = socketLeash(pin.node, m_stepTo, positions, pin.leashOffset);
     rebuildSupportHull(-1);
+    // The body's pose prior WALKS with the stance: the drag-start positions every non-pin
+    // node eases back toward shift horizontally by the stance center's move (this step's
+    // displacement shared over the standing feet), so the pelvis — the stiffest prior of all
+    // — comes over the new stance instead of staying anchored where the drag began, with the
+    // feet planted a stride ahead of it. (A pelvis drag pins the root and never reads this.)
+    int stanceCount = 0;
+    for (std::size_t p = 0; p < m_pins.size(); ++p) {
+        if (p < m_pinSteppable.size() && m_pinSteppable[p]) {
+            ++stanceCount;
+        }
+    }
+    if (stanceCount > 0) {
+        const glm::vec3 shift = (m_stepTo - m_stepFrom) / static_cast<float>(stanceCount);
+        for (glm::vec3& p : m_startPose) {
+            p.x += shift.x;
+            p.z += shift.z;
+        }
+    }
     m_stepPin = -1;
     m_imbalanceTicks = 0;
     ++m_stepsTaken;

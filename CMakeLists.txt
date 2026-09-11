@@ -10,7 +10,7 @@ cmake_minimum_required(VERSION 3.21)
 # C is enabled alongside C++ because a couple of third-party dependencies ship C implementation
 # files we compile directly into the target (e.g. miniz's inflate sources for the figure importer).
 # Without C in the language list, CMake classifies .c files as non-buildable and silently skips them.
-project(PoseStudio VERSION 0.3.13 LANGUAGES C CXX)
+project(PoseStudio VERSION 0.3.14 LANGUAGES C CXX)
 
 # ==============================================================================
 # [ COMPILER CONFIGURATION ]
@@ -373,6 +373,7 @@ add_executable(
     src/viewport/scene/ik/ikrigdrag.cpp       # beginDrag: contacts -> pins, user pins, stiffness, trunk chain
     src/viewport/scene/ik/ikrigsolve.cpp      # solveDrag (intent policies + balance blend) and the release settle
     src/viewport/scene/ik/ikrigstepping.cpp   # balance-driven foot re-planting
+    src/viewport/scene/ik/ikrigcontacts.cpp   # live contact re-detection mid-drag
     src/viewport/scene/ik/cursorfilter.h      # the drag's adaptive cursor low-pass (shared with the harness)
 
     # --- Preferences ---
@@ -400,6 +401,8 @@ add_executable(
     src/core/preferencesmanager.h
     src/core/installping.cpp              # per-launch anonymous install ping (signed; official builds only)
     src/core/installping.h
+    src/core/updatecheck.cpp              # startup "newer release on GitHub?" check + Help → Check for Updates
+    src/core/updatecheck.h
     
     # --- Embedded Resources ---
     resources/resources.qrc   # Injects images, UI styles, and SQL templates
@@ -508,7 +511,7 @@ target_link_libraries(PoseStudio PRIVATE
     Qt6::Gui
     Qt6::Sql
     Qt6::Concurrent  # off-thread IBL bake on HDRI switches (QtConcurrent::run + QFutureWatcher)
-    Qt6::Network     # the anonymous install ping (src/core/installping.*) — its only user
+    Qt6::Network     # the anonymous install ping (src/core/installping.*) and the update check (src/core/updatecheck.*)
     Vulkan::Vulkan
 )
 
@@ -547,6 +550,7 @@ add_executable(PoseStudioIkHarness
     src/viewport/scene/ik/ikrigdrag.cpp
     src/viewport/scene/ik/ikrigsolve.cpp
     src/viewport/scene/ik/ikrigstepping.cpp
+    src/viewport/scene/ik/ikrigcontacts.cpp
 )
 target_include_directories(PoseStudioIkHarness PRIVATE
     tools/ikharness

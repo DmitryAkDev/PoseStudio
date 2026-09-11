@@ -4,24 +4,29 @@
  *        the metric helpers every drag phase shares (path lengths, socket leashes, limb
  *        junctions).
  *
- * The rig's implementation spans four translation units so the phases can evolve independently:
+ * The rig's implementation spans five translation units so the phases can evolve independently:
  * this file (build + shared helpers), ikrigdrag.cpp (beginDrag — contacts, pins, user pins, the
- * stiffness model, the trunk chain), ikrigsolve.cpp (solveDrag with its intent policies and the
- * balance blend, and the release settle) and ikrigstepping.cpp (balance-driven foot
- * re-planting); the tuning constants they share live in ikrig_constants.h. build() hosts the
+ * trunk chain), ikrigsolve.cpp (solveDrag with its intent policies and the balance blend, and
+ * the release settle), ikrigstepping.cpp (balance-driven foot re-planting) and
+ * ikrigcontacts.cpp (live contact re-detection mid-drag, plus the pin-set maintenance and the
+ * stiffness model it rebuilds); the tuning constants they share live in ikrig_constants.h.
+ * build() hosts the
  * load-bearing rooting decisions: the FBIK root is the first multi-child DESCENDANT of the
  * anatomical root (real figures root at an origin-level figure node whose chain is excluded
  * from the rig wholesale — no graph edge, no contact eligibility, no balance mass), per-edge
- * constraints are derived on the OWNING (parent) side, near-hinge bend joints inherit their
- * parent twist bone's authored range as fold-plane freedom, and every world-space threshold
- * scales with the figure's pelvis height (sizeScale). Qt-free (std + GLM).
+ * constraints are derived on the OWNING (parent) side, true hinges (the elbows — never the
+ * knees, see the twist-freedom loop) inherit their parent twist bone's authored range as
+ * fold-plane freedom, and every world-space threshold scales with the figure's pelvis height
+ * (sizeScale). Qt-free (std + GLM).
  */
 
 #include "ikrig.h"
 
 #include "balancecontroller.h"
+#include "ikrig_constants.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -130,14 +135,18 @@ void IkRig::build(const std::vector<IkRigBone>& bones) {
     // the figure-node chain contribute none. Realized by the Armature's twist witness.
     for (std::size_t c = 0; c < n; ++c) {
         JointConstraint& jc = m_edgeConstraint[c];
-        if (!bendIsHingeLike(jc)) {
-            continue; // only single-plane benders need (or can use) a movable fold plane
+        if (jc.type != JointConstraint::Type::Hinge) {
+            // TRUE hinges only (the elbows). The near-hinge cones — the KNEES — had the freedom
+            // for a while (a crouch dropped and rolled the pelvis, and a knee folding only in
+            // its rest plane left a foot 11cm off its pin), and it was the wrong fix: nothing
+            // in the solve prefers swinging the thigh out over the planted foot to twisting it,
+            // so every crouch, walk and chest lean ran the thigh twist to its 75° limit, knocked
+            // the knees 10-20cm inward and — the ankle unable to counter a twisted shin —
+            // rotated the planted feet 45° off the floor ("knees twist inward, feet mangled").
+            // The knee's fold plane now follows the thigh's swing, and the two-bone seed places
+            // the knee where that plane contains the foot (see FabrikSolver's restoration).
+            continue;
         }
-        // Near-hinge cones (the knees) take the freedom too: a deep crouch drops and rolls the
-        // pelvis, and a knee that can fold only in its rest plane cannot keep its foot planted
-        // — the solver's own chain error on one foot reached 11cm (the foot buried to the ankle
-        // during a chest push-down). First tried before the landing round, when it perturbed
-        // a strained release; the leash cap and the contact refinement now absorb that.
         const int j = m_parents[c];
         if (j < 0) {
             continue;
@@ -146,13 +155,22 @@ void IkRig::build(const std::vector<IkRigBone>& bones) {
         if (t < 0 || !m_bodyNode[static_cast<std::size_t>(t)] || t == m_pelvis) {
             continue;
         }
-        if (!edgeRigid(j)) {
-            continue; // T must be a PURE twist bone (swings locked): its one channel IS the twist
-        }
         const glm::vec3 seg = m_bindPos[static_cast<std::size_t>(j)] - m_bindPos[static_cast<std::size_t>(t)];
         const float segLen = glm::length(seg);
         if (segLen < 1e-6f) {
             continue;
+        }
+        if (!edgeRigid(j)) {
+            // T is not a pure twist bone. The newest and the oldest figure generations have no
+            // pass-through twist bones — the twist channel lives on the ball joint itself (the
+            // upper arm), with the helper twist bones hanging OFF the chain or absent — so a
+            // deep-fold hinge on a long segment still takes the freedom from that joint's own
+            // twist channel (the extraction's witness sets it there just as it does on a twist
+            // bone: T has one aim child, and the hinge's fold plane is the witness). Anything
+            // smaller — the fingers under a hand, the toes under a foot — does not.
+            if (jc.maxAngle - jc.minAngle < glm::radians(120.0f) || segLen < 0.15f) {
+                continue;
+            }
         }
         const glm::vec3 u = seg / segLen;
         const IkRigBone& tb = bones[static_cast<std::size_t>(t)];
@@ -188,17 +206,29 @@ void IkRig::build(const std::vector<IkRigBone>& bones) {
         jc.twistMin = lo;
         jc.twistMax = hi;
     }
-    m_edgeTwistBuilt.assign(n, glm::vec2(0.0f));
-    for (std::size_t c = 0; c < n; ++c) {
-        const JointConstraint& jc = m_edgeConstraint[c];
-        if (jc.type == JointConstraint::Type::Cone && jc.twistMax - jc.twistMin > 1e-6f) {
-            m_edgeTwistBuilt[c] = glm::vec2(jc.twistMin, jc.twistMax);
-        }
-    }
     m_masses = BalanceController::assignMasses(names);
     for (std::size_t i = 0; i < n; ++i) {
         if (!m_bodyNode[i]) {
             m_masses[i] = 0.0f;
+        }
+    }
+    // LEAF twist helpers carry no segment: the newest generation hangs its twist bones OFF the
+    // chain as childless siblings of the shin and the forearm (`l_thightwist1/2`), and the
+    // name-class table gave each a third of the thigh — enough "off-path mass" at the thigh
+    // for limbJunction to end the foot's limb chain at the knee, so the crouch floor lift had
+    // only the knee to raise a sinking foot with (a straight-ish knee lifts nothing to first
+    // order: the foot sank 2cm). A pass-through twist bone (the earlier generations') keeps its
+    // share — it is on the chain and its share is harmless there.
+    for (std::size_t i = 0; i < n; ++i) {
+        if (!m_children[i].empty()) {
+            continue;
+        }
+        std::string lower;
+        for (const char c : names[i]) {
+            lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+        }
+        if (lower.find("twist") != std::string::npos) {
+            m_masses[i] = std::min(m_masses[i], 0.0015f);
         }
     }
     // Per-node subtree mass (own + all descendants): the token-limb promotion and the
@@ -236,6 +266,30 @@ void IkRig::build(const std::vector<IkRigBone>& bones) {
         const float bindY = m_bindPos[i].y;
         m_floorClearance[i] = bindY < 0.15f * m_sizeScale ? std::max(bindY, 0.0f)
                                                           : 0.015f * m_sizeScale;
+    }
+    // Riding descendants (see m_ridingDescendants): each real-mass joint's token descendants —
+    // token by their own segment AND by their subtree, the token-limb promotion's pair — the
+    // walk stopping at the first child that is not: a hand's whole finger tree, the head's
+    // face bones, a foot's toes; the pelvis stops at the thighs and the spine, a forearm at
+    // the hand even where a helper bone has halved the hand's own share. The live contact
+    // detection measures a joint's height through them.
+    m_ridingDescendants.assign(n, {});
+    for (std::size_t i = 0; i < n; ++i) {
+        if (!m_bodyNode[i] || (m_masses[i] < kTokenBoneMass && m_subtreeMass[i] < kTokenLimbMass)) {
+            continue;
+        }
+        std::vector<int> stack(m_children[i].begin(), m_children[i].end());
+        while (!stack.empty()) {
+            const int c = stack.back();
+            stack.pop_back();
+            const std::size_t ci = static_cast<std::size_t>(c);
+            if (!m_bodyNode[ci] || m_masses[ci] >= kTokenBoneMass ||
+                m_subtreeMass[ci] >= kTokenLimbMass) {
+                continue;
+            }
+            m_ridingDescendants[i].push_back(c);
+            stack.insert(stack.end(), m_children[ci].begin(), m_children[ci].end());
+        }
     }
 }
 

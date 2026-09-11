@@ -18,6 +18,7 @@
 #include "assetmanagerwidget.h"
 #include "preferencesmanager.h"
 #include "constants.h"
+#include "updatecheck.h"
 #include "viewport/viewportwidget.h"
 #include <QMenu>
 #include <QMenuBar>
@@ -267,6 +268,11 @@ void MenuManager::setupMenus() {
     QAction *websiteAction = helpMenu->addAction(QIcon(":/resources/icons/globe.png"), "PoseStudio.org");
     QObject::connect(websiteAction, &QAction::triggered, mainWindow, []() {
         QDesktopServices::openUrl(QUrl(QStringLiteral("https://posestudio.org")));
+    });
+    // The on-demand twin of the startup update check (see updatecheck.h): reports every outcome.
+    QAction *updateAction = helpMenu->addAction("Check for Updates...");
+    QObject::connect(updateAction, &QAction::triggered, mainWindow, [this]() {
+        UpdateCheck::checkNow(mainWindow);
     });
     helpMenu->addSeparator();
 

@@ -254,6 +254,7 @@ bool IkRig::solveDrag(const glm::vec3& target, std::vector<glm::vec3>& positions
     // Pulling the head up should straighten the spine — that is the trunk's own gesture, not
     // an arm's residual recruiting it.
     const bool upIntent = target.y > effPos.y + 0.10f && !effectorIsTrunk();
+    m_lastUpIntent = upIntent;
     const std::vector<float>* solveWeights = &m_priorWeights;
     const std::vector<char>* solveActive = &m_active;
     if (upIntent && !m_trunkChain.empty()) {
@@ -297,6 +298,15 @@ bool IkRig::solveDrag(const glm::vec3& target, std::vector<glm::vec3>& positions
         // simply RAISING THE ARM overhead (which is what a reachable up-pull must do first).
         const bool beyondReach =
             glm::length(target - rootPos) > chainLen + kSuspendStrain * m_sizeScale;
+        static const bool kSuspendTrace = std::getenv("IK_SUSPEND_TRACE") != nullptr;
+        if (kSuspendTrace) {
+            std::fprintf(stderr,
+                         "[suspend] leashBound=%d beyondReach=%d (|t-root|=%.3f chain=%.3f) "
+                         "strain=%.3f up=%.2f ticks=%d\n",
+                         leashBound ? 1 : 0, beyondReach ? 1 : 0, glm::length(target - rootPos),
+                         chainLen, strainLen, strainLen > 1e-6f ? strain.y / strainLen : 0.0f,
+                         m_suspendTicks);
+        }
         if (leashBound && beyondReach && strainLen > kSuspendStrain * m_sizeScale &&
             strain.y > kSuspendUpFraction * strainLen) {
             if (++m_suspendTicks >= kSuspendConfirmTicks) {
@@ -317,6 +327,9 @@ bool IkRig::solveDrag(const glm::vec3& target, std::vector<glm::vec3>& positions
                     m_pinFootprint.assign(m_pins.size(), {});
                     m_pinSteppable.assign(m_pins.size(), 0);
                     m_pinStanceOffset.assign(m_pins.size(), glm::vec2(0.0f));
+                    m_pinLive.assign(m_pins.size(), 0); // live contacts release with the rest
+                    m_liveErrTicks.assign(m_pins.size(), 0);
+                    m_liveSpan.assign(m_pins.size(), 0.0f);
                 }
                 m_supportHull.clear();
                 m_stepPin = -1; // an in-flight step's foot is released with the rest
@@ -453,8 +466,25 @@ bool IkRig::solveDrag(const glm::vec3& target, std::vector<glm::vec3>& positions
     // drag is already descending onto its pins, and a downward crouch briefly drags feet along
     // the floor by design (its transient pin error is not a step signal).
     if (!m_suspended && !m_pins.empty()) {
+        // A TRUNK drag (the chest, the head) whose target stays well beyond what the lean can
+        // serve anchors the stance estimate on the root shifted by that residual — the user is
+        // taking the BODY somewhere, exactly as a pelvis drag's target says — so the figure
+        // steps toward the cursor. The balance-effort trigger alone never fires here: with the
+        // legs straight the CoM stays inside a 50cm footprint through the whole lean (the steps
+        // a 45cm chest drag used to take came from the knees twisting inward under it). Not
+        // under downward intent (a crouch), and only past the stance threshold (a solve's own
+        // per-tick shortfall during ordinary motion is centimetres, not decimetres).
+        const glm::vec2 residXZ(target.x - effPos.x, target.z - effPos.z);
+        glm::vec2        anchor(0.0f);
+        const glm::vec2* anchorPtr = nullptr;
+        if (effectorIsTrunk() && !downIntent &&
+            glm::length(residXZ) > kStepStanceThreshold * m_sizeScale) {
+            const glm::vec3& rootPos = positions[static_cast<std::size_t>(m_pelvis)];
+            anchor = glm::vec2(rootPos.x, rootPos.z) + residXZ;
+            anchorPtr = &anchor;
+        }
         updateStepping(positions, /*allowTrigger=*/!upIntent && !m_healing,
-                       downIntent ? 0.0f : entrySteppablePinErr, nullptr);
+                       downIntent ? 0.0f : entrySteppablePinErr, anchorPtr);
     }
     return true;
 }

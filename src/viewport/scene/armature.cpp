@@ -178,10 +178,38 @@ bool Armature::loadDump(const std::string& path, std::vector<ArmatureBone>& out)
         if (line.empty() || line[0] == '#') {
             continue;
         }
-        std::istringstream ss(line);
+        // The name may contain spaces (a merged follower's scene node, e.g. a tear-line figure
+        // named after its character): the 17 fields after it are fixed, so the name is
+        // everything before the last 17 tokens.
+        std::vector<std::string> tokens;
+        {
+            std::istringstream ss(line);
+            std::string tok;
+            while (ss >> tok) {
+                tokens.push_back(tok);
+            }
+        }
+        constexpr std::size_t kFields = 17;
+        if (tokens.size() < kFields + 1) {
+            out.clear();
+            return false;
+        }
         ArmatureBone b;
+        const std::size_t nameTokens = tokens.size() - kFields;
+        for (std::size_t k = 0; k < nameTokens; ++k) {
+            if (k > 0) {
+                b.name.push_back(' ');
+            }
+            b.name += tokens[k];
+        }
+        std::string rest;
+        for (std::size_t k = nameTokens; k < tokens.size(); ++k) {
+            rest += tokens[k];
+            rest.push_back(' ');
+        }
+        std::istringstream ss(rest);
         int lx = 0, ly = 0, lz = 0;
-        if (!(ss >> b.name >> b.parent >> b.rotationOrder >> b.localBindTranslation.x >>
+        if (!(ss >> b.parent >> b.rotationOrder >> b.localBindTranslation.x >>
               b.localBindTranslation.y >> b.localBindTranslation.z >> b.orientation.x >>
               b.orientation.y >> b.orientation.z >> b.rotationMin.x >> b.rotationMin.y >>
               b.rotationMin.z >> b.rotationMax.x >> b.rotationMax.y >> b.rotationMax.z >> lx >>
@@ -273,6 +301,9 @@ void Armature::nudgeSelectedBone(const glm::vec3& deltaEulerDegrees) {
     }
     m_boneEuler[static_cast<std::size_t>(m_selectedBone)] += deltaEulerDegrees;
     applyBoneEuler(m_selectedBone);
+    if (m_ikRig && m_ikRig->dragActive()) {
+        holdNudgedBoneThroughDrag(m_selectedBone); // the wheel during an IK drag (see armature.h)
+    }
 }
 
 bool Armature::setBoneRotation(const std::string& boneName, const glm::vec3& eulerDegrees) {

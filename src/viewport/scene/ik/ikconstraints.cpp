@@ -64,6 +64,11 @@ JointConstraint deriveJointConstraint(const glm::mat3& orientAxes, const glm::ve
     const int s1 = (twist + 2) % 3;
 
     JointConstraint out;
+    for (int a = 0; a < 3; ++a) {
+        out.parentAxis[a] = glm::normalize(orientAxes[a]);
+        out.parentMin[a] = limited[a] ? glm::radians(rotMinDeg[a]) : -3.14159265f;
+        out.parentMax[a] = limited[a] ? glm::radians(rotMaxDeg[a]) : 3.14159265f;
+    }
     if (locked[s0] && locked[s1]) {
         // Both swing axes forbidden (mid-limb twist bones): the segment can't leave its rest
         // direction at all — a zero-aperture cone.

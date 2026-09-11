@@ -313,6 +313,14 @@ private:
     /// both measured and rejected). Re-skins once at the end whenever there was a pin, a held
     /// joint, or a drag target to refine (a no-op only when nothing qualified).
     void refinePins(bool settling, const glm::vec3* dragTarget = nullptr);
+    /// A bone the user rotated by the X/Y/Z wheel DURING an IK drag (nudgeSelectedBone with a
+    /// drag active): its channels leave the drag-tick rotational prior for the rest of the
+    /// drag (the prior would decay the rotation back toward the drag start at 5%/tick), and a
+    /// promoted drag's grab offset is re-captured in the effector's current frame (rotating a
+    /// grabbed finger moves it relative to the solved hand — the cursor must keep tracking the
+    /// finger). The grabbed joint's own rotation is otherwise free to the user: the extraction
+    /// fits only bones with active children, and the grabbed joint's subtree rides.
+    void holdNudgedBoneThroughDrag(int bone);
 
     std::vector<Bone>                    m_bones;
     std::unordered_map<std::string, int> m_boneIndex; // bone name -> index into m_bones
@@ -359,7 +367,16 @@ private:
     // by the pin's restoration every tick, and the prior — decaying toward the drag-START
     // pose — could only fight the pin there: a hand pinned through a crouch ratcheted 8cm off
     // its pin during the still hold as the prior pulled the arm back toward its standing pose.
+    // Also any bone the user rotated by the wheel mid-drag (holdNudgedBoneThroughDrag).
     std::vector<char>             m_ikRotPriorExempt;
+    // The DRAGGED limb's chain (limb effectors only): exempt from the drag-tick rotational
+    // prior on its SWING channels only. The finisher determines those every tick (under the
+    // prior a lifted foot's knee crept and snapped), but an UNWITNESSED twist channel — a
+    // nearly straight limb, whose fold plane the witness cannot read — must still decay toward
+    // the drag start: fully exempt, the upper-arm twist parked at its -95° limit during a
+    // return-to-rest, the solver then folded the elbow in a plane the pose could not realize,
+    // and a fast flick toward the chest ran the arm 50cm away from the cursor.
+    std::vector<char>             m_ikRotPriorSwingExempt;
     // Drag-start Euler pose: the ROTATIONAL prior. The extraction's aim fit determines only
     // part of each joint's rotation (a single aim child leaves twist unwitnessed), and the
     // undetermined components RATCHET across ticks — the spine's forward-biased limits turned

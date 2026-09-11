@@ -55,11 +55,13 @@ struct JointConstraint {
     glm::vec3 swingAxis1{0.0f, 0.0f, 1.0f};
     float     swing0Min = -3.14159265f, swing0Max = 3.14159265f;
     float     swing1Min = -3.14159265f, swing1Max = 3.14159265f;
-    // TWIST FREEDOM (hinges and asymmetric cones): the bend plane may rotate about twistAxis —
+    // TWIST FREEDOM (true hinges — the elbows): the bend plane may rotate about twistAxis —
     // the PARENT segment's rest direction (unit, rest space) — within [twistMin, twistMax]
     // (radians about +twistAxis; equal = none), the authored twist range of the joint that owns
-    // that segment: a mid-limb twist bone (the upper arm's twist swings the elbow's fold plane,
-    // the thigh's the knee's). Without it the solver carried no twist at all — its frames chain
+    // that segment: a mid-limb twist bone (the upper arm's twist swings the elbow's fold plane).
+    // The KNEES (near-hinge cones) get none: granted it, every crouch ran the thigh twist to its
+    // limit and knocked the knees inward (see IkRig::build); their fold plane follows the thigh's
+    // swing and the two-bone seed places them over the foot. Without it the solver carried no twist at all — its frames chain
     // swing-only from the root — so a limb could fold only in the plane its drag-start twist
     // left it in: a hand pulled in front of the chest stopped 10cm short of a plainly reachable
     // point, and no damping or prior tuning could touch that (IkRig::build derives it; the
@@ -68,6 +70,17 @@ struct JointConstraint {
     glm::vec3 twistAxis{0.0f, 1.0f, 0.0f};
     float     twistMin = 0.0f;
     float     twistMax = 0.0f;
+    // The PARENT joint's full authored limits — its three oriented axes and per-channel ranges
+    // (radians; a locked channel [0,0], an unlimited one ±π). The solver's RIGID placement of a
+    // joint with several active children (the pelvis with its two hip sockets, the upper chest
+    // with both collars) clamps ONE shared rotation on these; the per-edge swing decomposition
+    // above serves single-child edges. Placing each socket by its own swing let the solve bend
+    // the pelvis in the middle — a configuration a rigid pelvis cannot realize, so the second
+    // foot landed 2-4cm off its plant after every stepping lean.
+    glm::vec3 parentAxis[3]{glm::vec3(1.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f),
+                            glm::vec3(0.0f, 0.0f, 1.0f)};
+    float     parentMin[3]{-3.14159265f, -3.14159265f, -3.14159265f};
+    float     parentMax[3]{3.14159265f, 3.14159265f, 3.14159265f};
 };
 
 /// The direction (unit, rest space) in which @p constraint's segment moves when its joint bends
@@ -90,8 +103,8 @@ float fitTwistToDirection(const JointConstraint& constraint, const glm::quat& fr
                           const glm::vec3& restDir, const glm::vec3& dir);
 
 /// True when @p constraint bends essentially in ONE plane: a hinge, or an asymmetric cone whose
-/// minor swing axis reaches under 15° (a knee's few degrees of lateral play). Twist freedom and
-/// the twist witness apply to these joints ONLY — a 2-DoF ball joint (a shoulder, the spine)
+/// minor swing axis reaches under 15° (a knee's few degrees of lateral play). The dominant bend
+/// tangent (the two-bone seed's side rule) exists for these joints ONLY — a 2-DoF ball joint (a shoulder, the spine)
 /// chooses its own bend azimuth through its second swing axis, so its "fold plane" is no
 /// witness of the parent's twist, and searching twist there only enlarged the solution space
 /// into churn (the collar drove to its limit, the hand missed its own rest position by 5cm).
