@@ -2,8 +2,24 @@
 
 **Most people want this file → [`PoseStudio-{{VERSION}}-Windows-Setup.exe`](https://github.com/PoseStudio/PoseStudio/releases/download/v{{VERSION}}/PoseStudio-{{VERSION}}-Windows-Setup.exe)**
 
+### 🛡️ Heads-up: Windows will warn you. Nothing is wrong with the download.
+
+> [!IMPORTANT]
+> When you run the installer, Windows shows a blue **“Windows protected your PC”** screen.
+>
+> ### 👉 Click **More info** → **Run anyway**. That's it.
+>
+> **This is not a virus warning.** Windows SmartScreen shows that screen for *every* installer it hasn't seen from a paid, certificate-signed publisher — PoseStudio is a free open-source project and hasn't bought a code-signing certificate yet. The warning is about our paperwork, not about the file.
+>
+> **What you can check instead, which a certificate would never give you:**
+> - Every file below is compiled **in public** by [GitHub Actions](https://github.com/PoseStudio/PoseStudio/actions) straight from this repository — the build log and every line of source are open.
+> - `SHA256SUMS.txt` (in the Assets list) lets you verify your download matches that build, byte for byte.
+> - The installer needs **no administrator rights** and installs only into your own user account.
+>
+> 📖 [Screenshots of the warning and exactly what to click →](https://github.com/PoseStudio/PoseStudio/blob/main/docs/INSTALL.md#windows-protected-your-pc)
+
 1. **Download** `PoseStudio-{{VERSION}}-Windows-Setup.exe` (from the **Assets** list below).
-2. **Run it.** If Windows shows a blue *"Windows protected your PC"* screen, click **More info → Run anyway**. That warning appears because we're a new open-source project that hasn't bought a code-signing certificate yet — the installer is built in public by [GitHub Actions](https://github.com/PoseStudio/PoseStudio/actions) straight from this repository's source code.
+2. **Run it** and click through the blue warning as above (**More info → Run anyway**).
 3. **Click through the installer** (no administrator password needed) and launch PoseStudio from the Start Menu.
 
 Full step-by-step instructions, including screenshots of the SmartScreen warning and troubleshooting help: **[Installation Guide](https://github.com/PoseStudio/PoseStudio/blob/main/docs/INSTALL.md)**.
