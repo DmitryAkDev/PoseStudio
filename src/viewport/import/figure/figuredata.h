@@ -69,7 +69,16 @@ struct FigureMesh {
 /// orientation in degrees — together they give the bind transform GPU (dual-quaternion) skinning
 /// needs.
 struct FigureBone {
+    /// The node's `id` — the handle everything INSIDE a file refers to it by (parent links, skin
+    /// joints, driver-formula urls), and the engine's name for the bone (pose files, picking).
     std::string name;
+    /// The node's `name` field — the bone's identity ACROSS files. A file's ids only have to be
+    /// unique within it, and one figure generation's base file renames thirty of them away from
+    /// the bone's real name (the upper chest is id `chest_2`, the mid-forearm twist bone id
+    /// `lWrist`, `lCarpal2` is another carpal's name entirely), while its followers use the
+    /// names — so a follower's skeleton is matched to the figure's by THIS (mergeAddonFigure).
+    /// Equal to `name` wherever a file keeps the two the same, which is nearly everywhere.
+    std::string nodeName;
     int         parent = -1;
     glm::vec3   origin{0.0f};       ///< center_point — the joint's rest position (native units).
     glm::vec3   orientation{0.0f};  ///< Rest orientation, Euler degrees; the frame pose rotations act in.

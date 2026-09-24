@@ -11,6 +11,7 @@
 #include "database.h"
 #include "menumanager.h"
 #include "splashoverlay.h"
+#include "helpwindow.h"
 #include "constants.h"
 #include "preferencesmanager.h"
 #include "installping.h"
@@ -25,6 +26,7 @@
 #include <QMainWindow>
 #include <QScreen>
 #include <QSplitter>
+#include <QTimer>
 #include <QTabWidget>
 
 int main(int argc, char *argv[]) {
@@ -144,6 +146,29 @@ int main(int argc, char *argv[]) {
     // and prompts — with a link to its page — only when it is newer than this build and the user
     // has not skipped it. Same ownership rule as the ping.
     UpdateCheck::scheduleAtStartup(&mainWindow);
+
+    // Developer lever: POSESTUDIO_MANUAL_SHOT=<png> opens the User Manual (at the page named by
+    // POSESTUDIO_MANUAL_PAGE, else its first page), saves a picture of the window and exits — the
+    // way to LOOK at a manual change without a desktop (the docs/manual/README.md workflow).
+    if (const QByteArray shotPath = qgetenv("POSESTUDIO_MANUAL_SHOT"); !shotPath.isEmpty()) {
+        const QString page = QString::fromUtf8(qgetenv("POSESTUDIO_MANUAL_PAGE"));
+        QTimer::singleShot(1200, &mainWindow, [&mainWindow, page, shotPath]() {
+            HelpWindow::open(&mainWindow, page);
+            QTimer::singleShot(600, &mainWindow, [shotPath]() {
+                for (QWidget* top : QApplication::topLevelWidgets()) {
+                    if (auto* help = qobject_cast<HelpWindow*>(top)) {
+                        // (POSESTUDIO_MANUAL_SEARCH=<words> exercises the search too)
+                        const QString search = QString::fromUtf8(qgetenv("POSESTUDIO_MANUAL_SEARCH"));
+                        if (!search.isEmpty()) {
+                            help->setSearchText(search);
+                        }
+                        help->grab().save(QString::fromUtf8(shotPath));
+                    }
+                }
+                QApplication::quit();
+            });
+        });
+    }
 
     return app.exec();
 }

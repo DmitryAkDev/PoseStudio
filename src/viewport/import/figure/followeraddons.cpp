@@ -249,22 +249,39 @@ void followParentShape(FigureData& addon, const std::vector<glm::vec3>& baseCage
 // figure's pose), and follower-only bones (e.g. extra lens joints) are appended as-is. Pose-time
 // caveat: a shared bone uses the PARENT's pivot, not the follower's own — fine at rest, and close
 // enough for a first pass at posed attachments.
+//
+// "Name" is the node's `name` FIELD (FigureBone::nodeName), not its id: one figure generation's
+// base file renames thirty ids away from the bones' names, and its followers use the names. Matched
+// by id, a whole generation's eyelash follower failed to find twelve of its bones and they were
+// APPENDED as follower-only: an invisible second spine (upper abdomen to upper neck, five bones
+// with no limits) hanging off the figure's lower abdomen plus six face bones — pickable, riding
+// the lower abdomen rigidly while the real spine bent away from them, and splitting the trunk's
+// mass share in the balance model. An id match is the fallback, for a bone without a name match.
 void mergeAddonFigure(FigureData& parent, FigureData&& addon) {
     if (addon.meshes.empty()) {
         return;
     }
-    std::unordered_map<std::string, int> parentIndexByName;
+    std::unordered_map<std::string, int> parentIndexByName; // by the node's `name` (see above)
+    std::unordered_map<std::string, int> parentIndexById;
     for (int i = 0; i < static_cast<int>(parent.bones.size()); ++i) {
-        parentIndexByName.emplace(parent.bones[i].name, i);
+        const FigureBone& bone = parent.bones[i];
+        parentIndexByName.emplace(bone.nodeName.empty() ? bone.name : bone.nodeName, i);
+        parentIndexById.emplace(bone.name, i);
     }
 
     const int addonBoneCount = static_cast<int>(addon.bones.size());
     std::vector<int> mergedIndex(addonBoneCount, -1);
     // First pass: bones the parent already has resolve to the parent's own.
     for (int i = 0; i < addonBoneCount; ++i) {
-        const auto it = parentIndexByName.find(addon.bones[i].name);
-        if (it != parentIndexByName.end()) {
-            mergedIndex[i] = it->second;
+        const FigureBone& bone = addon.bones[i];
+        const auto byName = parentIndexByName.find(bone.nodeName.empty() ? bone.name : bone.nodeName);
+        if (byName != parentIndexByName.end()) {
+            mergedIndex[i] = byName->second;
+            continue;
+        }
+        const auto byId = parentIndexById.find(bone.name);
+        if (byId != parentIndexById.end()) {
+            mergedIndex[i] = byId->second;
         }
     }
     // Second pass: append the follower-only bones, assigning every one its merged slot BEFORE any

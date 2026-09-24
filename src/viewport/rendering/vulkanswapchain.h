@@ -51,6 +51,10 @@ public:
     VkRenderPass   renderPass()    const { return m_renderPass.get(); }
     VkExtent2D     extent()        const { return m_extent; }
     uint32_t       imageCount()    const { return static_cast<uint32_t>(m_images.size()); }
+    /// The swapchain images can be copied FROM (frame capture); their handle and format.
+    bool           readable()      const { return m_readable; }
+    VkImage        image(uint32_t imageIndex) const { return m_images[imageIndex]; }
+    VkFormat       colorFormat()   const { return m_colorFormat; }
     VkFramebuffer  framebuffer(uint32_t imageIndex) const { return m_framebuffers[imageIndex].get(); }
 
 private:
@@ -73,6 +77,7 @@ private:
     UniqueRenderPass               m_renderPass;
     UniqueSwapchain                m_swapchain;
     VkFormat                       m_colorFormat = VK_FORMAT_UNDEFINED;
+    bool                           m_readable = false; ///< See readable().
     VkExtent2D                     m_extent      = {0, 0};
     std::vector<VkImage>           m_images;      // owned by the swapchain, not destroyed individually
     std::vector<UniqueImageView>   m_imageViews;

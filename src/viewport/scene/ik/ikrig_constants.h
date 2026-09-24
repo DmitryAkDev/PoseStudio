@@ -1,14 +1,13 @@
 /**
  * @file ikrig_constants.h
- * @brief The IkRig's tuning constants, shared by its four translation units (ikrig.cpp,
- *        ikrigdrag.cpp, ikrigsolve.cpp, ikrigstepping.cpp). PRIVATE to the rig — not part of the
- *        scene/ik interface, so nothing outside those files may include it.
+ * @brief The IkRig's tuning constants, shared by its translation units (ikrig.cpp,
+ *        ikrigdrag.cpp, ikrigpolicy.cpp, ikrigstepping.cpp, ikrigcontacts.cpp). PRIVATE to the
+ *        rig — not part of the scene/ik interface, so nothing outside those files may include it.
  *
  * Every value here was set by a measured failure in the IK harness (tools/ikharness) and the
  * comment at each definition records which; change one only with the harness re-run. The
- * constants sit in an anonymous namespace so each TU gets its own internal copy, exactly as it
- * did when the rig was one file — the rig's numerics must stay bit-identical to the harness
- * baseline, and the function-local trace probes (std::getenv) stay where they are used.
+ * constants sit in an anonymous namespace so each TU gets its own internal copy, and the
+ * function-local trace probes (std::getenv) stay where they are used.
  */
 
 #ifndef IKRIG_CONSTANTS_H
@@ -20,24 +19,46 @@ namespace {
 
 // Contacts within this GRAPH PATH LENGTH (summed bone rest lengths, world units) of the dragged
 // effector are released rather than pinned: dragging a foot lifts the foot and its entire toe
-// subtree (~0.15m away) instead of fighting its own pins, and a shin/knee drag frees the foot
-// below it (~0.5m), while a hip/pelvis drag keeps both feet planted (~1m away — the crouch).
+// subtree (~0.15m away) instead of fighting its own pins, while a hip/pelvis drag keeps both
+// feet planted (~1m away — the crouch). (A KNEE drag no longer frees the foot below it, half a
+// metre away: see IkRig::liftedByDrag.)
 // METRIC, not hop-count: hop rules break both ways on real rigs — the trunk packs tiny 2cm
 // bones (a thigh is only 2 hops from the hip), while a foot's small-toe tip segments are 3-4
 // hops from the ankle, and leaving THOSE pinned made a foot drag fight its own toe pins (the
 // solver's compromise slid the foot sideways off the user's target).
 constexpr float kEffectorLiftReach = 0.65f;
 
+// A USER pin BELOW the dragged joint holds when it is at least this far down the limb from it (tree
+// path, world units): a pinned hand under a dragged ELBOW, a pinned foot under a dragged knee —
+// the pin is what the joint then swivels about. Nearer than this it sits the drag out, as every
+// pin below the effector used to: a pinned toe under a dragged foot, a pinned finger under a
+// dragged hand, fight the drag itself (dragging a pinned hand simply moves the pin).
+constexpr float kEffectorPinHoldReach = 0.20f;
+// ... or this share of the pinned joint's own LIMB (its junction with the trunk down to the pin,
+// by bind lengths), whichever is LESS: 20cm is a length of ordinary proportions, and a stylized
+// character's forearm is shorter than that - its pinned hand sat out every elbow drag, moving
+// 24mm under a pin that holds to microns on every other figure (found by the character sweep).
+// On ordinary proportions a hand under its elbow is 0.37 of the limb and a foot under its knee
+// 0.42, a fingertip under its hand 0.20 and a toe under its foot 0.14: nothing that sat out at
+// 20cm holds now, and everything that held still does.
+constexpr float kEffectorPinHoldShare = 0.28f;
+/// A grabbed joint within two bones and this tree-path length of the solve root is a PELVIS
+/// drag (see the girdle promotion in IkRig::beginDrag). Across the eight generations: the pelvis
+/// bone and the first spine bone 2-3cm, the second spine bone 10-12, the thigh sockets 15-16;
+/// the third spine bone (18-25cm) is three bones up and leans on the two below it.
+constexpr float kGirdleGrabReach = 0.20f;
+
+// A FOOT-CLASS joint: one that sits this low AT BIND (the ankle's 8cm, the toes) — on the floor
+// because the figure stands on it. Any other joint under the contact height is there because of
+// the POSE (a kneeling knee, a hand on the floor): see plantContacts.
+constexpr float kFootBindHeight = 0.20f;
+// A foot whose LOWEST joint stands this far over its own floor height, while another foot of
+// the figure stands, was LIFTED by the user and is not planted at a drag's start (plantContacts).
+// Over the residue the ground healing is for (millimetres), under any lift worth the name.
+constexpr float kFootLiftedHeight = 0.03f;
+
 // How far inside the support polygon the CoM must sit to count as balanced (world units).
 constexpr float kBalanceMargin = 0.03f;
-
-// The balance pelvis effector is a soft goal: bias the chain without hijacking the user's drag.
-constexpr float kPelvisWeight = 0.6f;
-
-// When the drag target and every pin are already within this of their joints, the move is a
-// no-op: skip the solve entirely. Without this, holding the cursor still keeps running
-// solve -> extract cycles whose millimeter residuals random-walk (and once ratcheted) the pose.
-constexpr float kGoalDeadband = 2e-3f;
 
 // A node participates as a DANGLING segment (suspension) only with REAL segment mass — the
 // balance mass model classifies body parts; face/finger/helper bones get token mass and ride
@@ -61,18 +82,6 @@ constexpr float kTokenLimbMass = 0.01f;
 // the engagement blend must never see that flicker.
 constexpr float kBalanceSmoothing = 0.25f;
 
-// Smoothed-correction magnitude at which balance reaches full engagement: below it the balanced
-// re-solve's influence (the output blend AND the correction target) ramps linearly from zero,
-// so the balance response is CONTINUOUS in the CoM position — no engagement boundary for the
-// solve to flip across. See the balance block in solveDrag for the full design rationale.
-constexpr float kBalanceRamp = 0.02f;
-
-// Solver output deadband for interactive drag solves (FabrikSolver::Settings::
-// minStepDisplacement): kills the sub-millimeter solve->extract->FK limit cycle that reads as
-// idle joints SHIMMERING while the user pulls. Under the smallest governor allowance (~3mm per
-// tick), real corrections always propose more than this.
-constexpr float kOutputDeadband = 8e-4f;
-
 // BALANCE-DRIVEN STEPPING (see updateStepping): when the post-solve balance need stays above
 // kStepNeedThreshold for kStepConfirmTicks consecutive ticks — the drag holds the CoM off the
 // support polygon harder than leaning can absorb — the figure re-plants a foot at its BALANCED
@@ -82,21 +91,40 @@ constexpr float kOutputDeadband = 8e-4f;
 // least kStepMinDistance. The swing is an eased glide of the pin target with a sine lift arc,
 // paced at ~kStepSpeed per tick; sequential steps under a continuing drag read as the figure
 // WALKING to follow it.
-// 0.025 (was 0.035): recalibrated with the Armature's per-tick FLOOR LIFT (see
-// kFloorLiftTol in armatureik.cpp). Before it, a hard lateral lean sank the far foot through
-// the floor, and that sink inflated the strain signal (kStepPinErrThreshold) enough to step; with
-// the feet held on the floor the honest lateral slip stays under the strain threshold and a 45cm
-// lateral chest drag leaned the hip 19cm on planted feet without ever stepping — a person would
-// have stepped long before. The balance-EFFORT path is the principled trigger for that lean (the
-// pelvis correction fights the imposed lean every tick), and 0.025 restores the steps (3, the
-// chest within 13cm of a 45cm target, was 22cm) while every other harness phase — the hip walks,
-// the strained pull, the pinned-foot chest drag, the crouches — stays bit-identical. Lowering the
-// strain threshold instead (2.5cm) also stepped, but reshaped the walks' step counts.
+// 0.025 (was 0.035): recalibrated when the old solver's feet were first held on the floor every
+// tick. Before that a hard lateral lean sank the far foot through the floor, and that sink
+// inflated the old PIN-STRAIN trigger enough to step; with the feet on the floor a 45cm lateral
+// chest drag leaned the hip 19cm on planted feet without ever stepping — a person would have
+// stepped long before. The balance-EFFORT path is the principled trigger for that lean (the
+// pelvis correction fights the imposed lean every tick), and 0.025 restored the steps while
+// every other phase stayed bit-identical. (The strain trigger itself is GONE with the old
+// solver: the joint-space solve never drags a foot off its plant, so the signal was always 0.)
+/// GROUND HEALING (beginDrag): a contact found within this much of its bind height over the floor
+/// (figure-scaled) is pinned AT that height — a hovering figure is pulled back onto the floor;
+/// one further off it (a kneeling knee, a deliberately airborne pose) keeps its height.
+constexpr float kGroundHealBand = 0.12f;
 constexpr float kStepNeedThreshold = 0.025f;
-constexpr float kStepPinErrThreshold = 0.04f; ///< Entry pin error = a foot dragged off its plant.
 constexpr float kStepStanceThreshold = 0.12f; ///< Explicit-anchor drags: stance error that steps.
 constexpr int   kStepConfirmTicks = 12;
+/// A foot this many times kStepStanceThreshold from its anchored spot steps with no confirmation
+/// at all (the ticks shrink linearly between): a fast drag's steps begin during it, not after.
+constexpr float kStepPromptFactor = 2.5f;
 constexpr float kStepMinDistance = 0.06f;
+// Steps are a STANDING body's: no new step begins while the pelvis (or, under a pelvis drag,
+// where the user is taking it) sits this far below its standing height. The older gate — 8cm
+// below the DRAG-START pelvis — reads a crouch made within the drag, not one the drag began
+// in: a figure dragged up out of a kneel by the hip (its hips a third of a metre ahead of its
+// feet, the stance spot centred on them) stepped a foot forward under its own knees while
+// still kneeling, and then back again as it stood.
+constexpr float kStepLowBody = 0.12f;
+// THE INTENTS (updateIntent; every one figure-scaled by sizeScale, like every geometric
+// threshold of the rig — in raw metres until 2026-09-24, so a half-size character's gates were
+// twice as coarse as a full-size figure's):
+constexpr float kPelvisDownIntentDepth = 0.02f; ///< a pelvis drag this far under its start height is DOWN (while not on its way back up: kRiseAgain)
+constexpr float kRiseAgain = 0.03f;             ///< ... and no longer down once the target has come this far back up from its lowest
+constexpr float kLimbDownIntentDepth = 0.15f;   ///< a limb pushed this far below itself, TAUT toward the target, is pushing the body down
+constexpr float kLimbUpIntentHeight = 0.10f;    ///< a limb pulled this far above itself is UP
+constexpr float kCrouchIntentDepth = 0.08f;     ///< a pelvis drag this far below its start is a CROUCH: it keeps its feet (updateStepPolicy)
 constexpr float kStepSpeed = 0.015f;
 constexpr int   kStepMinTicks = 12;
 constexpr int   kStepMaxTicks = 30;
@@ -108,40 +136,14 @@ constexpr float kStepClearance = 0.10f; ///< Min XZ distance between a landing a
 // SUSPENSION (lift-off) entry: the pull must be mostly vertical (y > this fraction of the
 // strain), farther beyond reach than kSuspendStrain, with the root hard against its leash, for
 // kSuspendConfirmTicks consecutive ticks (~0.25 s) — a deliberate sustained lift, never a fast
-// lateral gesture. kSuspendGravity is the per-iteration downward bias that makes the released
-// body hang below the grab point (see FabrikSolver::Settings::gravityBias).
+// lateral gesture.
 constexpr float kSuspendStrain = 0.15f;
+// A LIMB's downward drag intent (the crouch drive, the root's vertical yield, the heel lift)
+// needs the limb TAUT toward the target: junction-to-effector reach past this fraction of its
+// rest span. A folded arm below its cursor has yet to unfold (see IkRig::limbDownIntent).
+constexpr float kDownIntentTaut = 0.90f;
 constexpr float kSuspendUpFraction = 0.65f;
 constexpr int   kSuspendConfirmTicks = 15;
-constexpr float kSuspendGravity = 0.012f;
-
-// Root prior yield against downward drags (see FabrikSolver::Settings::rootDownYield): pushing
-// the chest (or pulling a hand) DOWN crouches the body — the pelvis gives vertically and the
-// legs fold onto the pinned feet — while lateral/upward root stiffness stays full.
-constexpr float kRootDownYield = 0.25f;
-
-// Trunk stiffness multiplier under UPWARD drag intent (see m_trunkChain): pulling a hand up is
-// arm + shoulder-girdle work — a spine cannot lengthen — so the spine holds its posture instead
-// of being recruited (recruiting it pitched the chest and swung the head down into a bow).
-constexpr float kUpTrunkStiffen = 4.0f;
-
-// Strength of the solver's soft pose prior (see FabrikSolver::solve): how hard interior joints
-// ease back toward the drag-start pose each iteration. Enough to make the body settle to the
-// closest-to-start pose that satisfies the goals (without it, per-mouse-event solves ratcheted
-// the trunk into contortions); small enough that effector chains still recruit the body when a
-// reach genuinely needs it.
-constexpr float kPosePriorWeight = 0.1f;
-
-// Solver iterations per tick. Deliberately LOW-ish: the drag runs at ~60 ticks/s, and
-// convergence is meant to happen ACROSS ticks — the visible motion IS the iteration process,
-// evolving smoothly like a damped system. A large per-tick budget re-resolves the whole
-// configuration every event, and near-equal configurations flip with millimeter target changes
-// (cursor noise), which the user sees as trembling. Every solve passes
-// kPriorIterationNorm = (the 6 iterations the stiffness model was tuned at) / kIterationsPerTick
-// so raising the budget sharpens CONVERGENCE without silently stiffening the per-solve prior
-// (unnormalized, 10 iterations compounded the prior ~1.7x and broke hover-healing).
-constexpr int   kIterationsPerTick = 10;
-constexpr float kPriorIterationNorm = 6.0f / static_cast<float>(kIterationsPerTick);
 
 } // namespace
 

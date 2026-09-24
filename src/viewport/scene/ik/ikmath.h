@@ -1,6 +1,6 @@
 /**
  * @file ikmath.h
- * @brief Small shared rotation math for the IK module (and the Armature's IK pose extraction):
+ * @brief Small shared rotation math for the IK module and the Armature's pose composition:
  *        shortest-arc quaternions, signed angles about an axis, and Euler decomposition for the
  *        figure format's arbitrary per-joint rotation orders.
  *
@@ -8,8 +8,8 @@
  * R(order[2]), each a right-handed rotation about a principal axis) and eulerFromMatrix is its
  * exact inverse — what turns a solved IK world rotation back into the per-channel Euler degrees
  * the engine's pose model (and its per-axis anatomical limits) are expressed in. The pair lives
- * together here so the composition the Armature poses with and the decomposition the IK
- * extraction fits with can never drift apart. Qt-free (std + GLM).
+ * together here so the composition the Armature poses with and its decomposition can never
+ * drift apart. Qt-free (std + GLM).
  */
 
 #ifndef IKMATH_H
@@ -30,6 +30,13 @@ glm::quat shortestArc(const glm::vec3& from, const glm::vec3& to);
 /// two vectors' projections onto the plane perpendicular to @p axis. Returns 0 when either
 /// projection degenerates.
 float signedAngleAround(const glm::vec3& from, const glm::vec3& to, const glm::vec3& axis);
+
+/// The closest points between the segments p1-q1 and p2-q2: returns their distance and writes
+/// the parameters @p s (on p1-q1) and @p t (on p2-q2), both in [0, 1]. The body volumes test
+/// a LIMB SEGMENT against a capsule with it (two limbs cross at their middles, where no joint
+/// sits).
+float closestSegmentPoints(const glm::vec3& p1, const glm::vec3& q1, const glm::vec3& p2,
+                           const glm::vec3& q2, float& s, float& t);
 
 /// Builds the rotation matrix of Euler angles @p degrees (per world channel: .x about X, .y about
 /// Y, .z about Z) composed in @p order (e.g. "YZX", the figure format's per-joint rotation_order):

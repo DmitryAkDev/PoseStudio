@@ -94,6 +94,9 @@ Model::Model(VulkanContext& context, const ModelData& data, VkDescriptorSetLayou
         }
         m_ground.reserve(totalVerts);
     }
+    // The BODY MESH SAMPLE for the self-collision volumes (bodymesh.h): every skinned vertex's
+    // bind position with the bone that weighs most on it, handed to the armature below.
+    std::vector<BodyMeshPoint> bodyMesh;
     for (const MeshData& meshData : data.meshes) {
         if (meshData.indices.empty()) {
             continue;
@@ -105,6 +108,17 @@ Model::Model(VulkanContext& context, const ModelData& data, VkDescriptorSetLayou
                               fallbackDiffuse, fallbackNormal, uploads, batch, ranges);
         if (skinned) {
             m_ground.add(meshData.vertices);
+            for (const Vertex& v : meshData.vertices) {
+                int best = 0;
+                for (int j = 1; j < 4; ++j) {
+                    if (v.weights[j] > v.weights[best]) {
+                        best = j;
+                    }
+                }
+                if (v.weights[best] > 0.0f && v.joints[best] < data.bones.size()) {
+                    bodyMesh.push_back({v.pos, static_cast<int>(v.joints[best])});
+                }
+            }
         }
     }
     m_correctives.createBuffers(context, correctiveEntries, batch);
@@ -137,6 +151,9 @@ Model::Model(VulkanContext& context, const ModelData& data, VkDescriptorSetLayou
         dst.rotationLimited = src.rotationLimited;
     }
     m_armature.build(armatureBones);
+    if (!bodyMesh.empty()) {
+        m_armature.setBodyMesh(std::move(bodyMesh));
+    }
     // Debug hook: POSESTUDIO_DUMP_SKELETON=<path> dumps the imported skeleton (one bone per
     // line) so the IK harness (tools/ikharness/) can run its drag-loop tests against REAL figure
     // rigs instead of synthetic approximations. No-op unless the environment variable is set.

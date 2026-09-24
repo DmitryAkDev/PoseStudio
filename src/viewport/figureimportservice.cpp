@@ -14,6 +14,7 @@
 #include "preferencesmanager.h" // user-configured content roots
 #include "constants.h"          // PREF_FIGURE_CONTENT_ROOTS
 
+#include <limits>
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <QApplication>
@@ -146,6 +147,39 @@ ModelData toModelData(FigureData&& fig) {
         for (auto& [index, delta] : c.deltas) {
             delta *= kCmToWorld;
         }
+    }
+
+    // THE FIGURE STANDS ON THE FLOOR AT REST. A base figure's soles are at y = 0, and everything
+    // that reasons about the floor from the bind pose — the posing rig's foot contacts (a joint's
+    // standing height IS its bind height), the ball of the foot (found by its bind height against
+    // the ankle's), what counts as a foot at all — takes that for granted. A custom CHARACTER
+    // need not oblige: a morph that shortens the legs commonly does it by lifting the FEET, not
+    // by lowering the hips, and the character then rests a few centimetres in the air (3.9 on the
+    // one that showed it). She hovered over the grid; her toes, 5.8cm up against an ankle at
+    // 10.3, no longer read as the ball of a foot, so her ankles were pinned rigidly — no heel
+    // lift, no pivot — and she could not kneel, crouch deep, stride or walk by her hips (23 of
+    // the IK harness's 114 phases failed on her skeleton); and the knees, whose floor is the
+    // world's, had 4cm further to go than the feet they were kneeling beside. So the figure is
+    // put on the floor here, mesh and skeleton together: the lowest point of its skin at y = 0.
+    // (Only when it is more than a millimetre off: a figure that already stands there is left
+    // bit for bit as it was.)
+    float lowest = std::numeric_limits<float>::max();
+    for (const MeshData& mesh : model.meshes) {
+        for (const Vertex& v : mesh.vertices) {
+            lowest = std::min(lowest, v.pos.y);
+        }
+    }
+    if (lowest < std::numeric_limits<float>::max() && std::abs(lowest) > 0.001f) {
+        for (MeshData& mesh : model.meshes) {
+            for (Vertex& v : mesh.vertices) {
+                v.pos.y -= lowest;
+            }
+        }
+        for (ModelBone& bone : model.bones) {
+            bone.bindGlobal[3][1] -= lowest;
+        }
+        qInfo("[figure] rests %.1f mm %s the floor as authored: put on it (mesh and skeleton together)",
+              std::abs(lowest) * 1000.0f, lowest > 0.0f ? "above" : "below");
     }
     return model;
 }

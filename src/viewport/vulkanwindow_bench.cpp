@@ -120,8 +120,14 @@ void IkDiagnostics::report(const char* label) {
 
 void VulkanWindow::startBench() {
     IkDiagnostics&    d = *m_diag;
-    const std::string bone = d.benchSpec.section(QLatin1Char(':'), 0, 0).toStdString();
-    const int         boneIndex = m_renderer ? scene().selectBoneByName(bone) : -2;
+    // "<bone>[@share][:depth]": with @share the bench CLICKS the bone's body — it puts a grab point
+    // that share of the way along the bone's limb segment, projects it to the screen and runs
+    // the real pick at that pixel (picker, grab point, drag plane: the whole press path, with
+    // no desktop input) — instead of selecting the joint by name.
+    const QString     boneSpec = d.benchSpec.section(QLatin1Char(':'), 0, 0);
+    const std::string bone = boneSpec.section(QLatin1Char('@'), 0, 0).toStdString();
+    const QString     shareSpec = boneSpec.section(QLatin1Char('@'), 1, 1);
+    int               boneIndex = m_renderer ? scene().selectBoneByName(bone) : -2;
     if (boneIndex == -1 && d.benchRetries++ < 120) {
         // No figure yet: a command-line figure imports through the progress dialog (on Windows
         // the first expose — hence the renderer — arrives synchronously inside show(), so the
@@ -129,6 +135,22 @@ void VulkanWindow::startBench() {
         // timer mid-import. Poll until the figure exists.
         QTimer::singleShot(500, this, &VulkanWindow::startBench);
         return;
+    }
+    if (boneIndex >= 0 && !shareSpec.isEmpty()) {
+        scene().setIkGrabOnSegment(shareSpec.toFloat());
+        glm::vec3 point(0.0f);
+        QPointF   px;
+        if (scene().ikGrabPointWorld(point) && projectToScreen(point, px)) {
+            const int picked = boneAt(px); // the real pick: selects, and sets the grab point
+            glm::vec3 took(0.0f);
+            scene().ikGrabPointWorld(took);
+            std::fprintf(stderr,
+                         "[ikbench] clicked the body of %s at share %.2f, px(%.0f %.0f): picked bone %d (asked %d), "
+                         "took hold %.1f mm from the point aimed at\n",
+                         bone.c_str(), shareSpec.toFloat(), px.x(), px.y(), picked, boneIndex,
+                         glm::length(took - point) * 1000.0f);
+            boneIndex = picked;
+        }
     }
     const bool began = boneIndex >= 0 && beginIkDrag();
     if (!began) {

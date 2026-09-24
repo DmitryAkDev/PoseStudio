@@ -6,10 +6,9 @@
  * The smoothing strength follows how far the smoothed target LAGS the raw one: near-still cursor
  * (the lag is pixel noise) — heavy smoothing keeps jitter out of the solver; fast deliberate
  * gesture (the lag is centimeters) — the filter opens all the way and follows tightly, so
- * smoothing costs almost no lag exactly when the user moves fast. Tuned with the exact drag
- * refinement (Armature::refinePins with the drag target): the whole-body solve no longer
- * amplifies target noise into the hand (the limb fit that places the hand is locally linear, so
- * noise passes 1:1 — a pixel), so the filter only has to keep a NEAR-STILL cursor's jitter out
+ * smoothing costs almost no lag exactly when the user moves fast. The whole-body solve
+ * (jointsolver.h) does not amplify target noise — the pose is a continuous function of the
+ * target, so noise passes about 1:1, a pixel — and the filter only has to keep a NEAR-STILL cursor's jitter out
  * (alpha 0.30 at zero lag) and can open fully (alpha 1.0 from ~7mm of lag): its steady-state lag
  * at 0.45 m/s is ~3mm, and a fast flick pays nothing. Qt-free (GLM only).
  */

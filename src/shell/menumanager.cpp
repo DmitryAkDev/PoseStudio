@@ -6,7 +6,8 @@
  * Edit → Undo/Redo (the viewport's unified pose + lighting stack), Delete Selected Object, the
  * pose utilities (reset joint/limb/pose, mirror pose/limb) and Preferences; the whole View menu
  * (Show Skeleton, the axis views, Flip, Frame Selected and Home View — all with app-wide
- * shortcuts in Blender's numpad convention); Help → the website link and About. The remaining
+ * shortcuts in Blender's numpad convention); Help → the User Manual (F1), the release notes, the
+ * website link and About. The remaining
  * entries (New/Open/Save, the other import formats, Export, clipboard, docs) are disabled
  * placeholders that establish the menu structure and icon conventions those features will slot
  * into — enabling one means replacing its disabled entry with a real handler here.
@@ -19,6 +20,7 @@
 #include "preferencesmanager.h"
 #include "constants.h"
 #include "updatecheck.h"
+#include "helpwindow.h"
 #include "viewport/viewportwidget.h"
 #include <QMenu>
 #include <QMenuBar>
@@ -260,8 +262,19 @@ void MenuManager::setupMenus() {
     // HELP MENU — documentation, support links, and the About dialog
     QMenu *helpMenu = mainWindow->menuBar()->addMenu("Help");
 
-    helpMenu->addAction("Release Notes")->setEnabled(false);
-    helpMenu->addAction(loadDualStateIcon("tutorials"), "Tutorials")->setEnabled(false);
+    // The User Manual (src/help/, content in docs/manual/): F1 opens it app-wide — a window-level
+    // shortcut like the View keys, so it works whichever panel has focus. Release Notes opens the
+    // manual at its "What's New" page, which is the CHANGELOG embedded at build time.
+    QAction *manualAction = helpMenu->addAction(loadDualStateIcon("tutorials"), "User Manual");
+    manualAction->setShortcut(QKeySequence::HelpContents);
+    QObject::connect(manualAction, &QAction::triggered, mainWindow, [this]() {
+        HelpWindow::open(mainWindow);
+    });
+    QAction *releaseNotesAction = helpMenu->addAction("Release Notes");
+    QObject::connect(releaseNotesAction, &QAction::triggered, mainWindow, [this]() {
+        HelpWindow::open(mainWindow, QStringLiteral("whats-new"));
+    });
+    helpMenu->addAction("Tutorials")->setEnabled(false);
     helpMenu->addAction("Support")->setEnabled(false);
     helpMenu->addSeparator();
 

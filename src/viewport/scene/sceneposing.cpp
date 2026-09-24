@@ -49,6 +49,27 @@ void Scene::endBoneIkDrag() {
     }
 }
 
+const Armature* Scene::figureArmature() const {
+    const Model* fig = figureModel();
+    return fig != nullptr ? &fig->armature() : nullptr;
+}
+
+bool Scene::ikGrabPointWorld(glm::vec3& out) const {
+    const Model* fig = figureModel();
+    if (!fig || fig->selectedBone() < 0 ||
+        fig->selectedBone() >= static_cast<int>(fig->boneCount())) {
+        return false;
+    }
+    out = fig->ikGrabPointWorld();
+    return true;
+}
+
+void Scene::setIkGrabOnSegment(float share) {
+    if (Model* fig = figureModel()) {
+        fig->setIkGrabOnSegment(fig->selectedBone(), share);
+    }
+}
+
 bool Scene::selectedBoneWorldPosition(glm::vec3& out) const {
     const Model* fig = figureModel();
     if (!fig || fig->selectedBone() < 0 ||

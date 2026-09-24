@@ -7,6 +7,8 @@
 
 #include "scene.h"
 
+#include "ikmath.h"
+
 #include "bonepicker.h"
 #include "camera.h"
 #include "cameraubo.h"
@@ -382,7 +384,25 @@ int Scene::selectBoneAt(float px, float py, float vpW, float vpH, const Camera& 
         }
     }
     setActiveFigure(pick.model);
-    m_models[static_cast<std::size_t>(pick.model)]->setSelectedBone(pick.bone);
+    Model& figure = *m_models[static_cast<std::size_t>(pick.model)];
+    figure.setSelectedBone(pick.bone);
+    // The IK GRAB POINT: where on the bone the user took hold (Armature::setIkGrabPoint) — the
+    // joint itself for a pick of the joint, the clicked point of the body otherwise (the point
+    // of the picked segment nearest the cursor's ray; the pick's own parameter is a screen-space
+    // one, good enough when the ray runs along the bone).
+    glm::vec3 grab = figure.boneWorldPosition(static_cast<std::size_t>(pick.bone));
+    if (pick.child >= 0 && pick.child < static_cast<int>(figure.boneCount())) {
+        const glm::vec3& far = figure.boneWorldPosition(static_cast<std::size_t>(pick.child));
+        const Ray ray = camera.screenPointToRay(px, py, vpW, vpH);
+        float onRay = 0.0f;
+        float onBone = pick.along;
+        const glm::vec3 reach = ray.origin + ray.direction * (2.0f * glm::length(far - ray.origin) + 1.0f);
+        if (glm::length(far - grab) > 1.0e-5f) {
+            closestSegmentPoints(ray.origin, reach, grab, far, onRay, onBone);
+        }
+        grab = glm::mix(grab, far, glm::clamp(onBone, 0.0f, 1.0f));
+    }
+    figure.setIkGrabPoint(pick.bone, grab);
     return pick.bone;
 }
 

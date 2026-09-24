@@ -70,6 +70,7 @@ class VulkanContext;
 class VulkanError;
 class VulkanRenderer;
 struct IkDiagnostics;
+struct IkScript;
 
 /**
  * @class VulkanWindow
@@ -537,6 +538,23 @@ private:
     void benchDepthNotch(int notch);
     void benchFinish();
     std::unique_ptr<IkDiagnostics> m_diag;
+
+    // =========================================================================================
+    // The scripted in-app posing test (vulkanwindow_script.cpp; POSESTUDIO_IK_SCRIPT=<file>, a
+    // figure on the command line): camera views, REAL picks and presses at pixels, cursor drags
+    // in screen space through the real drag plane, releases, pins, FK turns — each through the
+    // window's own gesture functions, with NO desktop input — plus `report` (what a user would
+    // see, as numbers) and `shot` (the rendered frame, read back from the GPU, as a PNG). Then
+    // it exits. m_script is null unless the env var is set; tools/ikscripts/README.md is the reference.
+    void startScript();          ///< The first step, once a posable figure exists (polled).
+    void scriptStep();           ///< Runs lines until one must wait for the app; the wait's end re-calls it.
+    bool scriptPixelOf(const QString& spec, QPointF& px); ///< "<bone>[@share]" -> the pixel a user would click.
+    void scriptDragTick();       ///< One tick of a scripted move (from the IK tick, before its solve).
+    void scriptSettled();        ///< A release's settle finished: the `release` line's wait is over.
+    void scriptFrameRendered();  ///< A frame was presented after `shot`: save the capture, resume.
+    void scriptReport(const char* label); ///< `report`: what a user would see, as numbers.
+    bool scriptMetric(const QString& name, double& value); ///< A number `expect` can assert on.
+    std::unique_ptr<IkScript> m_script;
 };
 
 } // namespace pose

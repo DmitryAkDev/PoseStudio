@@ -1,0 +1,63 @@
+# The Interface
+
+PoseStudio has one main window: a menu bar, the 3D viewport with its floating control strip, and a side panel with two tabs. Everything else — Preferences, the manual, the import progress dialogs — opens on top of it.
+
+## The main window
+
+The viewport sits on the left and the side panel on the right, separated by a draggable divider. The window title shows the version you are running. The window opens at a comfortable size for your screen; there is no saved layout yet, so it opens the same way every time.
+
+## The menu bar
+
+**File** — importing models and figures, saving and loading poses, and quitting. The greyed entries — New, Open, Open Recent, Save, Save As, Save Copy, Export and the other import formats — are placeholders for planned features: there is no scene file yet.
+
+| Entry | What it does |
+| --- | --- |
+| Import → .OBJ (Wavefront) | Imports a static mesh. See [Importing Content](importing.md#static-models-obj). |
+| Import → .DUF (DUF File) | Imports a rigged character figure. See [Importing Content](importing.md#character-figures-duf-dsf). |
+| Save Pose… | Writes the active figure's pose to a `.pose` file. |
+| Load Pose… | Applies a `.pose` file to the active figure (undoable). |
+| Quit (`Ctrl+Q`) | Closes PoseStudio. There is no scene file yet, so there is nothing to save first — save a pose if you want to keep it. |
+
+**Edit** — the undo history and the pose utilities.
+
+| Entry | What it does |
+| --- | --- |
+| Undo (`Ctrl+Z`) / Redo (`Ctrl+Y`) | One history for pose edits and lighting edits alike. See [Posing](posing.md#undo-and-redo). |
+| Delete Selected Object | Removes the outlined model from the scene. The `Delete` key does the same while the viewport has focus. Deleting an object also clears the undo history. |
+| Reset Selected Joint / Reset Limb / Reset Pose | Return the selected joint, the joint and everything below it, or the whole figure to the rest pose. |
+| Mirror Pose / Mirror Limb to Other Side | Swap the pose's sides, or copy the selected limb's pose to the other side. |
+| Preferences | Opens the Preferences dialog. |
+
+**View** — the skeleton overlay and the camera views (all with keyboard shortcuts; see [Navigating the Viewport](navigation.md#the-camera-views)).
+
+**Help** — this manual (`F1`), the release notes (the manual's *What's New* page), the website, the update check, and the About screens. *Tutorials* and *Support* are placeholders.
+
+## The viewport strip
+
+A row of controls floats in the viewport's top-right corner:
+
+| Control | What it does |
+| --- | --- |
+| **Shading picker** (reads *PBR Shaded* by default) | Chooses how the scene is drawn. See [Shading and Display](shading.md). |
+| **View picker** (reads *Home View* by default) | Snaps the camera to a named view; reads *Perspective View* once you orbit away from one. |
+| **Home** | Returns the camera to the default framing (also `5`). |
+| **Ground** | Drops the active figure so its lowest point rests on the floor. See [Posing](posing.md#the-ground-button). |
+| **Skeleton** | Toggles the bone overlay. Joints can be grabbed with it on or off. |
+
+While you hold `X`, `Y` or `Z` with a joint selected, a small badge appears under the strip showing the axis the mouse wheel will rotate the joint about.
+
+## The side panel
+
+The two tabs sit on the panel's left edge.
+
+- **Asset Manager** — a tree of your asset libraries, Favorites and Collections above a thumbnail grid, with a search field at the top. Double-clicking an asset imports it. See [The Asset Manager](asset-manager.md).
+- **Environment** — the lighting controls: the HDRI picker, the backdrop, exposure and tone, image-based lighting, the key light, shadows, and skin and rim accents. See [Lighting and Environment](environment.md).
+
+Drag the divider between the tree and the grid inside the Asset Manager to give either more room.
+
+## Dialogs and overlays
+
+- **Preferences** (Edit → Preferences) is a dialog with pages down its left side. Settings apply as you change them; Close is the only button. See [Preferences](preferences.md).
+- **The User Manual** (Help → User Manual, `F1`) is this window. It stays above the main window so you can read while you work.
+- **Import progress** dialogs appear while a model or figure loads; they have no cancel button, and the application waits for the import to finish.
+- **The About screen** (Help → About PoseStudio) is the splash artwork with the version number; click anywhere to dismiss it.

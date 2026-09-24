@@ -45,6 +45,44 @@ glm::quat shortestArc(const glm::vec3& from, const glm::vec3& to) {
     return glm::angleAxis(std::atan2(cLen, d), c / cLen);
 }
 
+float closestSegmentPoints(const glm::vec3& p1, const glm::vec3& q1, const glm::vec3& p2,
+                           const glm::vec3& q2, float& s, float& t) {
+    constexpr float kEps = 1e-10f;
+    const glm::vec3 d1 = q1 - p1;
+    const glm::vec3 d2 = q2 - p2;
+    const glm::vec3 r = p1 - p2;
+    const float a = glm::dot(d1, d1);
+    const float e = glm::dot(d2, d2);
+    const float f = glm::dot(d2, r);
+    if (a <= kEps && e <= kEps) {
+        s = t = 0.0f;
+        return glm::length(p1 - p2);
+    }
+    if (a <= kEps) {
+        s = 0.0f;
+        t = glm::clamp(f / e, 0.0f, 1.0f);
+    } else {
+        const float c = glm::dot(d1, r);
+        if (e <= kEps) {
+            t = 0.0f;
+            s = glm::clamp(-c / a, 0.0f, 1.0f);
+        } else {
+            const float b = glm::dot(d1, d2);
+            const float denom = a * e - b * b;
+            s = denom > kEps ? glm::clamp((b * f - c * e) / denom, 0.0f, 1.0f) : 0.0f;
+            t = (b * s + f) / e;
+            if (t < 0.0f) {
+                t = 0.0f;
+                s = glm::clamp(-c / a, 0.0f, 1.0f);
+            } else if (t > 1.0f) {
+                t = 1.0f;
+                s = glm::clamp((b - c) / a, 0.0f, 1.0f);
+            }
+        }
+    }
+    return glm::length((p1 + d1 * s) - (p2 + d2 * t));
+}
+
 float signedAngleAround(const glm::vec3& from, const glm::vec3& to, const glm::vec3& axis) {
     const glm::vec3 f = from - axis * glm::dot(from, axis);
     const glm::vec3 t = to - axis * glm::dot(to, axis);

@@ -83,6 +83,10 @@ int classify(const std::string& normalized) {
     return -1;
 }
 
+/// The balance margin is never more than this share of a support polygon's narrowest width (see
+/// closestBalancedPoint): all of 3cm inside a two-footed stance, 1.5cm inside a single foot.
+constexpr float kMarginWidthShare = 0.2f;
+
 float cross2(const glm::vec2& o, const glm::vec2& a, const glm::vec2& b) {
     return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
 }
@@ -217,6 +221,82 @@ glm::vec2 BalanceController::closestBalancedPoint(const std::vector<glm::vec2>& 
         centroid += v;
     }
     centroid /= static_cast<float>(hull.size());
+
+    // A POLYGON: the nearest point of the hull shrunk by the margin — every edge moved inward and
+    // the hull clipped by it. (Until 2026-09-20 this was the branch below for polygons too: the
+    // nearest BOUNDARY point pulled the margin toward the CENTROID. That is the inset polygon only
+    // where the centroid lies square behind the edge; off to one side the pull is oblique, and a
+    // centre of mass crossing into the margin band found its "balanced point" a finite distance
+    // away along the edge — the need stepped from zero to a centimetre and more, a CLIFF in the
+    // solver's balance row. A chest bowed 23 degrees off the figure's heading ran along it: every
+    // step across was refused whatever its size, six ticks of stall, then the spine twisted 10
+    // degrees in one tick to get round.)
+    if (hull.size() >= 3) {
+        // (The margin is a band inside a STANCE. A single foot's outline is 5cm wide at the heel
+        // and a 3cm band swallows all of it but a sliver under the ball — the weight of a body
+        // mid-step was asked 9cm further forward than the foot's middle. No more of a hull than
+        // kMarginWidthShare of its narrowest width: the hull's own measure, not p's.)
+        float narrowest = 1e30f;
+        for (std::size_t i = 0; i < hull.size(); ++i) {
+            const glm::vec2& a = hull[i];
+            const glm::vec2 edge = hull[(i + 1) % hull.size()] - a;
+            const float length = glm::length(edge);
+            if (length < 1.0e-6f) {
+                continue;
+            }
+            float across = 0.0f;
+            for (const glm::vec2& v : hull) {
+                across = std::max(across, (edge.x * (v.y - a.y) - edge.y * (v.x - a.x)) / length);
+            }
+            narrowest = std::min(narrowest, across);
+        }
+        float inset = std::max(std::min(margin, kMarginWidthShare * narrowest), 0.0f);
+        for (int attempt = 0; attempt < 10; ++attempt, inset *= 0.5f) {
+            std::vector<glm::vec2> inner = hull;
+            for (std::size_t i = 0; i < hull.size() && inner.size() >= 3 && inset > 1.0e-6f; ++i) {
+                const glm::vec2& a = hull[i];
+                const glm::vec2 edge = hull[(i + 1) % hull.size()] - a;
+                const float length = glm::length(edge);
+                if (length < 1.0e-6f) {
+                    continue;
+                }
+                const glm::vec2 inward(-edge.y / length, edge.x / length); // (a CCW hull's left)
+                std::vector<glm::vec2> kept;
+                kept.reserve(inner.size() + 1);
+                for (std::size_t k = 0; k < inner.size(); ++k) {
+                    const glm::vec2& u = inner[k];
+                    const glm::vec2& v = inner[(k + 1) % inner.size()];
+                    const float du = glm::dot(u - a, inward) - inset;
+                    const float dv = glm::dot(v - a, inward) - inset;
+                    if (du >= 0.0f) {
+                        kept.push_back(u);
+                    }
+                    if ((du < 0.0f) != (dv < 0.0f)) {
+                        kept.push_back(u + (v - u) * (du / (du - dv)));
+                    }
+                }
+                inner.swap(kept);
+            }
+            if (inner.size() < 3) {
+                continue; // (the margin swallowed the hull: a smaller one — the hull's alone, not p's)
+            }
+            if (insidePolygon(inner, p)) {
+                return p;
+            }
+            glm::vec2 nearest = inner[0];
+            float nearest2 = 1e30f;
+            for (std::size_t k = 0; k < inner.size(); ++k) {
+                const glm::vec2 c = closestOnSegment(inner[k], inner[(k + 1) % inner.size()], p);
+                const float d2 = glm::dot(c - p, c - p);
+                if (d2 < nearest2) {
+                    nearest2 = d2;
+                    nearest = c;
+                }
+            }
+            return nearest;
+        }
+        return centroid;
+    }
 
     const bool inside = insidePolygon(hull, p);
     glm::vec2 best(0.0f);

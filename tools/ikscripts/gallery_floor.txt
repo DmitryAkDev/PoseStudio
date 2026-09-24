@@ -1,0 +1,244 @@
+# Floor poses, made the way a user makes them: several drags from the side view, each shot from
+# the side and from a three-quarter view. `meshlow` is the SKIN's lowest point (negative = flesh
+# through the floor), which no joint reading shows.
+view right
+
+# A: down onto all fours — a hand to the floor ahead of her, then the other, then the hips down.
+press lHand
+dragv -0.55 -0.80 70 40
+release
+press rHand
+dragv -0.20 -0.10 40 30
+release
+report allfours_hands
+press hip
+dragv 0.10 -0.25 60 40
+release
+report allfours
+shot 51_allfours_side
+orbit 40 -10
+shot 52_allfours_threeq
+reset
+
+# A2: onto all fours the way it is meant to be made — a kneel, then the CHEST taken forward and
+# down until the hands are on the floor. The palms lie flat, the knees stay on the floor and the
+# back is level over them (balance once hauled the hips up onto the toes as the chest went
+# forward: the knees lifted 8cm, and the body dropped back onto them when the hands landed).
+view right
+press hip
+dragv -0.30 -0.62 90 40
+release
+press chest@0.6
+dragv -0.30 -0.10 50 10
+dragv -0.08 -0.10 20 30
+report kneel_allfours
+expect grab < 5
+expect y.lHand < 70
+expect y.rHand < 70
+expect y.lShin < 90
+expect y.rShin < 90
+expect euler.hip.x > 35
+expect meshlow > -15
+expect jump < 80
+expect steps < 1
+shot 51b_kneel_allfours_side
+release
+orbit 40 -10
+shot 52b_kneel_allfours_threeq
+# ... and back up off all fours by the CHEST (the chest taken up and BACK over the hips: in this
+# side view screen-left is her front, so +x is back): she comes up onto her KNEES - the trunk up
+# over the hips, the knees where they were - with her arms HANGING under her shoulders, the hands
+# off the floor and the wrists relaxed. (The arms ended held straight out in front of her:
+# an arm whose hand lifts off the floor hangs from then on, and its hang was blocked by the
+# chest's own volume - the collars shrugged forward on all fours put the upper arm 2mm inside
+# it, and the stop tolerated nothing deeper. And she used to rise straight toward her FEET, the
+# knees 6cm off the floor: a kneeling trunk comes up about the hips first, as a seated one does.)
+view right
+press chest@0.6
+dragv 0.14 0.18 60 40
+report allfours_up
+expect grab < 10
+expect hang.lShldr < 40
+expect hang.rShldr < 40
+expect y.lShin < 90
+expect y.rShin < 90
+expect euler.hip.x < 45
+expect steps < 1
+expect jump < 80
+shot 52d_allfours_up_side
+release
+reset
+
+# A3: onto her belly — from all fours, the HIPS taken far forward and down. The knees stay, the
+# thighs lie forward from them, the feet come up behind, and she lies face down (turn the head or
+# lift the chest after). By the chest it is not a gesture: the planted hands never walk.
+view right
+press hip
+dragv -0.30 -0.62 90 40
+release
+press chest@0.6
+dragv -0.30 -0.10 50 10
+dragv -0.08 -0.10 20 30
+release
+press hip
+dragv -0.30 -0.20 60 10
+dragv -0.15 -0.15 50 40
+report prone
+expect y.hip < 260
+expect euler.hip.x > 50
+expect meshlow > -15
+expect jump < 100
+expect steps < 1
+shot 51c_prone_side
+release
+orbit 40 -10
+shot 52c_prone_threeq
+# ... and back up onto all fours: each hand forward and down onto the floor UNDER THE SHOULDERS,
+# then the hips up. (The hands stay planted while the arms have length to give - a push-up - and
+# the knees stay. From here a second drag of the hips stands her up. Since she lies flat on her
+# belly with the arms folded under her (2026-09-23), the hands start under the chest and a
+# push-up wants them under the shoulders: 14% of the view. Dragged 20% they land ahead of the
+# shoulders, and as the trunk pivots up over the knees the arms go taut before the hips arrive -
+# a hand unloads and lifts, one arm straight and the other in the air.)
+view right
+press lHand
+dragv -0.14 -0.06 40 20
+release
+press rHand
+dragv -0.14 -0.06 40 20
+release
+press hip
+dragv 0.15 0.25 80 40
+report prone_up
+# (Two basins once, 2026-09-23: the arms push straight and she is up on all fours, or they stay
+# folded under and the chest stays down with the hips up (23mm) - which one depended on 1e-7 of
+# rounding in the pose the hand drags began from, until a zero Euler composed to the bind
+# EXACTLY (Armature::recomposePoseLocal), and a dragged hand lies on its palm along the way it is
+# dragged (the hand slide in solveIk), which unfolds the arm as it goes.)
+expect grab < 20
+expect y.lHand < 90
+expect y.rHand < 90
+expect y.lShin < 90
+# (147 at the right forearm: the arm folded under her unfolds in one tick as the hips rise -
+# the soft cost climbs for 25 ticks and lets go at once. A soft spot, 2026-09-23.)
+expect jump < 160
+expect steps < 1
+shot 53c_prone_up_side
+release
+reset
+
+# B: a kneel, then sat back onto the heels.
+view right
+press hip
+dragv -0.30 -0.62 90 40
+release
+press hip
+dragv 0.22 -0.12 60 40
+release
+report sat_on_heels
+expect meshlow > -15
+shot 53_sat_on_heels_side
+orbit 40 -10
+shot 54_sat_on_heels_threeq
+reset
+
+# B2: THE HALF KNEEL - a kneel, then one knee drawn up to hip height and forward: the foot below it
+# swings under the rising knee and lands ahead, flat, the shin coming down from the knee; the other
+# knee stays down. (It used to trail behind at knee height, the shin folded to its limit and the
+# foot up against the thigh - the hang held the foot where the drag FOUND it, behind a kneeling knee.)
+view right
+press hip
+dragv -0.30 -0.62 90 40
+release
+# (Dragged to HIP height - 0.42 of the view is 42cm up here. The 20cm draw it was made with had
+# relied on the hang's old lerp hauling the knee 20cm ABOVE the cursor - 195mm from it; a knee
+# drawn up 20cm out of a kneel now goes 20cm up and stands on a foot placed back, the shin sloping.)
+press lShin@0.05
+dragv -0.16 0.42 80 40
+report half_kneel
+expect y.lShin > 400
+expect y.lFoot < 120
+expect euler.lShin.x < 110
+expect y.rShin < 90
+expect steps < 1
+expect jump < 80
+shot 54b_half_kneel_side
+release
+orbit 40 -10
+shot 54c_half_kneel_threeq
+reset
+
+# C: sitting on the floor, then reclined onto her back by the chest.
+view right
+press hip
+dragv 0.45 -0.85 100 50
+release
+press chest@0.6
+dragv 0.40 -0.30 80 50
+release
+report reclined
+# (Her flesh rests ON the floor, and nothing is flung: her arms once went 70cm in a tick here.)
+expect meshlow > -15
+expect jump < 80
+expect head > 300
+shot 55_reclined_side
+orbit 40 -10
+shot 56_reclined_threeq
+reset
+
+# D: sitting on the floor, a leg stretched out along it.
+view right
+press hip
+dragv 0.45 -0.85 100 50
+release
+press lFoot
+dragv -0.35 -0.02 60 40
+release
+report leg_out
+expect meshlow > -15
+shot 57_sit_leg_out_side
+orbit 40 -10
+shot 58_sit_leg_out_threeq
+reset
+
+# E: sitting on the floor, LAID DOWN ON HER BACK by the chest — and sat back up again. The seat
+# rolls: the pelvis goes over with the trunk (it stayed 40 degrees from the floor once, the spine
+# arched to its limits over it), the arms come to lie beside her, and nothing pops.
+view right
+press hip
+dragv 0.45 -0.95 100 40
+release
+press chest@0.6
+dragv 0.30 -0.20 60 20
+dragv 0.20 -0.25 60 60
+report laid_down
+expect euler.hip.x < -70
+expect tilt.chest > 70
+expect meshlow > -15
+expect jump < 80
+shot 59_laid_down_side
+release
+orbit 40 -10
+shot 60_laid_down_threeq
+view right
+press chest@0.6
+dragv -0.30 0.30 60 20
+dragv -0.15 0.20 60 60
+report sat_back_up
+expect euler.hip.x > -40
+# (The cursor ends a hand's length AHEAD of an upright chest: she leans after it, 44 degrees.)
+expect tilt.chest < 60
+expect meshlow > -15
+expect jump < 80
+# A drag in the sagittal plane leaves her SYMMETRIC: past what a seated trunk reaches this one once
+# bought its last centimetres with the pelvis bone twisted and bent 10 degrees and both legs folded
+# over to one side — which the side view cannot show. Hence the front view below.
+expect euler.pelvis.y < 2
+expect euler.pelvis.y > -2
+expect euler.pelvis.z < 2
+expect euler.pelvis.z > -2
+shot 61_sat_back_up_side
+release
+view front
+shot 62_sat_back_up_front
+quit

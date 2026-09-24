@@ -70,6 +70,22 @@ public:
     /// window renders on demand, not continuously, so this is the only self-rearm signal.
     bool drawFrame();
 
+    /// A frame as presented, read back from the GPU: tightly packed 8-bit RGBA or BGRA rows, top
+    /// row first, already display-encoded (the swapchain is an sRGB format).
+    struct CapturedFrame {
+        uint32_t                   width = 0;
+        uint32_t                   height = 0;
+        bool                       bgra = false;
+        std::vector<unsigned char> pixels;
+    };
+    /// FRAME CAPTURE (the scripted test runner's eyes, VulkanWindow's script): the NEXT drawFrame()
+    /// copies its composited swapchain image into host memory and waits for it — takeCapture()
+    /// then hands it over. It reads what was rendered, not the desktop: an occluded window
+    /// captures as well as a visible one. False from takeCapture when no capture is ready (none
+    /// asked for, the swapchain is not readable, or the frame was skipped by a rebuild).
+    void requestCapture() { m_captureRequested = true; }
+    bool takeCapture(CapturedFrame& out);
+
     /// Records the new physical-pixel size; the actual swapchain rebuild is deferred to
     /// the next drawFrame() so a burst of resize events coalesces into one rebuild.
     void notifyResize(VkExtent2D newExtent);
@@ -113,7 +129,7 @@ private:
     void createSyncObjects();
     void recreateSwapchain();
     /// Records the whole frame graph for one frame — see the file banner and the definition.
-    void recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex);
+    void recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex, VkBuffer captureInto);
 
     VulkanContext& m_context;
 
@@ -140,6 +156,8 @@ private:
     uint32_t   m_currentFrame = 0;
     VkExtent2D m_windowExtent = {0, 0};
     bool       m_framebufferResized = false;
+    bool          m_captureRequested = false; ///< See requestCapture().
+    CapturedFrame m_capture;                  ///< The last captured frame, until taken.
 
     Camera m_camera;
 };

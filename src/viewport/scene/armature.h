@@ -2,22 +2,23 @@
  * @file armature.h
  * @brief The runtime skeleton of a posable figure: its bones, the per-joint pose (Euler rotation
  *        + translation), forward kinematics into skinning dual quaternions, the user's joint
- *        pins, and the full-body-IK integration (armatureik.cpp: the drag lifecycle and its
- *        governors; armatureikextract.cpp: the rotation extraction; armatureikpins.cpp: the
- *        exact pin refinement).
+ *        pins, and the full-body-IK integration (armatureik.cpp: the drag lifecycle;
+ *        armatureiksolve.cpp: the per-tick whole-body solve on scene/ik/jointsolver.h).
  *
  * An Armature is everything about a figure's pose that is NOT geometry: Model owns one next to
  * its meshes and GPU buffers, uploads the dual quaternions it computes, and forwards every posing
  * call to it. The split is load-bearing: the armature is pure std + GLM — no Vulkan, no Qt — so
- * the IK harness (tools/ikharness/) drives the REAL drag loop (solve → extract rotations → FK →
- * next solve) on a real figure's dumped skeleton, tick for tick as the viewport does, instead of
- * a mirror copy that drifts. Anything that changes how a pose is composed, clamped, or extracted
+ * the IK harness (tools/ikharness/) drives the REAL drag loop on a real figure's dumped
+ * skeleton, tick for tick as the viewport does, instead of a mirror copy that drifts. Anything
+ * that changes how a pose is composed, clamped, or solved
  * belongs here, never in Model. A static model (an OBJ) still carries an Armature: empty of
  * bones, it holds the model transform and one identity joint for the shared skinned pipeline.
  */
 
 #ifndef ARMATURE_H
 #define ARMATURE_H
+
+#include "bodymesh.h"
 
 #include <glm/glm.hpp>
 
@@ -32,6 +33,7 @@
 namespace pose {
 
 class IkRig;
+class JointSolver;
 
 /// One bone of an armature, as the importer (or a skeleton dump) describes it. Rest transforms
 /// are TRANSLATION-ONLY (the figure format's convention: a bone's rest frame is axis-aligned with
@@ -59,6 +61,8 @@ struct ArmatureBone {
  * unit dual quaternion for the shaders. The world transform of the whole figure (the model
  * matrix) also lives here — IK, picking, and grounding all need it alongside the pose.
  */
+struct IkSolveScratch; // the per-tick solve's shared stage state (armatureiksolvestate.h)
+
 class Armature {
 public:
     Armature();
@@ -86,6 +90,15 @@ public:
     /// per-axis limits and their enable flags). Returns false (leaving @p out empty) on a read or
     /// parse failure.
     static bool loadDump(const std::string& path, std::vector<ArmatureBone>& out);
+
+    /// The figure's BODY MESH SAMPLE (bodymesh.h): the skinned mesh's bind positions with the
+    /// bone each follows. Set once after build() (the Model at import; the harness from the
+    /// dump's sidecar); the IK rig fits its self-collision volumes to it when it is built
+    /// (IkRig::buildBodyVolumes) — without one the volumes are sized from the skeleton. A rig
+    /// already built is dropped so the next use rebuilds it with the mesh. dump() writes the
+    /// sample next to the skeleton as `<path>.mesh`.
+    void setBodyMesh(std::vector<BodyMeshPoint> mesh);
+    const std::vector<BodyMeshPoint>& bodyMesh() const { return m_bodyMesh; }
 
     // --- Skeleton ---
     bool               hasSkeleton() const { return !m_bones.empty(); }
@@ -136,12 +149,16 @@ public:
 
     // --- Selection (the posing UI's current joint) ---
     int  selectedBone() const { return m_selectedBone; }
-    void setSelectedBone(int index) { m_selectedBone = index; }
+    void setSelectedBone(int index) {
+        m_selectedBone = index;
+        m_ikGrabBone = -1; // (a grab point is the pick's that made the selection: Scene::selectBoneAt sets it after)
+    }
     /// Selects the bone named @p name (diagnostics / the IK benchmark); its index, or -1.
     int selectBoneByName(const std::string& name) {
         const int index = boneIndex(name);
         if (index >= 0) {
             m_selectedBone = index;
+            m_ikGrabBone = -1;
         }
         return index;
     }
@@ -191,28 +208,60 @@ public:
     /// bone.
     bool mirrorSubtreeToOpposite(int index);
 
+    // --- The IK GRAB POINT: where on the selected bone the user took hold ---
+    /// A click picks a bone by its BODY as readily as by its joint, and what the user has hold of
+    /// is the point under the cursor — not the bone's joint, which may be a forearm's length
+    /// away. The drag plane passes through this point and the targets are where IT should go;
+    /// what the solve drags is the nearest REAL joint of the rigid limb segment the point lies
+    /// on (twist bones are part of their segment: a thigh is one piece from socket to knee), the
+    /// point kept under the cursor as that segment turns. Before this the JOINT was asked to the
+    /// cursor: a mid-thigh click hauled the hip socket — the pelvis — 20cm down to the pointer.
+    /// @p worldPoint is taken as rigid with @p bone; cleared by any other selection.
+    void setIkGrabPoint(int bone, const glm::vec3& worldPoint);
+    /// The same by segment share (the harness): @p share of the way from the rigid segment's
+    /// near joint to its far one, the segment being the one @p bone belongs to.
+    void setIkGrabOnSegment(int bone, float share);
+    /// The grab point as the pose has it now (world): the selected joint without one.
+    glm::vec3 ikGrabPointWorld() const;
+
     // --- Full-body IK (scene/ik/): drag a joint, the whole body follows anatomically ---
     /// Begins an FBIK drag of the SELECTED joint: detects which joints are planted on the ground,
     /// pins them (feet for a standing figure — never the hip), and builds the balance support
     /// polygon. Builds the IK rig from the skeleton on first use. Returns false without a
     /// skeleton or selection.
     bool beginIkDrag();
-    /// One FBIK drag update: solves the body so the selected joint reaches toward @p targetWorld
-    /// (constrained multi-chain FABRIK + CoM auto-balance), converts the solved joint positions
-    /// back to per-channel Euler rotations (clamped to the figure's anatomical limits — the
-    /// authoritative constraint pass) plus a root pose-translation, and re-skins. Returns true if
-    /// the pose changed. Correctives are the Model's business (deferred to the drag's end).
+    /// One FBIK drag tick: the whole body is SOLVED, to convergence, so the selected joint sits
+    /// on @p targetWorld with every pin, the floor, the body volumes and balance honoured, directly
+    /// in the pose's own unknowns (the Euler channels inside their authored limits + the root's
+    /// translation — scene/ik/jointsolver.h), and the result is applied in full. Returns true if
+    /// the pose changed (or is still easing). Correctives are the Model's business.
     bool dragIkTo(const glm::vec3& targetWorld);
-    /// One ANIMATED release-settle step: with the drag goal gone, relaxes the body one capped
-    /// round toward its pins (an unreachable goal can hold a foot hovering off its plant; on
-    /// release the feet should visibly land, not pop). Call at the drag tick rate after the mouse
-    /// is released, until it returns false (pins planted / no further progress — each round is
-    /// reverted if it fails to improve the worst pin error, so the settle can never regress).
+    /// One release tick after the button comes up. The pose already satisfies its pins, so there
+    /// is nothing to land — except a pin target still being approached (a hovering figure
+    /// healing onto the floor, a step that was in flight): that finishes here, with a placed hand
+    /// or foot held where it was let go. Call at the drag tick rate until it returns false.
     bool settleIkTick();
     /// Ends the FBIK drag (the solved pose stays).
     void endIkDrag();
     /// The rig (null until the first IK drag built it) — diagnostics and the harness.
     const IkRig* ikRig() const { return m_ikRig.get(); }
+    /// True when the two bones are pieces of ONE rigid limb segment (a bend bone and its twist
+    /// bones: a thigh from socket to knee), or the same bone. The scripted in-app test asks it:
+    /// a pick that lands on a thigh's twist bone HAS found the thigh.
+    bool sameRigidSegment(int a, int b) const;
+    /// The solve's DAMPING level (0 = none ... 3 = strong; process-wide, initial value
+    /// IK_JS_DAMPING or kIkDampingDefault = slight): a converged solve is instantaneous, which
+    /// reads as a touch too snappy, so (1) the POSTURE eases toward its solution over a few ticks
+    /// INSIDE the solve — each channel's posture term also pulls toward the previous tick's
+    /// value, which leaves every constraint row (the cursor, the pins, the floor, the body
+    /// volumes) exact on every tick and the resting pose unchanged; what eases is only the
+    /// body's redundant follow-through — and (2) the cursor target runs through a critically
+    /// damped follower about a tick long, which rounds the starts and stops of the grabbed joint
+    /// itself. (Blending whole poses in joint space, the obvious damping, slides planted feet.)
+    static int ikDamping();
+    static void setIkDamping(int level);
+    static constexpr int kIkDampingDefault = 1;
+    static constexpr int kIkDampingLevels = 4;
 
     // --- User joint pins (see IkRig::beginDrag's userPins): a pinned joint is held exactly where
     // it is through every later IK drag of OTHER joints, until unpinned. Dragging a pinned joint
@@ -228,8 +277,8 @@ public:
     bool selectedBonePinned() const {
         return m_selectedBone >= 0 && isBonePinned(static_cast<std::size_t>(m_selectedBone));
     }
-    bool hasPinnedBones() const;
-    void unpinAllBones();
+    bool hasPinnedBones() const; ///< Any user pin set (the context menu's "Unpin All").
+    void unpinAllBones();        ///< Clears every user pin (an undoable pose edit at the window).
     /// The rig's CONTACT pins (ground-detected, not user pins) while an IK drag is active — for
     /// the overlay's "which feet are planted" markers. Empty outside a drag.
     std::vector<int> activeContactPins() const;
@@ -258,10 +307,19 @@ private:
     /// Re-poses bone @p index from its accumulated Euler (m_boneEuler) in its oriented frame, then
     /// recomputes the skin data. Shared by setBoneRotation() and nudgeSelectedBone().
     void applyBoneEuler(int index);
+    /// Builds the IK rig (graph, constraints, masses, body volumes) from the bind skeleton on
+    /// first use — an IK drag or an FK rotation, which checks the body volumes. False for a
+    /// boneless model.
+    bool ensureIkRig();
+    /// The FK COLLISION STOP's measure: the deepest penetration (m) of any tested joint into
+    /// any body volume (IkRig::bodyVolumes) among the pairs that MOVE relative to each other
+    /// when @p rotatedBone turns — a joint in its subtree against a volume outside it, or the
+    /// reverse. nudgeSelectedBone bisects a rotation back to where this stops growing.
+    float fkVolumeDepth(int rotatedBone) const;
 
     /// Recomposes bone @p index's poseLocal from its current Euler + pose translation:
     /// localBind · orient · R(euler, order) · orient⁻¹, translation added in the parent frame.
-    /// The single composition point every pose path (FK, pose load, IK extraction) shares.
+    /// The single composition point every pose path (FK, pose load, the IK solve) shares.
     void recomposePoseLocal(std::size_t index);
 
     /// Appends bone @p index and every descendant to @p out (anatomical hierarchy).
@@ -274,57 +332,17 @@ private:
     /// through.
     void clampBoneEuler(int index);
 
-    /// Converts an FBIK solve's joint positions back into the engine's pose: walks the anatomical
-    /// hierarchy top-down, absorbs a moved skeleton root into its pose translation, best-fits each
-    /// active bone's world rotation to its solved child directions (aim at the longest child +
-    /// average twist about it), decomposes into the bone's Euler channels, clamps to the authored
-    /// limits, and updates poseGlobal incrementally. Inactive subtrees keep their local pose and
-    /// ride along.
-    void applyIkSolution(const std::vector<glm::vec3>& solved, const std::vector<char>& active,
-                         bool rotationPrior);
-
-    /// EXACT enforcement of the joint pins, run after every governed pose update of an IK tick
-    /// (drag and release settle alike). The solver holds a pin in POSITION space, but the
-    /// applied pose is what the user sees, and the extraction (aim fit, per-joint angular caps,
-    /// limit clamps, the rotational prior) plus the governor's under-relaxation — a blend in
-    /// JOINT space, which does not preserve an end effector's position — land a pinned joint
-    /// millimetres off every tick: visible micro-motion on a joint declared immovable, and
-    /// planted feet that slide by millimetres under a hand drag. This refines each pin's own
-    /// limb chain in joint space — damped least squares on the chain's unlocked Euler channels
-    /// against a numeric Jacobian, limits respected, iterated to 0.1mm — and re-imposes the
-    /// pin's drag-start world orientation exactly (the flat-sole hold in applyIkSolution is
-    /// capped and then relaxed by the governor, so it too left a residual). USER pins are held
-    /// unconditionally, every tick; the drag's CONTACT pins and the released joint the settle
-    /// holds only when @p settling — the release settle is where the pose comes to rest — and
-    /// only as residual cleanup, band-gated and per-tick capped so the landing stays animated
-    /// (see kContactRefineBand; holding contacts exact DURING the drag masked the FK slip that
-    /// is the balance stepper's strain signal, and its pelvis stage fought the solver root).
-    /// The correction is local to each pin's limb and never touches the trunk or another limb.
-    /// With @p dragTarget (a drag tick: the solve target, model space) the GRABBED joint itself
-    /// is refined onto it the same way — the cursor as a pin: the limb closes whatever part of
-    /// the gap it can reach from the current trunk NOW, deterministically, so the hand tracks
-    /// the cursor without lag while the body's redundant motion stays on the damped dynamics
-    /// underneath (and pixel noise passes through 1:1 instead of being amplified ~14x by the
-    /// whole-body solve — the fit is locally linear). The drag correction is a FINISHER: full
-    /// within kDragRefineFull of the target and fading to nothing by kDragRefineFade, so large
-    /// motions stay with the solve's own posture choice (a minimal-norm fit closing a whole
-    /// 15cm foot lift swung the straight leg back at the hip instead of flexing the knee, and
-    /// stalled at half the lift; a nullspace posture bias and column-scaled least squares were
-    /// both measured and rejected). Re-skins once at the end whenever there was a pin, a held
-    /// joint, or a drag target to refine (a no-op only when nothing qualified).
-    void refinePins(bool settling, const glm::vec3* dragTarget = nullptr);
     /// A bone the user rotated by the X/Y/Z wheel DURING an IK drag (nudgeSelectedBone with a
-    /// drag active): its channels leave the drag-tick rotational prior for the rest of the
-    /// drag (the prior would decay the rotation back toward the drag start at 5%/tick), and a
-    /// promoted drag's grab offset is re-captured in the effector's current frame (rotating a
-    /// grabbed finger moves it relative to the solved hand — the cursor must keep tracking the
-    /// finger). The grabbed joint's own rotation is otherwise free to the user: the extraction
-    /// fits only bones with active children, and the grabbed joint's subtree rides.
+    /// drag active): the rotation is the user's — the posture reference takes it, so the solve
+    /// never eases it back — and a promoted drag's grab offset is re-captured in the effector's
+    /// current frame (rotating a grabbed finger moves it relative to the solved hand; the cursor
+    /// must keep tracking the finger).
     void holdNudgedBoneThroughDrag(int bone);
 
     std::vector<Bone>                    m_bones;
     std::unordered_map<std::string, int> m_boneIndex; // bone name -> index into m_bones
     std::vector<std::string>             m_boneNames;  // parallel to m_bones (for the posing UI)
+    std::vector<BodyMeshPoint>           m_bodyMesh;   // see setBodyMesh()
     glm::mat4                            m_transform{1.0f};
     std::vector<glm::vec3>               m_boneWorldPos; // current world position per bone (overlay/pick)
     // Per bone: its highlight TWIN (-1 if none). Figures split each limb segment into a bend
@@ -333,7 +351,7 @@ private:
     // (bend -> its twist child, twist -> its bend parent), so grabbing the upper-arm joint lights
     // the whole upper arm rather than the half the bend bone's own weights cover.
     std::vector<int>                     m_highlightTwin;
-    std::vector<std::vector<int>>        m_children;   // anatomical children per bone (subtree walks, the IK extraction's aim search)
+    std::vector<std::vector<int>>        m_children;   // anatomical children per bone (subtree walks, the foot contact model's ball search)
     std::vector<int>                     m_mirrorBone; // the other side's bone per bone (self for centre)
     std::vector<glm::mat4>               m_poseGlobal;  // scratch for computeSkinMatrices (it runs per drag-move; no per-call allocation)
     std::vector<glm::vec3>               m_boneEuler;  // accumulated pose rotation per bone (degrees)
@@ -347,100 +365,368 @@ private:
     std::vector<glm::vec4>               m_skinDualQuats;
     std::uint64_t                        m_skinVersion = 0;
 
-    // Full-body IK: the rig (graph + constraints + masses, built lazily on the first IK drag),
-    // plus the model-space bind joint positions the extraction walk reads (built alongside — they
-    // provide the rest aim offsets across the rigid twist-bone links extraction looks through;
-    // the children lists it walks are the skeleton's own m_children).
+    // Full-body IK: the rig (the drag's policy: body tree, masses, volumes, contacts — built
+    // lazily on first use), the joint solver's skeleton, and the model-space bind joint positions
+    // (the foot contact model finds the ball of a foot by bind height).
     std::unique_ptr<IkRig>        m_ikRig;
     std::vector<glm::vec3>        m_ikBindPos;
-    // WEIGHT-BEARING feet: each planted (pinned) foot bone and its drag-start model-space
-    // rotation. The extraction preserves that world orientation while the pin holds, so the
-    // sole stays flat on the floor as the body moves above it (a solver-side sole pin fought
-    // the ankle and curled toes; orientation preservation at extraction fights nothing).
+    // HELD ORIENTATIONS: each pin's drag-start world rotation — a planted foot keeps its sole
+    // flat on the floor as the body moves above it, a user pin is held in all six degrees.
     std::vector<int>              m_ikFlatNodes;
     std::vector<glm::mat3>        m_ikFlatRot;
+    // Parallel to m_ikFlatNodes: the pin each entry belongs to. A CONTACT pin's whole subtree
+    // (a foot's metatarsals and toes) is listed after the pin itself with the pin as owner: the
+    // solve holds the BALL of the foot's orientation from it, so when a deep crouch pitches
+    // the sole past the ankle's range the toes bend back and stay flat on the floor.
+    std::vector<int>              m_ikFlatOwner;
+    /// Captures the flat-sole hold (m_ikFlatNodes/Rot/Owner) from the rig's pins: each pin and,
+    /// for a contact pin, its whole subtree, at their CURRENT world orientation (a drag start)
+    /// or at the REST orientation (a landing out of suspension: the feet that dangled pitched
+    /// roll flat onto the floor at the hold's capped pace). A user pin's own node always keeps
+    /// its current orientation (the pin is held 6-DoF).
+    void captureFlatHold(bool restOrientation);
     // User joint pins (per bone, see togglePinSelectedBone): persistent until unpinned.
     std::vector<char>             m_bonePinned;
-    // Bones exempt from the drag-tick rotational prior for the current drag: the LIMB chain of
-    // each user pin (pin up to where its limb joins the axial skeleton — the rig's mass-based
-    // junction, IkRig::userPinLimbNodes). Those joints are fully determined
-    // by the pin's restoration every tick, and the prior — decaying toward the drag-START
-    // pose — could only fight the pin there: a hand pinned through a crouch ratcheted 8cm off
-    // its pin during the still hold as the prior pulled the arm back toward its standing pose.
-    // Also any bone the user rotated by the wheel mid-drag (holdNudgedBoneThroughDrag).
-    std::vector<char>             m_ikRotPriorExempt;
-    // The DRAGGED limb's chain (limb effectors only): exempt from the drag-tick rotational
-    // prior on its SWING channels only. The finisher determines those every tick (under the
-    // prior a lifted foot's knee crept and snapped), but an UNWITNESSED twist channel — a
-    // nearly straight limb, whose fold plane the witness cannot read — must still decay toward
-    // the drag start: fully exempt, the upper-arm twist parked at its -95° limit during a
-    // return-to-rest, the solver then folded the elbow in a plane the pose could not realize,
-    // and a fast flick toward the chest ran the arm 50cm away from the cursor.
-    std::vector<char>             m_ikRotPriorSwingExempt;
-    // Drag-start Euler pose: the ROTATIONAL prior. The extraction's aim fit determines only
-    // part of each joint's rotation (a single aim child leaves twist unwitnessed), and the
-    // undetermined components RATCHET across ticks — the spine's forward-biased limits turned
-    // that random walk into a visible bow whenever a hand was pulled up. During drag ticks the
-    // fitted angles decay gently toward these start values: determined components are re-imposed
-    // by the next fit anyway, so only the drift is cleaned.
+    // The drag-start Euler pose: the solve's POSTURE REFERENCE (every channel is pulled back
+    // toward it — what makes the solved pose a function of the targets).
     std::vector<glm::vec3>        m_ikStartEuler;
-    // Previous drag tick's APPLIED per-bone deltas (Euler degrees / pose translation), for the
-    // governor's reversal-gated micro-motion damping: a delta OPPOSING the previous tick's is
-    // the loop's own tick-scale oscillation and is attenuated; sustained motion passes at full
-    // rate (magnitude-gated damping shaved a raising arm's climb enough that the rotational
-    // prior's take-back overcame it — the hand visibly sank mid-raise).
-    std::vector<glm::vec3>        m_ikPrevEulerDelta;
-    std::vector<glm::vec3>        m_ikPrevTransDelta;
-    // Last tick's APPLIED worst-joint world speed — the velocity state of the governor's
-    // motion shaping (see kIkAccel/kIkDecel in armatureik.cpp): the per-tick movement allowance
-    // may grow at most kIkAccel over this (ease-in) and is bounded by the braking curve toward
-    // the goals (ease-out), so gestures accelerate and decelerate like real limbs instead of
-    // snapping to a constant governor rate. Zeroed when a tick applies nothing (frozen hold).
-    float                         m_ikAppliedSpeed = 0.0f;
-    // Last tick's APPLIED speed of the GRABBED joint itself: the motion shaping bounds the
-    // effector's own step as well as the worst joint's (with the fold plane free to swing, the
-    // elbow is often the worst joint, and the hand could then jump 15mm in one tick — exactly
-    // the mechanical ramp the shaping exists to prevent).
-    float                         m_ikAppliedEffSpeed = 0.0f;
     // Grab offset (model space) for a PROMOTED drag: the rig solves the limb's real end joint
     // (a finger grab drives the HAND — see IkRig::dragEffector), so the window's targets, which
     // track the grabbed joint, are shifted by (grabbed - solved) captured at drag start.
     glm::vec3                     m_ikGrabOffset{0.0f};
+    // The grab point (setIkGrabPoint): the bone it is rigid with (-1: none, the selected joint
+    // itself) and its place in that bone's frame; and, for the drag it began, the rigid limb
+    // segment it lies on — near joint, far joint, the point's share of the way — and whether the
+    // FAR joint is what the solve drags (see beginIkDrag / dragIkTo).
+    int                           m_ikGrabBone = -1;
+    glm::vec3                     m_ikGrabLocal{0.0f};
+    int                           m_ikSegmentNear = -1;
+    int                           m_ikSegmentFar = -1;
+    float                         m_ikSegmentShare = 0.0f;
+    bool                          m_ikGrabFarJoint = false;
+    bool                          m_ikGrabMeasured = false; ///< the grab's offset from the effector is read off the pose each tick
+    glm::vec3                     m_ikSegmentPrevNear{0.0f}; ///< the segment's joints at the last tick, and from them
+    glm::vec3                     m_ikSegmentPrevFar{0.0f};
+    bool                          m_ikSegmentPrevValid = false;
+    float                         m_ikSegmentTranslating = 0.0f; ///< ... how much of the far joint's travel is the limb translating (see dragIkTo)
+    /// A TWIST bone: two locked swing channels and the free one ALONG the bone (a thigh's or a
+    /// forearm's twist helper) — part of its limb's rigid segment, never a joint of its own.
+    bool isTwistBone(int bone) const;
+    /// The child a limb continues through: the one with the biggest subtree (-1 for a leaf).
+    int  mainChild(int bone) const;
+    /// The rigid limb segment @p bone belongs to: its near joint (up past any twist bones) and
+    /// its far joint (down the main child past them); false for a leaf.
+    bool rigidSegment(int bone, int& nearJoint, int& farJoint) const;
     // The solved effector's world rotation at drag start: the grab offset is carried through
     // the effector's rotation since (offset_now = R_now * R_start^-1 * offset), so a finger
-    // grab keeps tracking the FINGER when the hand twists — with the solver now free to twist
-    // the forearm, a constant offset missed the fingertip by up to twice its length.
+    // grab keeps tracking the FINGER when the hand twists.
     glm::mat3                     m_ikGrabRotStart{1.0f};
     // The model matrix's inverse, cached at drag start: the transform is fixed for a drag's
     // duration (a press completes any ground fall first, and the Ground button is ignored
     // mid-drag), and dragIkTo maps every tick's world-space target through it.
     glm::mat4                     m_ikInvTransform{1.0f};
-    // Previous drag target (model space): the world-space governor's per-event pose budget is
-    // PROPORTIONAL to how far the target actually moved — a still-but-noisy cursor earns only a
-    // millimeter budget (kills trembling), a fast pull earns the full step.
-    glm::vec3                     m_ikPrevTarget{0.0f};
-    bool                          m_ikPrevTargetValid = false;
-    // Settle-freeze state: while the target is still, worst-goal-error minima are collected in
-    // 6-tick windows; when a window fails to improve on the previous one, solving FREEZES until
-    // the target moves again. Window minima are oscillation-robust (churn can't fake envelope
-    // improvement), while genuine slow catch-up (feet re-planting) keeps improving and stays
-    // live until done — the two things a per-tick movement test cannot tell apart.
-    int                           m_ikStillTicks = 0;
-    float                         m_ikErrCurMin = 1e30f;
-    float                         m_ikErrPrevMin = 1e30f;
-    bool                          m_ikFrozen = false;
     int                           m_ikSettleTicks = 0; ///< Animated release-settle tick budget.
-    // The worst pin error at the release settle's first tick — the STRAIN the drag left in the
-    // planted feet. A LIMB effector's pose-hold bound (the released hand/foot stays within 2cm
-    // of where it was let go) scales up with it (3x, at most 10cm): a beyond-reach pull leaves a
-    // foot centimetres in the air, and planting it costs the hand a few centimetres — a figure
-    // standing on air is the worse artifact. A TRUNK effector (IkRig::effectorIsTrunk) always
-    // gets the 10cm bound: planting the feet after a chest/hip drag necessarily moves the trunk.
-    float                         m_ikSettleStrain = 0.0f;
-    // Stillness is CUMULATIVE drift from this anchor, not per-tick deltas: a slowly creeping
-    // target (sub-mm per event) must keep the solve live — it accumulates past the threshold and
-    // re-anchors — while zero-mean cursor noise stays inside the ball and allows the freeze.
-    glm::vec3                     m_ikStillAnchor{0.0f};
+    // --- The per-tick solve (armatureiksolve.cpp) ---
+    std::unique_ptr<JointSolver>  m_jointSolver;          ///< Built with the rig.
+    std::vector<int>              m_jsTwistAxis;          ///< Per bone: its twist channel, or -1.
+    /// An arm that hung at the press (hangIdleArms): its shoulder socket, its elbow, and the upper
+    /// arm's direction then (socket to elbow, model space, unit).
+    struct HangArm {
+        int       socket = -1;
+        int       elbow = -1;
+        glm::vec3 direction{0.0f, -1.0f, 0.0f};
+        /// Where it WANTS to point (world, at the heading the drag found): `direction` for an arm
+        /// that hung at the press; straight down by her side for one that did not and is the
+        /// hang's all the same (a seated figure's trunk drag: hangIdleArms).
+        glm::vec3 wants{0.0f, -1.0f, 0.0f};
+        /// How far inside a body volume the arm stood when the drag began (the hang's stop lets
+        /// it settle a little deeper than that, never more: hangIdleArms).
+        float depthAtPress = 0.0f;
+        /// Its hand came down on the floor DURING this drag: the solve has the arm from then on,
+        /// and balance stays blind to it (balancePositions).
+        bool landed = false;
+        /// Its hand was ON THE FLOOR when the drag began (a contact): once that contact is unloaded
+        /// or lifted the wrist RELAXES toward neutral (hangIdleArms) — riding its posture reference,
+        /// a hand lifted off all fours stayed bent back 80 degrees, flat, held out like a paw.
+        bool handLandedAtPress = false;
+        /// The elbow's fold channel and the way it flexes (+1 / -1), and the arm's hand (-1: none found).
+        int   foldAxis = 0;
+        float foldSign = 1.0f;
+        int   hand = -1;
+    };
+    std::vector<HangArm>          m_jsHangArms;
+    bool                          m_jsHangArmsFound = false;
+    /// Per bone: where a POST-STEP (the arms' hang, the head's righting) last left it, and whether
+    /// one has turned it this drag. When such a bone becomes one of the SOLVE's unknowns — a hanging
+    /// hand comes down on the floor and is a contact, the body is lifted and every segment is the
+    /// solve's — its posture reference is THIS, not the drag-start value the post-step turned it
+    /// away from (see solveIk).
+    std::vector<glm::vec3>        m_jsPostStepEuler;
+    std::vector<char>             m_jsPostStepTurned;
+    /// THE HEAD STAYS UP (rightIdleHead): the neck's bones, parent first, ending in the head; the
+    /// bone they hang from (the chest); and the righting the drag FOUND there, in the chest's frame
+    /// — what is left of the head's pose without it is the user's, over and above the righting.
+    std::vector<int>              m_jsHeadChain;
+    /// ... and the bones of it the righting HAS, this tick: those the solve does not (under a head
+    /// drag the solve bends the neck and the righting has the head bone alone). Balance is blind
+    /// to these, and to these only.
+    std::vector<int>              m_jsHeadFree;
+    int                           m_jsHeadBase = -1;
+    glm::mat3                     m_jsHeadIntrinsic{1.0f}; ///< The drag-start righting, in the chest's frame (see rightIdleHead).
+    bool                          m_jsHeadFound = false;
+    /// How far the pelvis's pitch is an unknown of this trunk drag (solveIk: the bow), 0-1.
+    float                         m_jsTrunkHinge = 0.0f;
+    std::vector<int>              m_jsSpineChain;         ///< -1, then the spine's bones from the root's spine child to the chest junction (lazily; empty = not searched)
+    std::vector<glm::vec3>        m_jsStartTranslation;   ///< Drag-start pose translations.
+    /// Per bone: the pin target the solve is USING — the rig's, approached at a capped pace
+    /// whenever the rig moves one (ground healing, a heel lift, a landing).
+    std::vector<glm::vec3>        m_jsPinTarget;
+    std::vector<char>             m_jsPinTargetValid;
+    bool                          m_jsPinsEasing = false; ///< A pin target is still en route.
+    /// The release SETTLE is the drag continued under a still cursor (settleIkSolveTick): the
+    /// followed target the last drag tick solved to, and the flag that keeps the rig from
+    /// reading new intents or beginning new steps meanwhile.
+    glm::vec3                     m_jsSettleTarget{0.0f};
+    bool                          m_jsSettling = false;
+    /// Per bone: the BALL of the foot under a standing contact pin at that bone (-1 = none,
+    /// -2 = not looked for yet this drag), and the ball's offset from the ankle when the pin
+    /// was first seen — the foot contact model of solveIk.
+    std::vector<int>              m_jsBall;
+    std::vector<std::vector<int>> m_jsToeMates;  ///< Per pin node: the ball's sibling toe bases on a rig whose toes fan from the mid-foot (unknowns, held flat like the ball).
+    std::vector<glm::vec3>        m_jsBallOffset;
+    /// The ball's own eased target (see solveIk): it starts where the ball is and approaches the
+    /// pin target + m_jsBallOffset at the pins' pace. The offset is relative to the pin's PLANTED
+    /// target with the ball at ITS OWN floor height — a drag that begins with the heels lifted
+    /// (a deep crouch, a kneel) heals the ankle's pin down to standing height, and a ball
+    /// carried rigidly below the ankle was driven that far under the floor.
+    std::vector<glm::vec3>        m_jsBallTarget;
+    glm::vec3                     m_jsKneeUnderEased = glm::vec3(0.0f); ///< a dragged knee's foot target (kneeHangUnder), approached at the pins' pace
+    char                          m_jsKneeUnderValid = 0;
+    std::vector<float>            m_jsFootAllow;          ///< a letting-go foot's joints' depth through the floor at the release's first tick (m): forgiven by its floor rows
+    char                          m_jsFootAllowValid = 0;
+    /// The ankle's offset from the ball as the drag found the foot (see the heel row in solveIk).
+    std::vector<glm::vec3>        m_jsHeelOffset;
+    std::vector<char>             m_jsBallTargetValid;
+    /// The balance requirement's RAMP (JointSolver::Problem::balanceSlack): how far outside
+    /// the support polygon the centre of mass may still sit. Set to the current distance
+    /// whenever the support changes (the drag's start, a foot lifted, a contact planted) and
+    /// taken back a centimetre a tick, so the body shifts over its support instead of jumping.
+    float                         m_jsBalanceSlack = 0.0f;
+    float                         m_jsHullKey = -1.0f;    ///< The support polygon it was set for.
+    std::vector<glm::vec2>        m_jsLastSupport;        ///< The solve's support polygon, last tick (whole).
+    std::vector<glm::vec2>        m_jsGrowFrom;           ///< The polygon a grown support is growing out of,
+    float                         m_jsGrown = 0.0f;       ///< ... and how far it has grown, metres.
+    float                         m_jsBalanceBase = -1.0f; ///< The drag-start imbalance: never asked back.
+    glm::vec3                     m_jsHold{0.0f};         ///< The released joint's hold (settle).
+    /// The damped follower's state (see ikDamping): the target the solve is given and
+    /// its velocity per second; seeded at the first tick of a drag from the raw target.
+    glm::vec3                     m_jsFollowPos{0.0f};
+    glm::vec3                     m_jsFollowVel{0.0f};
+    bool                          m_jsFollowValid = false;
+    /// The drag's first target (the grab point) and the pelvis's VERTICAL YIELD derived from how
+    /// far, and how vertically, the target has gone below it — or above it, when the drag began
+    /// with height left in the legs (0-1; see kRootYieldStiffness).
+    glm::vec3                     m_jsStartTarget{0.0f};
+    /// True for a drag that BEGAN with the pelvis resting on the floor (IkRig::floorSeat as the
+    /// rig found the pose): the seat rocks and ROLLS under a chest or head drag (solveIk).
+    bool                          m_jsFloorSeatStart = false;
+    /// The kneeling seat's height (IkRig::kneelSeatHeight) as the drag found it, for a drag that
+    /// began on her knees: the trunk's rise is measured about it (dragIkTick). Negative otherwise.
+    float                         m_jsKneelSeatY = -1.0f;
+    glm::vec3                     m_jsKneelSeat = glm::vec3(0.0f, -1.0f, 0.0f); ///< ... and the seat POINT (IkRig::kneelSeat), a constant of the drag
+    int                           m_jsSeatNode = -1; ///< ... and the joint she sat on (IkRig::floorSeatNode)
+    /// True for a drag that BEGAN ON HER KNEES (IkRig::onKnees as the rig found the pose): the
+    /// trunk folds at the hips over them under a chest or head drag, as it does standing (solveIk).
+    bool                          m_jsKneelStart = false;
+    /// A HAND ON THE FLOOR holds its place at its FINGERTIP (solveIk): per bone, a hand's longest
+    /// rider by bind distance (-1: not a hand; found once per rig), where that tip is held, and
+    /// whether it is being held.
+    std::vector<int>              m_jsHandTip;    ///< per WRIST (see m_jsWristOf)
+    /// Per bone: the WRIST of the hand it is a part of (the wrist itself included), -1 elsewhere.
+    /// Found by structure (ensureHandMaps): below an elbow, down the main children past the
+    /// forearm's twist bones, the first bone with two free channels. The generations cut a hand
+    /// differently - on some the CARPALS are real joints and the fingers ride them, and a hand
+    /// lands on those: whichever joint of it touches, it is ONE hand, held once.
+    std::vector<int>              m_jsWristOf;
+    void                          ensureHandMaps();
+    std::vector<glm::vec3>        m_jsHandTipTarget;
+    std::vector<char>             m_jsHandTipValid;
+    std::vector<glm::vec3>        m_jsHandHeading; ///< ... and the way its fingers point along the floor, as it landed
+    std::vector<glm::mat3>        m_jsPalmFrom;    ///< ... the hand's rotation as it landed, and how far the palm's
+    std::vector<float>            m_jsPalmEase;    ///<     target has turned from it toward flat (0-1)
+    /// Per bone, ACROSS drags: a floor contact that formed by itself on an arm that hung (the
+    /// hang's arm came down with the body) — not one the user placed. Cleared for an arm when a
+    /// joint of it is grabbed. IkRig::setIncidentalContacts has what it is for.
+    std::vector<char>             m_incidentalContact;
+    /// Per bone: how far GONE a live contact's hold was last tick (0..1; solveIk's fade, eased).
+    std::vector<float>            m_jsContactGone;
+    /// Per node, this tick: a live contact whose hold the solve has faded out entirely (the rise, a
+    /// kneel-up). Its pin stands until the rig's lift-off, but it holds nothing — and its arm is the
+    /// hang's (hangArmHeld), not a rider's: unloaded under a kneel-up the hands rode the rising
+    /// trunk forward-down and lay on the floor ahead of her, arms straight, until the pins went.
+    std::vector<char>             m_jsContactUnloaded;
+    /// Per bone: a hard live contact (a knee over its planted foot) that is still COMING DOWN — it
+    /// is re-seated where it lands (dragIkTick).
+    std::vector<char>             m_jsContactLanding;
+    /// The pelvis's tilt price scale on planted knees, as the last tick had it (eased: solveIk).
+    double                        m_jsKneelTilt = 1.0;
+    /// True while the seat ROLLS (solveIk: a floor sit's chest or head drag): the idle arms keep
+    /// off the floor instead of landing on it (hangIdleArms).
+    bool                          m_jsSeatRolls = false;
+    float                         m_jsRootYield = 0.0f;
+    /// The target's DOWNWARD travel since the drag began, as a share (kHandCeilingDownFrom..Full):
+    /// a body coming down stands the slack hands' ceilings down (solveIk).
+    float                         m_jsTargetDown = 0.0f;
+    /// The RISING part of it alone (0-1): it also yields the pelvis's HORIZONTAL price — a body
+    /// getting up out of a kneel or a sit must carry its hips back over its feet.
+    float                         m_jsRootRise = 0.0f;
+    /// ... and the body's rise over the LOWEST its target has been in THIS drag (m_jsLowestTargetY;
+    /// the same reductions as m_jsRootRise, no room factor): what UNLOADS the live contacts a
+    /// drag made on its way down when it comes back up. Held by their own rise alone, a figure
+    /// taken down onto all fours and back up in one drag kept both hands on the floor - the trunk
+    /// folding at the hips to leave them there - on the five rigs whose arms could reach.
+    float                         m_jsContactRise = 0.0f;
+    float                         m_jsProneShare = 0.0f;   ///< a pelvis drag's hips AHEAD of a planted knee (solveIk): the pelvis's tilt price and the feet's rows fade with it
+    float                         m_jsKneelUpRise = 0.0f;  ///< a kneel-start TRUNK drag's upward travel (smoothstep 5-20cm): it unloads the HAND contacts, whose arms cannot always make the rise that would (dragIkTick)
+    float                         m_jsKneelHold = 0.0f;    ///< a kneel-start TRUNK drag's hold of the knees DOWN (a ceiling): 1 while the trunk can give what is asked, or for the whole drag when it began folded (dragIkTick)
+    glm::vec3                     m_jsKneelSeatShift = glm::vec3(0.0f); ///< a kneel-up's hips' home over where the drag found them: to the kneeling seat over the planted knees, by the target's uprightness (dragIkTick)
+    float                         m_jsKneelUpright = 0.0f; ///< ... and the uprightness that shift is by (0-1): the horizontal price yields to it
+    float                         m_jsKneelYield = 0.0f;   ///< a kneel-start drag's push DOWN, by its downward travel alone (no share gate): both pelvis prices yield to it under a trunk drag
+    float                         m_jsLowestTargetY = 0.0f;
+    /// How far along the rise is (0-1): the height regained over the height the legs had left.
+    float                         m_jsRiseProgress = 0.0f;
+    /// The solve root's Euler pose with its drag-start HEADING and no pitch or roll: what its
+    /// rotation's posture reference turns to as the body rises (see rootTurns in solveIk).
+    glm::vec3                     m_jsRootUprightEuler{0.0f};
+    /// The root's heading (its yaw about the vertical, radians) and the solved effector's
+    /// position from the root, both as the drag began: the hips are drawn under a trunk joint
+    /// that is pulled up out of a low pose (see trunkRise in solveIk).
+    float                         m_jsRootHeading = 0.0f;
+    glm::vec3                     m_jsStartGrabFromRoot{0.0f};
+    /// The solved effector's world rotation and position as the drag began: a dragged FOOT's sole
+    /// is held to it while the foot is on the floor (see the slide in solveIk).
+    std::vector<glm::vec3>        m_jsStartPos;  ///< every joint's model-space position as the drag began
+    std::vector<glm::mat3>        m_jsStartRot;  ///< ... and its world rotation
+    bool                          m_jsTrunkInSolve = false; ///< a pelvis drag's spine chain, once among the unknowns
+    /// How far a dragged trunk joint is taking the HIPS across the floor (model xz; see solveIk's
+    /// trunk follow), and whether this drag has ever been suspended (a lifted body's travel is
+    /// not a walk's: no follow after it).
+    glm::vec2                     m_jsTrunkFollow{0.0f};
+    glm::vec2                     m_jsUnfoldShift = glm::vec2(0.0f); ///< ... and the hips' home under a trunk that comes MORE UPRIGHT than the drag found it (x/z; solveIk)
+    float                         m_jsTrunkCounter = 0.0f; ///< how far the pelvis's horizontal price yields to a lean that has run out of balance room (a stance that cannot walk)
+    float                         m_jsTrunkWalk = 0.0f; ///< how far the stance can WALK after a followed trunk drag (0: it keeps its balance)
+    bool                          m_jsWasSuspended = false;
+    float                         m_jsLeanMoment = -1.0f; ///< the upper body's mass moment over the hips / the body's mass (per drag, lazily)
+    glm::vec2                     m_jsStartCom{0.0f};     ///< the centre of mass at the press (model xz), with it
+    std::vector<int>              m_jsStartStanceNodes;   ///< ... and the LIVE contacts the lean found when first measured: the lean's room is the stance's and theirs, never a contact the drag itself makes (solveIk)
+    int                           m_jsLimbSocket = -1;     ///< a dragged LIMB's socket joint and its reach from it (the rise: dragIkTick); -1 = not yet found
+    float                         m_jsLimbReach = 0.0f;
+    bool                          m_jsLiftEasing = false;  ///< a lift is being eased in (dragIkTick)
+    glm::vec3                     m_jsLiftDeficit{0.0f};   ///< ... what of the lift's first miss is still owed
+    glm::vec3                     m_jsHangDeficit{0.0f};   ///< ... and how far the root still is from hanging under the hand
+    bool                          m_jsWasSwinging = false; ///< a step was in flight at the last solve (the balance ramp's key)
+    /// The hip hinge's release slack once a pelvis drag has stepped (see solveIk's pelvisBalance).
+    float                         m_jsHingeRelease = 0.0f;
+    glm::vec3                     m_jsPrevGoal{0.0f}; ///< the last tick's solve target (the continuation walks its MOVE)
+    glm::vec3                     m_jsSolveGoal{0.0f}; ///< the target this tick's solve worked to (a knee's, an elbow's: on their reach)
+    bool                          m_jsPrevGoalValid = false;
+    glm::mat3                     m_jsEffectorStartRot{1.0f};
+    glm::vec3                     m_jsEffectorStartPos{0.0f};
+    float                         m_jsHandSlideEase = 0.0f;   ///< A dragged hand's palm-flat hold, eased in from the rotation the drag found it at (solveIk).
+    /// The height the legs had left to give when the drag began (model metres): the solve
+    /// root's standing height over the floor less its height then. ~0 standing, the crouch's
+    /// depth crouched, negative hovering.
+    float                         m_jsRootRiseRoom = 0.0f;
+    bool                          m_jsHoldValid = false;
+    void buildJointSolver();
+    /// One solve of the current drag's tasks, applied in full: toward @p dragTarget (a drag
+    /// tick), or with the released joint held at @p holdTarget / free (the release). Returns
+    /// whether the pose changed.
+    bool solveIk(const glm::vec3* dragTarget, const glm::vec3* holdTarget);
+    // The solve's STAGES, in the order solveIk runs them: each is a member function over the
+    // tick's shared IkSolveScratch (armatureiksolvestate.h), and begins by naming the members it
+    // reads and writes. armatureiksolve.cpp's file comment is the map.
+    // --- armatureiksolvedrag.cpp — what the drag IS and which channels answer it ---
+    /// The UNKNOWNS: which bones' channels the solve owns (the active paths, the pins, the toes), the
+    /// foot contact model's balls, and whether the root rotates.
+    void ikChooseUnknowns(IkSolveScratch& s);
+    /// The TRUNK's policy for this tick: the trunk follow and the unfold, the hip sway, the hip hinge's
+    /// balance, and whether the spine chain is among the unknowns.
+    void ikTrunkPolicy(IkSolveScratch& s);
+    /// The STIFFNESS CLASSES: which bones are the dragged limb, which serve a pin (and carry the limb
+    /// twist price), a landed hand's arm, the pinned joints, the pelvis bone, and what goes home as the
+    /// body rises.
+    void ikStiffnessClasses(IkSolveScratch& s);
+    /// A FOOT drag: the SLIDE (how much a dragged foot is on the floor), which is what reshapes the
+    /// stance.
+    void ikFootDrag(IkSolveScratch& s);
+    /// A KNEE drag: the knee's goal over its planted foot, or the foot letting go as the knee lifts
+    /// (`plant`), the lateral reach clamp and the goal's raise.
+    void ikKneeDrag(IkSolveScratch& s);
+    /// An ELBOW drag: the elbow's goal on the upper arm's reach, the hand that tends to stay, a pin
+    /// below the elbow that holds.
+    void ikElbowDrag(IkSolveScratch& s);
+    // --- armatureiksolveposture.cpp — the posture model that prices them ---
+    /// The POSTURE MODEL: every unknown's stiffness and reference (the trunk drag, the seat roll, the
+    /// sagittal lock, the kneel tilt, the rise home, the root's home).
+    void ikPostureModel(IkSolveScratch& s);
+    /// The spine's COUPLING rows (the neck as its top, the pelvis's hinge as its base) and the posture
+    /// EASING.
+    void ikSpineCoupling(IkSolveScratch& s);
+    // --- armatureiksolverows.cpp — the rows the solver satisfies ---
+    /// The PIN ROWS, part one: the per-drag state the pins' rows share (the eased pin targets, the palm
+    /// and fingertip rows, the ceilings, the rise positions).
+    void ikPinRowsBegin(IkSolveScratch& s);
+    /// The PIN ROWS of ONE pin: a user pin's hold, a standing foot's contact model (ball, heel, sole,
+    /// toes), a live contact's fading unilateral hold, a landed hand's palm and fingertip, the knee-
+    /// drag foot's release.
+    void ikPinRows(IkSolveScratch& s, std::size_t p);
+    /// The PIN ROWS, part three: the rows that need every pin known — the letting-go foot's spring and
+    /// hang, the elbow drag's hand hold, the knee's hanging foot.
+    void ikPinRowsEnd(IkSolveScratch& s);
+    /// The CURSOR's row and its company: the hips drawn under a rising trunk, the sway's level chest, a
+    /// slid foot's sole, a hand slid along the floor, a suspended body's hang.
+    void ikCursorRows(IkSolveScratch& s);
+    /// The BALANCE row: the support polygon (grown into, a stepping foot kept in it), the slack ramp,
+    /// the hinge's and the follow's release, the seat that keeps no balance.
+    void ikBalanceRow(IkSolveScratch& s);
+    /// The FLOOR's and the BODY VOLUMES' one-sided rows: the exemptions, a letting-go foot's scale and
+    /// allowance, the ceilings, and the plane source the solver regenerates at every linearization.
+    void ikPlaneRows(IkSolveScratch& s);
+    // --- armatureiksolve.cpp — the solve and the pose applied ---
+    /// The SOLVE: the pose as it stands, the settings, and the continuation over a cursor jump.
+    void ikSolve(IkSolveScratch& s);
+    /// APPLY the solved pose in full: every channel and the root's translation, then the skin matrices.
+    void ikApply(IkSolveScratch& s);
+    /// The solve's TRACES (POSESTUDIO_IK_TRACE, IK_JS_JACOBIAN_CHECK, IK_JS_FAR_ROWS, IK_JS_COST_TRACE,
+    /// IK_JS_POSE_TRACE): probes only, no effect on the pose.
+    void ikSolveTraces(IkSolveScratch& s);
+    /// A dragged knee's hanging foot: where it hangs from the knee's goal, and its eased target.
+    glm::vec3 ikKneeHangOffset(const IkSolveScratch& s) const;
+    glm::vec3 ikKneeHangUnder(IkSolveScratch& s);
+    /// A drag tick toward the clamped model-space target: the damped follower, the rig's intent,
+    /// the solve, then live contacts / landings and the step policy on the solved pose.
+    bool dragIkTick(const glm::vec3& rawTarget);
+    /// Hands the rig the bones' world rotations (IkRig::setBoneRotations: the floor clearances).
+    void syncRigRotations();
+    /// IDLE ARMS HANG (armatureikpost.cpp): after a tick's solve, turns the shoulder of every arm
+    /// that hung at the press — and that nothing has hold of — so it keeps hanging under the trunk
+    /// as it now is. True when it moved one.
+    bool hangIdleArms();
+    /// True when a pin or a floor contact of the drag sits in the arm: the solve has it, not the hang.
+    bool hangArmHeld(const HangArm& arm) const;
+    /// THE HEAD STAYS UP (armatureikpost.cpp): after a tick's solve, turns the neck and the head —
+    /// when nothing has hold of them — so the head keeps most of its uprightness as the trunk
+    /// tilts. True when it moved them.
+    bool rightIdleHead();
+    /// True while a post-step (the arms' hang, the head's righting) has the pose away from where
+    /// the limbs would ride: balancePositions() then differs from the pose's joints.
+    bool balanceIsBlind() const;
+    /// The joint positions BALANCE reads: the pose's, with every hung arm and the righted head put
+    /// back where they would RIDE (their joints at the rotations the drag found). Balance is blind
+    /// to both — see hangIdleArms.
+    std::vector<glm::vec3> balancePositions() const;
+    bool settleIkSolveTick();
 };
 
 } // namespace pose

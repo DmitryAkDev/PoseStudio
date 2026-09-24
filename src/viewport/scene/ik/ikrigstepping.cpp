@@ -63,14 +63,16 @@ void IkRig::landStep(const std::vector<glm::vec3>& positions) {
             p.x += shift.x;
             p.z += shift.z;
         }
+        m_stanceShift += glm::vec3(shift.x, 0.0f, shift.z);
     }
     m_stepPin = -1;
     m_imbalanceTicks = 0;
+    m_startImbalance = 0.0f; // (the stance is the rig's own now)
     ++m_stepsTaken;
 }
 
 void IkRig::updateStepping(const std::vector<glm::vec3>& positions, bool allowTrigger,
-                           float entryPinErr, const glm::vec2* anchorXZ) {
+                           const glm::vec2* anchorXZ) {
     if (m_stepPin >= 0) {
         // A step in flight ALWAYS advances (drag intent may change mid-swing; a foot must never
         // hang mid-air waiting for it to change back): ease the pin target along the glide with
@@ -129,28 +131,35 @@ void IkRig::updateStepping(const std::vector<glm::vec3>& positions, bool allowTr
     // smoothed balance EFFORT stays high — the drag keeps imposing a lean the pelvis correction
     // must continuously fight (the post-correction residual is useless here: the engagement
     // blend succeeds each tick, so the residual reads balanced right up until the figure is
-    // grotesquely stretched) — or a standing foot's ENTRY pin error says the pose can no longer
-    // physically hold its plant (the FK pose is being dragged off the pin — the moment a person
-    // must step) — or, with an EXPLICIT anchor only, a foot is simply far from its
+    // grotesquely stretched) — or, with an EXPLICIT anchor only, a foot is simply far from its
     // target-centered stance spot: this is what makes a pelvis-walk step PROACTIVELY (before
     // the foot gets visibly dragged) and take its final GATHERING step once the hip arrives
-    // (the trailing foot's pin holds fine there, so neither other signal would ever fire).
-    const bool strained = entryPinErr > kStepPinErrThreshold * scale;
+    // (the trailing foot's pin holds fine there, so the effort signal would never fire). There
+    // is no pin-strain trigger: the solve never drags a foot off its plant.
     const bool misplaced =
         anchorXZ != nullptr && best >= 0 && bestErr > kStepStanceThreshold * scale;
     static const bool kStepTrace = std::getenv("IK_STEP_TRACE") != nullptr;
     if (kStepTrace) {
-        std::fprintf(stderr,
-                     "[step] entryPinErr=%.4f corr=%.4f stanceErr=%.4f s=%d m=%d ticks=%d\n",
-                     entryPinErr, glm::length(m_balanceCorrection), best >= 0 ? bestErr : 0.0f,
-                     strained ? 1 : 0, misplaced ? 1 : 0, m_imbalanceTicks);
+        std::fprintf(stderr, "[step] corr=%.4f stanceErr=%.4f m=%d ticks=%d\n",
+                     glm::length(m_balanceCorrection), best >= 0 ? bestErr : 0.0f,
+                     misplaced ? 1 : 0, m_imbalanceTicks);
     }
-    if (glm::length(m_balanceCorrection) <= kStepNeedThreshold * scale && !strained &&
-        !misplaced) {
+    if (glm::length(m_balanceCorrection) <= kStepNeedThreshold * scale && !misplaced) {
         m_imbalanceTicks = std::max(0, m_imbalanceTicks - 1);
         return;
     }
-    if (++m_imbalanceTicks < kStepConfirmTicks) {
+    // (The confirmation is for the balance EFFORT, which blips; a foot a stride from its anchored
+    // spot is no blip, and confirmed for the same 12 ticks a fast chest drag's first step began
+    // as the cursor STOPPED — 20 ticks of drag, then 1.4 seconds of walking after it, each
+    // step's 12 ticks of confirmation waited out after the last one landed. The MISPLACED
+    // signal's confirmation shrinks with the distance: none at all from kStepStanceThreshold
+    // times kStepPromptFactor. IK_STEP_SLOW_CONFIRM restores the flat 12.)
+    static const bool kSlowConfirm = std::getenv("IK_STEP_SLOW_CONFIRM") != nullptr; // A/B probe
+    const float promptness = (!kSlowConfirm && misplaced)
+                                 ? glm::smoothstep(kStepStanceThreshold * scale, kStepPromptFactor * kStepStanceThreshold * scale, bestErr)
+                                 : 0.0f;
+    const int confirmTicks = static_cast<int>(std::lround(static_cast<float>(kStepConfirmTicks) * (1.0f - promptness)));
+    if (++m_imbalanceTicks < confirmTicks) {
         return;
     }
     if (best < 0) {

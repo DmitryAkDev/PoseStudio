@@ -1,0 +1,71 @@
+# Out and home again: the pose is a function of the cursor, so she must stand exactly as she
+# stood — the body, the hanging arms and the righted head alike. And what a drag made must still
+# be there when the button comes up. No shots but one: numbers.
+view right
+
+# One drag: hips back into the hinge, and home.
+press hip
+dragv 0.10 0 40 20
+dragv -0.10 0 40 30
+expect grab < 1
+expect head < 2
+expect moved.lHand < 3
+expect gaze > -1
+expect gaze < 1
+release
+reset
+
+# One drag: a bow, and back up.
+press chest@0.6
+dragv -0.18 -0.08 50 20
+expect gaze < -20
+dragv 0.18 0.08 50 40
+expect grab < 1
+expect steps == 0
+expect head < 3
+expect moved.lHand < 5
+expect gaze > -1.5
+expect gaze < 1.5
+release
+reset
+
+# TWO drags: a bow let go of, then the chest taken back up. The neck ends where it began and the
+# arms are back at her sides — a hand at 1.08m (they once stuck straight out in front of her: 1.4m).
+press chest@0.6
+dragv -0.20 -0.10 50 30
+release
+expect tilt.chest > 40
+expect y.lHand < 1000
+press chest@0.6
+dragv 0.20 0.10 50 40
+expect grab < 3
+expect gaze > -4
+expect gaze < 4
+expect y.lHand < 1200
+expect tilt.chest < 6
+shot two_drags_unbowed
+release
+reset
+
+# LET GO OF MID-STEP: the chest dragged far enough forward to walk, the button up while a foot is
+# in the air. The release settle may land the foot — it must not un-make the pose (the chest
+# once sprang back 17cm and the head 44cm as the foot came down).
+press chest@0.6
+dragv -0.30 -0.10 40 4
+release
+expect tilt.chest > 35
+expect gaze < -25
+expect y.lHand < 1000
+reset
+
+# A head the user turned DOWN keeps its own pose over and above the righting: leaned, she looks
+# further down than she did; brought back, exactly as far as she was posed.
+fk head 20 0 0
+press hip
+dragv 0.10 0 40 30
+expect gaze < -12
+dragv -0.10 0 40 30
+expect gaze < -17
+expect gaze > -23
+release
+quit

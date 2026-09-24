@@ -1,0 +1,29 @@
+# Preferences
+
+**Edit → Preferences** opens the settings dialog. Pages are listed down its left side; every setting takes effect as soon as you change it, and **Close** is the only button. Settings are kept in PoseStudio's database in your user profile, so they survive upgrades and moving the application.
+
+## General
+
+**Send an anonymous install ping** (on by default). Each time it starts, PoseStudio lets the project's server know that this installation exists. The page lists exactly what the ping carries — an install ID, the version, your operating system and CPU type, installer or portable, the Qt version and the time — and nothing else. Below the toggle the page shows your **Install ID**, or *not created yet* if no ping has been sent. Builds without a ping key say so and never send anything. See [Privacy and Updates](privacy-updates.md).
+
+**Check for updates at startup** (on by default). A few seconds after launch PoseStudio asks GitHub for the latest release and tells you when a newer one exists. Nothing but the request is sent. **Help → Check for Updates…** does the same on demand.
+
+## Interface, Input, Navigation, System
+
+These pages are placeholders: they name the settings that are planned (appearance, keyboard bindings, viewport navigation, performance and storage) but hold none yet.
+
+## Assets
+
+The list of your **asset libraries** — the folders the [Asset Manager](asset-manager.md) browses. The built-in *Maquettes* library is always present and is not listed here.
+
+- **Add Asset Folder…** opens a folder chooser (starting next to the folder you added last). Pick the root folder of a content library. A folder that is already registered is refused with a note saying so.
+- **Remove Selected** unregisters the selected folder. Nothing is deleted from disk, and any Favorites and Collections that point into it keep their entries.
+- **Double-click** a library to jump the Asset Manager to it; the dialog closes so you can see it.
+
+The Asset Manager updates as soon as you add or remove a library.
+
+## Factory Reset
+
+Wipes everything PoseStudio stores about you — asset libraries, collections, favorites and every preference — and restarts the application as if freshly installed. Your files on disk are untouched, including *My PoseStudio Library* and your HDRIs; only the database is reset (the default library is registered again at the restart, and the install ID is regenerated).
+
+The button is disabled until you type **RESET** into the box, in any case. There is no further confirmation and no undo.

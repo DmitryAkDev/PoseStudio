@@ -41,6 +41,10 @@ public:
     /// Non-null only when the buffer was created with a HOST_ACCESS + MAPPED flag (e.g. a UBO).
     void* mappedData() const { return m_mappedData; }
 
+    /// Makes what the GPU wrote visible to the host mapping (a no-op on coherent memory): call
+    /// before reading a read-back buffer.
+    void invalidate() const;
+
 private:
     void destroy();
 

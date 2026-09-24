@@ -1,0 +1,114 @@
+# In-app posing scripts
+
+Scripted posing tests that run inside the real application — the picker, the press path, the
+camera-parallel drag plane, the 60 Hz solve loop, the release settle, the renderer — and save
+what the viewport rendered as PNG files. They exist so that a posing change can be *looked at*,
+not only measured: the IK harness (`tools/ikharness`) checks numbers on the armature alone,
+and a pose can pass every gate and still look wrong.
+
+Nothing is injected into the operating system. The window's own gesture functions are called
+with a scripted cursor, so a run does not touch the mouse or keyboard and is safe on a desktop
+that is in use; frames are read back from the GPU, so the window does not need to be visible.
+
+## Running
+
+```
+POSESTUDIO_IK_SCRIPT=<script.txt> POSESTUDIO_IK_SCRIPT_OUT=<folder> PoseStudio <figure preset>
+```
+
+The app imports the figure, runs the script, writes the shots into the output folder and exits
+with the number of `expect` lines that failed as its exit code. `run.sh` wraps that and builds a
+contact sheet; `run_all.sh` runs every script in this folder as a test suite:
+
+```
+POSESTUDIO_TEST_FIGURE=<figure preset> tools/ikscripts/run.sh tools/ikscripts/gallery_side.txt out/side
+POSESTUDIO_TEST_FIGURE=<figure preset> POSESTUDIO_IKSHOTS_REF=<reference folder> tools/ikscripts/run_all.sh out
+```
+
+`run_all.sh` prints each script's failed expectations and a pass/fail summary (its exit code is
+the number of scripts with a failure), and — with `POSESTUDIO_IKSHOTS_REF` — compares every shot
+with its reference (`compare.py`): the shots that LOOK different are listed and laid out beside
+their references in `<out>/<script>/changes.png`, so after a change there is one image per
+script to look at, holding only the poses that moved. `run_all.sh <out> --accept` makes the run's
+shots the new references — after you have looked. The references are renders of a figure preset:
+keep them outside the repository.
+
+The scripts:
+
+| Script | What it covers |
+| --- | --- |
+| `gallery_side.txt` | Trunk gestures from the side: chest and head nudged back, bows, the chest-walk, the hip hinge, a crouch, a hand reach. |
+| `gallery_mixed.txt` | Sideways chest pull and hip sway (front), kneel, sit, the pinned seat, a bow with a posed arm. |
+| `gallery_limbs.txt` | Hand across the body, elbow, knee raise, foot slide, stride, lunge, foot lifted behind, lifted by the hand. |
+| `gallery_perspective.txt` | The Home and three-quarter views a user poses in: hips, chest, head, hand and foot drags where "down" on screen is down and toward the camera. |
+| `gallery_floor.txt` | Floor poses from several drags each: toward all fours, a kneel sat back on the heels, a sit reclined by the chest, a sit with a leg stretched out, a sit LAID DOWN on her back and sat up again — with the SKIN's height over the floor, the pelvis's pitch and the worst single-tick move asserted, and the sat-up pose shot from the FRONT as well: a drag in the sagittal plane must leave her symmetric (the pelvis bone's twist and side bend are asserted), and legs folded to one side do not show from the side. |
+| `session_poses.txt` | Whole poses built from several drags in a row (a walk, a sit with a hand to the knee, a high reach, picking something up), shot from a three-quarter view. |
+| `check_returns.txt` | Numbers only: out-and-home in one drag, a bow undone in a second drag, a walking drag let go of mid-step, a posed head. |
+
+Useful beside it: `QT_LOGGING_TO_CONSOLE=1` (the `[ikscript]` lines reach a redirected stderr),
+`POSESTUDIO_NO_PING=1`, `POSESTUDIO_NO_UPDATE_CHECK=1`, and any `IK_…` probe for an A/B
+(`run.sh` passes extra `NAME=value` arguments through as environment).
+`montage.py` needs Python with Pillow.
+
+## Commands
+
+One command per line; `#` starts a comment. Bones are named as the reference figure names them
+(`hip`, `chest`, `head`, `lHand` …); the runner maps them onto the other generations' names, so the
+same script runs on any figure — set `POSESTUDIO_TEST_FIGURE` to another preset and look. `<bone>@<share>` means the point that share of the way
+along the bone's limb segment — the flesh, where a user clicks — instead of the joint.
+
+| Command | What it does |
+| --- | --- |
+| `view front\|back\|left\|right\|top\|bottom\|home` | The view keys. In `right` the camera looks from +X: screen-right is the figure's back. |
+| `orbit <yaw°> <pitch°>` | An orbit drag, in degrees (back to perspective, like one). |
+| `frame` | Frame the selection. |
+| `shade <row>` | Shade mode, a row of the picker. |
+| `pose <file>` / `reset` / `undo` / `ground` | Load a pose file, Reset Pose, Undo, the Ground button. |
+| `fk <bone> <dx°> <dy°> <dz°>` | Turn a joint, as Ctrl+drag or the X/Y/Z wheel would (through the FK collision stop). |
+| `pin <bone>[@share]` / `unpinall` | Click there and press P; drop every pin. |
+| `click <bone>[@share]` | The real pick at that pixel; prints what it found. |
+| `press <bone>[@share]` | The real press: the pick at the bone's pixel, then the press path (an IK drag begins). The pick is honest — what it finds is what is under that pixel — and on another body that can be another limb (a broad character's hanging arm covers her chest from the side, one hand covers the other). When the rig would then drag a different joint than the one named, the bone is grabbed by name at the same point instead, and the log says `the pick found <other> there`. A small bone OF the named one (a pectoral for the chest) is what a user's click finds too, and stands. |
+| `drag <dxPx> <dyPx> <moveTicks> <holdTicks>` | Move the cursor in screen pixels (+y down), then hold. |
+| `dragv <right m> <up m> <moveTicks> <holdTicks>` | The same, given in metres along the view's right/up axes at the grab's depth. |
+| `dragw <dx> <dy> <dz> <moveTicks> <holdTicks>` | Move the cursor's *world* target (the harness's gestures, for parity). |
+| `wheel <notches>` | Depth notches during a drag. |
+| `release` | Mouse-up; waits for the settle. Prints a report first. |
+| `wait <ticks>` | 60 Hz ticks. |
+| `report [label]` | Gaze, lowest joint, grab-to-cursor, hips/head travel since the press, pelvis angles, steps, worst single-tick joint move, and the posed channels. |
+| `expect <metric> <op> <value>` | A test assertion (`<`, `<=`, `>`, `>=`, `==`). A failure is printed and counted; the app's exit code is the count. |
+| `shot <name>` | Save the next rendered frame as `<name>.png`. |
+| `quit` | Exit (also at the end of the script). |
+
+## Metrics (`expect`)
+
+| Metric | Meaning |
+| --- | --- |
+| `grab` / `grabpx` | The grabbed point's distance from the cursor, in mm / on screen in pixels (during a drag). |
+| `hips`, `head` | Moved since the last press, mm. |
+| `steps` | Steps taken in the drag. |
+| `jump` | Worst single-tick move of any joint, mm. |
+| `lowest` | The lowest body joint's height over the floor, mm (negative = through it). |
+| `meshlow` | The lowest point of the posed SKIN over the floor, mm (negative = flesh through the floor — invisible to every joint reading). |
+| `gaze`, `headroll` | The head's look direction over the horizon and its sideways tilt, degrees. |
+| `tilt.<bone>` | A bone's tilt from upright, degrees. |
+| `y.<bone>`, `moved.<bone>` | A joint's height, and its travel since the last press, mm. |
+| `euler.<bone>.<x\|y\|z>` | A posed channel, degrees. |
+
+Expectations are regression guards set from what the app does today, with margin — not
+specifications. A gesture given in screen metres is only as exact as its guess at the figure's
+proportions: where a gate reads looser than the harness's, the gesture is off the joint's arc.
+
+## What to look for
+
+The runner prints `POP at tick N: <joint> moved X mm in one tick` for every single-tick move over
+10cm — never a drag's pace — and `report` names the joint that moved most and when.
+
+A script that does not reach its end (the app went away: a crash, a lost device, a window someone
+closed) is reported as DID NOT FINISH, and the app's whole output is kept beside the shots as
+`unfinished.txt` with its exit code.
+
+
+Numbers first (`report`): the grabbed point on the cursor, no unexpected steps, no large
+single-tick moves. Then the sheet: balance (is the weight over the feet?), arms and head
+(do idle limbs look held or natural?), feet flat, nothing through the floor or the body.
+A change that improves a number and makes a sheet look worse is a regression.

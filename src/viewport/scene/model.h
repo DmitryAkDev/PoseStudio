@@ -132,6 +132,9 @@ public:
     int              boneParent(std::size_t i) const { return m_armature.boneParent(i); }
 
     int  selectedBone() const { return m_armature.selectedBone(); }
+    /// The runtime skeleton, read-only (diagnostics: the scripted posing test reads joint
+    /// positions, channels and the rig's step count from it).
+    const Armature& armature() const { return m_armature; }
     void setSelectedBone(int index) { m_armature.setSelectedBone(index); }
     /// The selected joint's highlight twin (a bend bone's twist child and vice versa; see
     /// Armature), or -1 — the second joint the selected-part highlight tints.
@@ -145,6 +148,9 @@ public:
 
     // --- Full-body IK (scene/ik/, driven through the armature): drag a joint, the body follows ---
     bool beginIkDrag() { return m_armature.beginIkDrag(); }
+    void setIkGrabPoint(int bone, const glm::vec3& worldPoint) { m_armature.setIkGrabPoint(bone, worldPoint); }
+    glm::vec3 ikGrabPointWorld() const { return m_armature.ikGrabPointWorld(); }
+    void setIkGrabOnSegment(int bone, float share) { m_armature.setIkGrabOnSegment(bone, share); }
     bool dragIkTo(const glm::vec3& targetWorld) { return m_armature.dragIkTo(targetWorld); }
     bool settleIkTick() { return m_armature.settleIkTick(); }
     /// Ends the FBIK drag (the solved pose stays; the caller refreshes the correctives).

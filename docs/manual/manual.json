@@ -1,0 +1,24 @@
+{
+  "_comment": "The User Manual's table of contents (Help -> User Manual). Pages are Markdown files in this folder, embedded into the app at build time; each page's '##' headings become its sub-entries automatically. Keep 'id' stable: the app opens pages by it (Help -> Release Notes opens 'whats-new'). See README.md for how to add or update a page.",
+  "pages": [
+    { "id": "welcome",          "title": "Welcome",                 "file": "welcome.md" },
+    { "id": "getting-started",  "title": "Getting Started",         "file": "getting-started.md" },
+    { "id": "interface",        "title": "The Interface",           "file": "interface.md" },
+    { "id": "importing",        "title": "Importing Content",       "file": "importing.md" },
+    { "id": "navigation",       "title": "Navigating the Viewport", "file": "navigation.md" },
+    { "id": "shading",          "title": "Shading and Display",     "file": "shading.md" },
+    { "id": "environment",      "title": "Lighting and Environment","file": "environment.md" },
+    { "id": "posing",           "title": "Posing",                  "file": "posing.md",
+      "children": [
+        { "id": "poses",        "title": "Poses Step by Step",      "file": "poses.md" },
+        { "id": "pose-files",   "title": "Pose Files",              "file": "pose-files.md" }
+      ]
+    },
+    { "id": "asset-manager",    "title": "The Asset Manager",       "file": "asset-manager.md" },
+    { "id": "preferences",      "title": "Preferences",             "file": "preferences.md" },
+    { "id": "shortcuts",        "title": "Keyboard and Mouse Reference", "file": "shortcuts.md" },
+    { "id": "privacy-updates",  "title": "Privacy and Updates",     "file": "privacy-updates.md" },
+    { "id": "troubleshooting",  "title": "Troubleshooting",         "file": "troubleshooting.md" },
+    { "id": "whats-new",        "title": "What's New",              "file": "changelog.md" }
+  ]
+}

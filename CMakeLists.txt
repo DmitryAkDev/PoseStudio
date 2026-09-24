@@ -10,7 +10,7 @@ cmake_minimum_required(VERSION 3.21)
 # C is enabled alongside C++ because a couple of third-party dependencies ship C implementation
 # files we compile directly into the target (e.g. miniz's inflate sources for the figure importer).
 # Without C in the language list, CMake classifies .c files as non-buildable and silently skips them.
-project(PoseStudio VERSION 0.3.14 LANGUAGES C CXX)
+project(PoseStudio VERSION 0.3.15 LANGUAGES C CXX)
 
 # ==============================================================================
 # [ COMPILER CONFIGURATION ]
@@ -156,6 +156,10 @@ add_executable(
     src/shell/apptheme.cpp                # AppTheme::install: icon, Fusion proxy style, QSS modules, menu shadows
     src/shell/apptheme.h
     src/shell/appproxystyle.h
+    src/help/helpwindow.cpp               # Help -> User Manual (F1): contents tree + page browser + search
+    src/help/helpwindow.h
+    src/help/helpmanual.cpp               # the manual's manifest, embedded Markdown pages and page styling
+    src/help/helpmanual.h
 
     # --- Asset Manager ---
     src/assets/assetmanagerwidget.cpp
@@ -212,6 +216,8 @@ add_executable(
     src/viewport/vulkanwindow_pose.cpp    # pose utilities, pins, pose files, delete, undo/redo
     src/viewport/vulkanwindow_bench.cpp   # POSESTUDIO_IK_PERF / _BENCH diagnostics
     src/viewport/ikdiagnostics.h          # the diagnostics state (null unless enabled)
+    src/viewport/vulkanwindow_script.cpp  # POSESTUDIO_IK_SCRIPT: the scripted in-app posing test
+    src/viewport/ikscript.h               # its state (null unless enabled)
     src/viewport/viewpreset.h             # the named camera views (strip <-> window vocabulary)
     src/viewport/modelimportservice.cpp   # orchestrates parse -> texture decode -> GPU upload
     src/viewport/modelimportservice.h
@@ -339,10 +345,14 @@ add_executable(
     src/viewport/scene/posefile.h
     src/viewport/scene/armature.cpp   # the runtime skeleton + pose + FK + pins (Vulkan-free)
     src/viewport/scene/armature.h
-    src/viewport/scene/armatureik.cpp # the Armature's FBIK integration: drag lifecycle + governors
-    src/viewport/scene/armatureik_detail.h # its governor constants (private to the armatureik*.cpp)
-    src/viewport/scene/armatureikextract.cpp # rotation extraction (solved positions -> Euler pose)
-    src/viewport/scene/armatureikpins.cpp # exact joint-space pin refinement + the floor lift
+    src/viewport/scene/armatureik.cpp # the Armature's FBIK drag lifecycle (rig build, begin/drag/settle/end, pins)
+    src/viewport/scene/armatureiksolve.cpp # the per-tick whole-body solve: the tick, the stage map, solve + apply
+    src/viewport/scene/armatureiksolvedrag.cpp    # ... its stages: what the drag IS (unknowns, trunk policy, foot/knee/elbow drags)
+    src/viewport/scene/armatureiksolveposture.cpp # ... the posture model (stiffness + references, the spine's coupling)
+    src/viewport/scene/armatureiksolverows.cpp    # ... the rows (pins, the foot contact model, the cursor, balance, floor + volumes)
+    src/viewport/scene/armatureiksolvestate.h     # ... the per-tick scratch the stages share
+    src/viewport/scene/armatureiksolvetuning.h    # ... every tuning constant, with its reasoning
+    src/viewport/scene/armatureikpost.cpp   # the drag tick's post-steps: the idle arms' hang, the head's righting
     src/viewport/scene/shadowpass.cpp    # the key light's depth-only pass: map, pipeline, frustum fit
     src/viewport/scene/shadowpass.h
     src/viewport/scene/outlinepass.cpp   # the selection-outline mask pass
@@ -360,20 +370,24 @@ add_executable(
     src/viewport/scene/ik/ikmath.cpp          # shortest-arc / signed-angle / Euler decomposition
     src/viewport/scene/ik/ikmath.h
     src/viewport/scene/ik/skeletongraph.cpp   # undirected joint graph, dynamically re-rootable
+    src/viewport/scene/ik/bonealiases.cpp     # the bone-alias table the two posing test tools share
+    src/viewport/scene/ik/bonealiases.h
     src/viewport/scene/ik/skeletongraph.h
-    src/viewport/scene/ik/ikconstraints.cpp   # hinge/cone constraints derived from joint limits
-    src/viewport/scene/ik/ikconstraints.h
-    src/viewport/scene/ik/fabriksolver.cpp    # multi-chain FABRIK (branches, pins, constraints)
-    src/viewport/scene/ik/fabriksolver.h
     src/viewport/scene/ik/balancecontroller.cpp # CoM + support polygon + pelvis correction
     src/viewport/scene/ik/balancecontroller.h
-    src/viewport/scene/ik/ikrig.cpp           # per-figure orchestration: rig build + shared helpers
+    src/viewport/scene/ik/ikrig.cpp           # the drag's POLICY per figure: rig build, body volumes, shared helpers
     src/viewport/scene/ik/ikrig.h
-    src/viewport/scene/ik/ikrig_constants.h   # the rig's tuning constants (private to the four ikrig*.cpp)
-    src/viewport/scene/ik/ikrigdrag.cpp       # beginDrag: contacts -> pins, user pins, stiffness, trunk chain
-    src/viewport/scene/ik/ikrigsolve.cpp      # solveDrag (intent policies + balance blend) and the release settle
+    src/viewport/scene/ik/ikrig_constants.h   # the rig's tuning constants (private to the ikrig*.cpp)
+    src/viewport/scene/ik/ikrigdrag.cpp       # beginDrag: contacts -> pins, user pins, grab promotion
+    src/viewport/scene/ik/ikrigpolicy.cpp     # per-tick policy: intents, the lift-off test, the step policy's entry
     src/viewport/scene/ik/ikrigstepping.cpp   # balance-driven foot re-planting
-    src/viewport/scene/ik/ikrigcontacts.cpp   # live contact re-detection mid-drag
+    src/viewport/scene/ik/ikrigcontacts.cpp   # live contact re-detection mid-drag, landings
+    src/viewport/scene/ik/bodymesh.cpp        # the body mesh sample the volumes are fitted to (+ its dump sidecar)
+    src/viewport/scene/ik/jointsolver.cpp     # THE IK solver: whole-body regularized least squares on the Euler channels
+    src/viewport/scene/ik/jointsolver.h
+    src/viewport/scene/ik/bodyvolume.h        # the self-collision capsules + the one reading of their axes
+    src/viewport/scene/ik/ikeffector.h        # one pin of a drag
+    src/viewport/scene/ik/bodymesh.h
     src/viewport/scene/ik/cursorfilter.h      # the drag's adaptive cursor low-pass (shared with the harness)
 
     # --- Preferences ---
@@ -408,6 +422,25 @@ add_executable(
     resources/resources.qrc   # Injects images, UI styles, and SQL templates
 )
 
+# ---------------------------------------------------------------------------------------------
+# THE USER MANUAL (Help -> User Manual). The pages are plain Markdown in docs/manual/ (readable on
+# GitHub as they are) with a manifest, manual.json, for the table of contents; they are embedded
+# under qrc:/manual/ here. The folder is GLOBBED, so a new page needs only its .md file and a line
+# in manual.json (CONFIGURE_DEPENDS re-checks the glob at build time). CHANGELOG.md rides along as
+# changelog.md - the manual's "What's New" page - so the release notes are never a second copy.
+# tools/manual/check_manual.py validates the manifest and the links (see the manual-check test).
+# ---------------------------------------------------------------------------------------------
+file(GLOB_RECURSE POSESTUDIO_MANUAL_FILES CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/docs/manual/*.md"
+    "${CMAKE_SOURCE_DIR}/docs/manual/*.json"
+    "${CMAKE_SOURCE_DIR}/docs/manual/images/*")
+list(FILTER POSESTUDIO_MANUAL_FILES EXCLUDE REGEX "/README\.md$") # (the folder's own how-to: not a page)
+set_source_files_properties("${CMAKE_SOURCE_DIR}/CHANGELOG.md" PROPERTIES QT_RESOURCE_ALIAS "changelog.md")
+qt_add_resources(PoseStudio "manual"
+    PREFIX "/manual"
+    BASE "${CMAKE_SOURCE_DIR}/docs/manual"
+    FILES ${POSESTUDIO_MANUAL_FILES} "${CMAKE_SOURCE_DIR}/CHANGELOG.md")
+
 # The Windows executable icon resource (.rc) is understood only by the Windows resource
 # compiler. On macOS/Linux (Clang/GCC) CMake has no RC language enabled, so listing it
 # unconditionally breaks configuration there — add it only on Windows. The .manifest forces
@@ -439,6 +472,7 @@ target_include_directories(PoseStudio PRIVATE
     src
     src/core
     src/shell
+    src/help
     src/assets
     src/widgets
     src/properties
@@ -539,18 +573,22 @@ add_executable(PoseStudioIkHarness
     tools/ikharness/realphases.h
     src/viewport/scene/armature.cpp
     src/viewport/scene/armatureik.cpp
-    src/viewport/scene/armatureikextract.cpp
-    src/viewport/scene/armatureikpins.cpp
+    src/viewport/scene/armatureiksolve.cpp
+    src/viewport/scene/armatureiksolvedrag.cpp
+    src/viewport/scene/armatureiksolveposture.cpp
+    src/viewport/scene/armatureiksolverows.cpp
+    src/viewport/scene/armatureikpost.cpp
     src/viewport/scene/ik/ikmath.cpp
     src/viewport/scene/ik/skeletongraph.cpp
-    src/viewport/scene/ik/ikconstraints.cpp
-    src/viewport/scene/ik/fabriksolver.cpp
+    src/viewport/scene/ik/bonealiases.cpp
     src/viewport/scene/ik/balancecontroller.cpp
     src/viewport/scene/ik/ikrig.cpp
     src/viewport/scene/ik/ikrigdrag.cpp
-    src/viewport/scene/ik/ikrigsolve.cpp
+    src/viewport/scene/ik/ikrigpolicy.cpp
     src/viewport/scene/ik/ikrigstepping.cpp
     src/viewport/scene/ik/ikrigcontacts.cpp
+    src/viewport/scene/ik/bodymesh.cpp
+    src/viewport/scene/ik/jointsolver.cpp
 )
 target_include_directories(PoseStudioIkHarness PRIVATE
     tools/ikharness
@@ -564,6 +602,14 @@ target_compile_definitions(PoseStudioIkHarness PRIVATE
 )
 enable_testing()
 add_test(NAME ik-harness COMMAND PoseStudioIkHarness)
+# The user manual's checker (docs/manual/README.md): the manifest, the pages, every link, and a
+# warning per menu action the manual does not mention. Needs only Python.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME manual-check
+             COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/tools/manual/check_manual.py"
+             WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+endif()
 if(DEFINED ENV{POSESTUDIO_IK_SKELETON})
     set_tests_properties(ik-harness PROPERTIES
         ENVIRONMENT "POSESTUDIO_IK_SKELETON=$ENV{POSESTUDIO_IK_SKELETON}")

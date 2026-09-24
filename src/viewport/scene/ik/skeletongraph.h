@@ -1,18 +1,14 @@
 /**
  * @file skeletongraph.h
- * @brief The FBIK skeleton graph: the figure's joints as an UNDIRECTED graph that can be
- *        dynamically re-rooted at any node (step 1 of the full-body IK system).
+ * @brief The FBIK body graph: the figure's BODY joints (the figure-node chain above the pelvis
+ *        excluded) as a graph rooted at the pelvis, whose one job today is marking the ACTIVE
+ *        subgraph of a drag — the paths joining the effector and every pin to the root
+ *        (markActivePaths): what the solve may move; everything else rides.
  *
- * The solver sees the skeleton as an undirected graph with a movable root: setRoot(node)
- * rebuilds the directed parent/children view and BFS traversal order the FABRIK passes walk,
- * without ever touching the engine's anatomical hierarchy (rotation extraction still happens in
- * that original hierarchy — this graph exists purely for the positional solve). The rig roots it
- * at the PELVIS, so traversal order equals hierarchy order and joint constraints are evaluated
- * in their owning parent-side frames; ground anchoring is the pinned effectors' job, not the
- * root's. (An earlier design re-rooted at a ground contact per drag — anatomically appealing,
- * but a constraint frame accumulated from the child side skews by exactly the joints' own
- * swings, so limbs "kinked" at rigid twist joints. FabrikSolver's per-edge arrays are indexed by
- * anatomical child, so only the pelvis rooting may ever reach solve() — see its header.)
+ * setRoot(node) rebuilds the directed parent/children view and the BFS traversal order without
+ * touching the engine's anatomical hierarchy. The rig always roots it at the PELVIS. (It is
+ * re-rootable because the first, position-space solver once walked it from a ground contact;
+ * the capability is kept, unused.)
  * Qt-free (std only + no GLM needed — pure topology).
  */
 
@@ -43,8 +39,7 @@ public:
     /// @p node's parent under the CURRENT rooting (-1 at the root). Not the anatomical parent.
     int parentOf(int node) const { return m_parent[static_cast<std::size_t>(node)]; }
 
-    /// Root-first (BFS) traversal order under the current rooting — the order the FABRIK backward
-    /// pass walks; the forward pass walks it reversed.
+    /// Root-first (BFS) traversal order under the current rooting.
     const std::vector<int>& traversalOrder() const { return m_order; }
 
     /// Marks the union of the current-root paths of @p targets: every node on any target's walk to

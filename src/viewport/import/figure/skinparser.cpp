@@ -10,6 +10,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <unordered_map>
 #include <utility>
 
 namespace pose {
@@ -53,17 +54,58 @@ std::vector<VertexSkin> parseSkinWeights(
             } else if (const auto vw = joint.find("vertex_weights"); vw != joint.end()) {
                 weightsNode = &(*vw);
             }
-            if (!weightsNode) {
+            if (weightsNode) {
+                for (const auto& entry : valuesArray(*weightsNode)) {
+                    if (!entry.is_array() || entry.size() < 2) {
+                        continue;
+                    }
+                    const int v = entry[0].get<int>();
+                    const float w = entry[1].get<float>();
+                    if (v >= 0 && v < count && w > 0.0f) {
+                        perVertex[static_cast<std::size_t>(v)].emplace_back(boneIndex, w);
+                    }
+                }
                 continue;
             }
-            for (const auto& entry : valuesArray(*weightsNode)) {
-                if (!entry.is_array() || entry.size() < 2) {
+            // The OLDEST generations' skin binding (the format's earlier "TriAx" weighting)
+            // carries no general map at all: per joint, three PER-AXIS rotation maps
+            // (`local_weights.x/y/z`, each a vertex-weight list — identical on a finger,
+            // different on a hip or shoulder, where each axis' bend blends a different region)
+            // plus `scale_weights`/`bulge_weights` we do not model. Without them the two oldest
+            // figure families imported with NO skin weights: they rendered at bind and never
+            // deformed when posed. The general map is the mean of the three axis maps — a
+            // vertex absent from a map counts 0 for it — which is also how a general-weighted
+            // rig approximates such a binding.
+            const auto local = joint.find("local_weights");
+            if (local == joint.end() || !local->is_object()) {
+                continue;
+            }
+            std::unordered_map<int, float> summed;
+            int maps = 0;
+            for (const char* axis : {"x", "y", "z"}) {
+                const auto map = local->find(axis);
+                if (map == local->end()) {
                     continue;
                 }
-                const int v = entry[0].get<int>();
-                const float w = entry[1].get<float>();
-                if (v >= 0 && v < count && w > 0.0f) {
-                    perVertex[static_cast<std::size_t>(v)].emplace_back(boneIndex, w);
+                ++maps;
+                for (const auto& entry : valuesArray(*map)) {
+                    if (!entry.is_array() || entry.size() < 2) {
+                        continue;
+                    }
+                    const int v = entry[0].get<int>();
+                    const float w = entry[1].get<float>();
+                    if (v >= 0 && v < count && w > 0.0f) {
+                        summed[v] += w;
+                    }
+                }
+            }
+            if (maps == 0) {
+                continue;
+            }
+            for (const auto& [v, w] : summed) {
+                const float general = w / static_cast<float>(maps);
+                if (general > 0.0f) {
+                    perVertex[static_cast<std::size_t>(v)].emplace_back(boneIndex, general);
                 }
             }
         }

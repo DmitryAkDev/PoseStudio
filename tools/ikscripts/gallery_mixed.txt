@@ -1,0 +1,68 @@
+# Front view: screen-right = the figure's LEFT (+X). Side view (right): screen-right = BACK.
+view front
+press chest@0.6
+dragv 0.18 -0.04 50 40
+shot 11_front_chest_sideways_18
+expect grab < 12
+expect headroll < 8
+expect headroll > -8
+release
+reset
+
+press hip
+dragv 0.10 0 50 40
+shot 12_front_hip_sway_10
+expect grab < 3
+expect steps == 0
+release
+reset
+
+view right
+# A kneel: hips down and forward. Knees on the floor, the head up.
+press hip
+dragv -0.30 -0.62 90 40
+shot 13_side_kneel
+expect gaze > -15
+expect lowest > 0
+expect steps == 0
+release
+reset
+
+# Sitting on the floor: hips down and back.
+press hip
+dragv 0.45 -0.85 100 50
+shot 14_side_sit_floor
+expect gaze > -8
+expect lowest > 0
+release
+reset
+
+# THE SEAT: sat at chair height, the hips pinned, the chest leaned forward.
+press hip
+dragv 0.22 -0.45 70 40
+release
+pin hip
+# (Along the chest's own arc about the pinned hips — 30 degrees of a 22cm lever: a target off the
+# arc is a geometric miss, a pinned seat going nowhere.)
+press chest@0.6
+dragv -0.11 -0.03 50 40
+shot 15_side_seated_pinned_lean_fwd
+# (16mm today — the harness's seated phases, on the exact arc, read 0.6-5.6mm.)
+expect grab < 25
+expect hips < 1
+expect gaze > -30
+release
+reset
+unpinall
+
+# A posed arm stays posed through a bow (only arms that hung at the press hang).
+press lHand
+dragv -0.30 0.25 40 20
+release
+press chest@0.6
+dragv -0.25 -0.10 50 40
+shot 16_side_bow_with_posed_arm
+# (An arm held out in front is weight in front: the bow rests 15mm short at balance's wall.)
+expect grab < 25
+release
+quit

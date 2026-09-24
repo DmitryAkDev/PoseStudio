@@ -1,0 +1,90 @@
+# Limb gestures: hands, elbows, knees, feet — and a lift. Front view: screen-right = the figure's
+# LEFT (+X). Side view (right): screen-right = the figure's BACK.
+view front
+
+# The left hand taken across the body to the other shoulder.
+press lHand
+dragv -0.42 0.32 50 40
+shot 21_front_hand_across
+# (The cursor ends inside the far shoulder: the hand stops on the chest, at the body's volumes.)
+expect grab < 90
+expect steps == 0
+release
+reset
+
+# An elbow lifted out to the side.
+press lForeArm
+dragv 0.10 0.12 40 40
+shot 22_front_elbow_out
+expect steps == 0
+release
+reset
+
+# A knee raised (from the front the cursor goes straight up: the knee comes forward and up).
+press lShin
+dragv 0 0.30 50 40
+shot 23_front_knee_raise
+expect grabpx < 12
+expect steps == 0
+expect lowest > 0
+release
+reset
+
+# A foot slid out to the side along the floor: the stance widens, the hips go with it.
+press lFoot
+dragv 0.30 0 50 40
+shot 24_front_foot_slide_out
+expect grab < 5
+expect steps == 0
+release
+reset
+
+view right
+# The same knee raise seen from the side, along the thigh's own arc (a thigh is rigid: a cursor
+# INSIDE the arc cannot be met, and the knee then keeps the cursor's height, further forward).
+press lShin
+dragv -0.36 0.21 50 40
+shot 23b_side_knee_raise
+# (47mm today: the gesture's arc is a guess at this figure's thigh, 42cm.)
+expect grab < 60
+expect steps == 0
+expect hips < 30
+release
+reset
+
+# A stride: the foot slid forward along the floor.
+press lFoot
+dragv -0.45 0 50 40
+shot 25_side_stride
+expect grab < 5
+expect gaze > -8
+release
+reset
+
+# A lunge: a foot slid a stride back and let go of, then the hips taken down.
+press lFoot
+dragv 0.55 0 50 30
+release
+press hip
+dragv 0 -0.35 60 40
+shot 26_side_lunge
+expect steps == 0
+expect lowest > 0
+expect gaze > -10
+release
+reset
+
+# A foot lifted and held up behind her (a quad stretch's start).
+press lFoot
+dragv 0.25 0.35 50 40
+shot 27_side_foot_up_behind
+expect steps == 0
+release
+reset
+
+# Lifted by the hand: past her reach she comes off the floor and hangs under it.
+press lHand
+dragv -0.10 1.30 70 60
+shot 28_side_lifted_by_hand
+release
+quit

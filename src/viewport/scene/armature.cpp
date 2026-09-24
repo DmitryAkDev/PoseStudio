@@ -8,6 +8,7 @@
 
 #include "ikmath.h" // eulerMatrix (the pose composition)
 #include "ikrig.h"  // complete type for the unique_ptr
+#include "jointsolver.h" // likewise
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -68,8 +69,8 @@ std::string mirroredBoneName(const std::string& name) {
 
 void Armature::build(const std::vector<ArmatureBone>& bones) {
     // Start from a fresh armature: EVERY member — skeleton, pose, selection, pins, transform,
-    // and the whole IK state block (flat-sole nodes, prior exemptions, the governor's velocity
-    // and settle-freeze state, ...) — is reset, so a rebuilt armature behaves exactly like a
+    // and the whole IK state block (held orientations, the posture reference, the pin easing
+    // and follower state, ...) — is reset, so a rebuilt armature behaves exactly like a
     // freshly constructed one. Clearing only the skeleton members left the IK block stale;
     // harmless while build() runs once per object, which is the contract (see the header).
     *this = Armature();
@@ -139,6 +140,62 @@ void Armature::build(const std::vector<ArmatureBone>& bones) {
         const int j = other.empty() ? -1 : boneIndex(other);
         m_mirrorBone[i] = j >= 0 ? j : static_cast<int>(i);
     }
+    // A name without a counterpart is not always a centre bone: one figure generation's base file
+    // spells some thirty left/right ids differently on its two sides (a big toe's second joint ends
+    // `2` on one and `_2` on the other, a lip corner is misspelt on one side only, an eyelid is
+    // `Top` here and `Upper` there). Such a bone stands OFF the sagittal plane, and its twin is the
+    // unpaired bone at its mirrored bind position under the mirrored parent — parents come first
+    // in the list, so theirs is already known. Left paired with themselves, Mirror Pose flipped
+    // each of them in place like a centre bone: a mirrored hand kept its own carpals' pose.
+    if (!m_bones.empty()) {
+        float lowest = bindGlobal[0].y;
+        float highest = bindGlobal[0].y;
+        for (const glm::vec3& p : bindGlobal) {
+            lowest = std::min(lowest, p.y);
+            highest = std::max(highest, p.y);
+        }
+        const float height = std::max(highest - lowest, 1.0e-3f);
+        const float offPlane = 0.003f * height; // (a centre bone of an asymmetric character: millimetres)
+        const float within = 0.02f * height;
+        // (And a name's counterpart is not always the bone's twin: the same file's `…Carpal2` is one
+        // bone of the palm on the left and ANOTHER on the right, 2cm apart. A name pair whose bind
+        // positions do not mirror each other is dissolved, and its bones are paired by place below —
+        // with each other again, if an asymmetric character's rig is all that was wrong.)
+        const float mirrored = 0.005f * height;
+        for (std::size_t i = 0; i < m_bones.size(); ++i) {
+            const int j = m_mirrorBone[i];
+            if (j > static_cast<int>(i) &&
+                glm::length(glm::vec3(-bindGlobal[i].x, bindGlobal[i].y, bindGlobal[i].z) - bindGlobal[static_cast<std::size_t>(j)]) > mirrored) {
+                m_mirrorBone[static_cast<std::size_t>(j)] = j;
+                m_mirrorBone[i] = static_cast<int>(i);
+            }
+        }
+        for (std::size_t i = 0; i < m_bones.size(); ++i) {
+            if (m_mirrorBone[i] != static_cast<int>(i) || std::abs(bindGlobal[i].x) < offPlane) {
+                continue;
+            }
+            const int parent = m_bones[i].parent;
+            const int parentTwin = parent >= 0 ? m_mirrorBone[static_cast<std::size_t>(parent)] : -1;
+            const glm::vec3 mirrored(-bindGlobal[i].x, bindGlobal[i].y, bindGlobal[i].z);
+            int twin = -1;
+            float nearest = within;
+            for (std::size_t j = 0; j < m_bones.size(); ++j) {
+                if (j == i || m_mirrorBone[j] != static_cast<int>(j) || m_bones[j].parent != parentTwin ||
+                    bindGlobal[j].x * bindGlobal[i].x >= 0.0f) {
+                    continue;
+                }
+                const float d = glm::length(bindGlobal[j] - mirrored);
+                if (d < nearest) {
+                    nearest = d;
+                    twin = static_cast<int>(j);
+                }
+            }
+            if (twin >= 0) {
+                m_mirrorBone[i] = twin;
+                m_mirrorBone[static_cast<std::size_t>(twin)] = static_cast<int>(i);
+            }
+        }
+    }
 
     // Skin data: two vec4s per joint (a static armature has one identity joint).
     const std::uint32_t joints = jointCount();
@@ -164,7 +221,15 @@ bool Armature::dump(const std::string& path) const {
             << ' ' << b.rotMax.z << ' ' << (b.rotLimited.x ? 1 : 0) << ' '
             << (b.rotLimited.y ? 1 : 0) << ' ' << (b.rotLimited.z ? 1 : 0) << '\n';
     }
+    if (!m_bodyMesh.empty()) {
+        saveBodyMesh(path + ".mesh", m_bodyMesh); // the sidecar (see setBodyMesh)
+    }
     return static_cast<bool>(out);
+}
+
+void Armature::setBodyMesh(std::vector<BodyMeshPoint> mesh) {
+    m_bodyMesh = std::move(mesh);
+    m_ikRig.reset(); // rebuilt with the mesh on the next use (ensureIkRig)
 }
 
 bool Armature::loadDump(const std::string& path, std::vector<ArmatureBone>& out) {
@@ -280,8 +345,17 @@ void Armature::clampBoneEuler(int index) {
 
 void Armature::recomposePoseLocal(std::size_t index) {
     Bone& bone = m_bones[index];
-    bone.poseLocal = bone.localBind * bone.orient *
-                     eulerMatrix(m_boneEuler[index], bone.rotationOrder) * bone.invOrient;
+    // A ZERO Euler is the bind itself, exactly (2026-09-23): composed as localBind * OR * I *
+    // OR^-1 it was the bind to a float rounding, and a pose reset — or any joint brought back to
+    // zero — left every world matrix 1e-7 off the freshly built figure's. A drag then began its
+    // solve from residuals a few 1e-7 apart, and one that runs out of iterations grows that to
+    // 2e-5 in a tick and to a different basin of a chaotic gesture (the in-app prone push-up
+    // landed its arms straight after a fresh load and folded after a reset). Reset Pose is a
+    // clean slate now: the same pose and target give the same drag, bit for bit.
+    const glm::vec3& e = m_boneEuler[index];
+    bone.poseLocal = (e.x == 0.0f && e.y == 0.0f && e.z == 0.0f)
+                         ? bone.localBind
+                         : bone.localBind * bone.orient * eulerMatrix(e, bone.rotationOrder) * bone.invOrient;
     // Pose translation adds in the parent frame (only ever non-zero where FBIK moved the root).
     bone.poseLocal[3] += glm::vec4(m_boneTranslation[index], 0.0f);
 }
@@ -299,8 +373,38 @@ void Armature::nudgeSelectedBone(const glm::vec3& deltaEulerDegrees) {
     if (m_selectedBone < 0 || m_selectedBone >= static_cast<int>(m_bones.size())) {
         return;
     }
-    m_boneEuler[static_cast<std::size_t>(m_selectedBone)] += deltaEulerDegrees;
+    const std::size_t sel = static_cast<std::size_t>(m_selectedBone);
+    const glm::vec3 before = m_boneEuler[sel];
+    // The FK COLLISION STOP: a rotation may not push a limb's joint into a body volume (see
+    // fkVolumeDepth — the same capsules the IK keeps the limbs out of). The rotation is applied
+    // in full, and if any moving pair penetrates deeper than it already did (or than the
+    // 2mm tolerance), the angle is bisected back to the largest fraction that does not — so a
+    // joint can always rotate OUT of a penetration a loaded pose left it in, and stops at the
+    // surface on the way in. The rig is built on the first rotation if no IK drag has yet.
+    const bool guard = ensureIkRig() && !m_ikRig->bodyVolumes().empty();
+    const float depthBefore = guard ? fkVolumeDepth(m_selectedBone) : 0.0f;
+    m_boneEuler[sel] = before + deltaEulerDegrees;
     applyBoneEuler(m_selectedBone);
+    if (guard) {
+        constexpr float kFkCollideTol = 0.002f;
+        const float allow = std::max(depthBefore, kFkCollideTol);
+        if (fkVolumeDepth(m_selectedBone) > allow) {
+            float lo = 0.0f; // the fraction of the rotation last known not to penetrate
+            float hi = 1.0f;
+            for (int k = 0; k < 8; ++k) {
+                const float mid = 0.5f * (lo + hi);
+                m_boneEuler[sel] = before + deltaEulerDegrees * mid;
+                applyBoneEuler(m_selectedBone);
+                if (fkVolumeDepth(m_selectedBone) > allow) {
+                    hi = mid;
+                } else {
+                    lo = mid;
+                }
+            }
+            m_boneEuler[sel] = before + deltaEulerDegrees * lo;
+            applyBoneEuler(m_selectedBone);
+        }
+    }
     if (m_ikRig && m_ikRig->dragActive()) {
         holdNudgedBoneThroughDrag(m_selectedBone); // the wheel during an IK drag (see armature.h)
     }

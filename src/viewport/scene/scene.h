@@ -33,6 +33,7 @@ class Camera;
 class IblMaps;
 class LineOverlay;
 class Mesh;
+class Armature;
 class Model;
 class OutlineMask;
 class OutlinePass;
@@ -186,7 +187,7 @@ public:
     bool beginBoneIkDrag();
     /// One FBIK drag update: solves the whole body so the selected joint reaches toward
     /// @p targetWorld (feet stay planted, CoM auto-balanced), then re-poses the figure. Returns
-    /// true if the pose actually changed (false: deadband / settle-freeze — no redraw needed).
+    /// true if the pose actually changed (false: the solve left the pose where it was — no redraw needed).
     bool dragBoneIkTo(const glm::vec3& targetWorld);
     /// One animated release-settle step (see Armature::settleIkTick): call at the drag tick rate
     /// after release until it returns false, then endBoneIkDrag().
@@ -197,6 +198,14 @@ public:
     /// World-space position of the figure's selected joint (the IK drag plane's anchor point).
     /// Returns false when no joint is selected.
     bool selectedBoneWorldPosition(glm::vec3& out) const;
+    /// The point of the selected bone the user took hold of (Armature::ikGrabPointWorld): the
+    /// IK drag's plane passes through it and its targets are where IT should go.
+    bool ikGrabPointWorld(glm::vec3& out) const;
+    /// The posable figure's runtime skeleton, read-only, or null (diagnostics — see Model::armature).
+    const Armature* figureArmature() const;
+    /// Diagnostics (the IK benchmark): puts the grab point @p share of the way along the rigid
+    /// limb segment the selected bone belongs to (Armature::setIkGrabOnSegment).
+    void setIkGrabOnSegment(float share);
     // --- User joint pins (forwarded to the figure; see Armature::togglePinSelectedBone) ---
     bool togglePinSelectedBone();
     bool selectedBonePinned() const;

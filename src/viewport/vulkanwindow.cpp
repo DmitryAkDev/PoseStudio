@@ -15,6 +15,7 @@
 
 #include "figureimportservice.h"
 #include "ikdiagnostics.h"
+#include "ikscript.h"
 #include "modelimportservice.h"
 #include "rendering/vulkancommon.h"
 #include "rendering/vulkancontext.h"
@@ -67,6 +68,7 @@ VulkanWindow::VulkanWindow(QVulkanInstance* instance, uint32_t apiVersion, QStri
     connect(m_fall.timer, &QTimer::timeout, this, &VulkanWindow::onFallTick);
 
     m_diag = IkDiagnostics::fromEnvironment(); // null unless POSESTUDIO_IK_PERF / _BENCH is set
+    m_script = IkScript::fromEnvironment();    // null unless POSESTUDIO_IK_SCRIPT is set
 }
 
 VulkanWindow::~VulkanWindow() {
@@ -152,6 +154,9 @@ void VulkanWindow::initializeVulkan() {
         }
         if (m_diag && m_diag->benchRequested()) {
             QTimer::singleShot(1500, this, &VulkanWindow::startBench); // after the first frames
+        }
+        if (m_script) {
+            QTimer::singleShot(1500, this, &VulkanWindow::startScript);
         }
     } catch (const VulkanError& e) {
         // Leave the surface intact (Qt owns it) but mark the device as failed so we don't retry
@@ -309,6 +314,9 @@ void VulkanWindow::renderFrame() {
         }
         if (perfFrame) {
             m_diag->frameEnd(f0);
+        }
+        if (m_script) {
+            scriptFrameRendered(); // a `shot` waiting for its frame
         }
     } catch (const VulkanError& e) {
         // Runtime VK_CHECK failure (e.g. VK_ERROR_DEVICE_LOST after a driver reset/TDR): tear the

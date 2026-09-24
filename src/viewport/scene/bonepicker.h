@@ -23,9 +23,15 @@ class Camera;
 class Model;
 
 /// A pick result: the model (figure) index and the bone index within it; -1/-1 for a miss.
+/// A pick of a bone's BODY also says where along it: @p child is the joint the picked segment
+/// runs to and @p along the click's place on it (0 at the bone's own joint, 1 at the child's) —
+/// the point of the body the user took hold of (Scene::selectBoneAt makes it the IK grab
+/// point). A pick of the joint itself leaves child -1.
 struct BonePick {
-    int model = -1;
-    int bone = -1;
+    int   model = -1;
+    int   bone = -1;
+    int   child = -1;
+    float along = 0.0f;
 };
 
 /// Finds the figure joint under the pixel (@p px, @p py) of a @p vpW × @p vpH viewport. Every

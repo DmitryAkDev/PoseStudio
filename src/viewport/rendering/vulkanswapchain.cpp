@@ -176,6 +176,13 @@ void VulkanSwapchain::createSwapchain(VkExtent2D extentHint) {
     ci.imageExtent = m_extent;
     ci.imageArrayLayers = 1;
     ci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    // (... and a copy SOURCE where the surface allows it — every desktop driver does: the frame
+    // capture of the scripted test runner reads the composited image back, VulkanRenderer::
+    // requestCapture. The flag costs nothing while no capture is asked for.)
+    m_readable = (caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
+    if (m_readable) {
+        ci.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    }
 
     // Single graphics+present family (see VulkanContext::findQueueFamilies), so the
     // images are used exclusively by one family — no concurrent sharing needed.

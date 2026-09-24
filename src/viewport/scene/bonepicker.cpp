@@ -18,14 +18,15 @@ BonePick pickBone(const std::vector<std::unique_ptr<Model>>& models, float px, f
                   float vpH, const Camera& camera) {
     const glm::mat4 viewProj = camera.viewProjection();
     const glm::vec2 click(px, py);
-    const auto distToSegment = [](const glm::vec2& p, const glm::vec2& a, const glm::vec2& b) {
+    const auto distToSegment = [](const glm::vec2& p, const glm::vec2& a, const glm::vec2& b, float& t) {
         const glm::vec2 ab = b - a;
         const float len2 = glm::dot(ab, ab);
-        const float t = (len2 > 1e-6f) ? glm::clamp(glm::dot(p - a, ab) / len2, 0.0f, 1.0f) : 0.0f;
+        t = (len2 > 1e-6f) ? glm::clamp(glm::dot(p - a, ab) / len2, 0.0f, 1.0f) : 0.0f;
         return glm::length(p - (a + ab * t));
     };
     int   jointModel = -1, joint = -1; float jointDist = 1e9f; // nearest joint ORIGIN
     int   segModel = -1,   seg = -1;   float segDist = 1e9f;   // nearest bone SEGMENT (its owner)
+    int   segChild = -1;               float segAlong = 0.0f;  // ... the joint it runs to, and where on it
     std::vector<glm::vec2> screen;
     std::vector<char>      visible;
     for (std::size_t m = 0; m < models.size(); ++m) {
@@ -58,11 +59,14 @@ BonePick pickBone(const std::vector<std::unique_ptr<Model>>& models, float px, f
                 !visible[static_cast<std::size_t>(parent)]) {
                 continue; // no segment, a root's virtual segment, or off-camera
             }
-            const float dist = distToSegment(click, screen[static_cast<std::size_t>(parent)], screen[i]);
+            float along = 0.0f;
+            const float dist = distToSegment(click, screen[static_cast<std::size_t>(parent)], screen[i], along);
             if (dist < segDist) {
                 segDist = dist;
                 seg = parent; // the segment is the PARENT bone's body
                 segModel = static_cast<int>(m);
+                segChild = static_cast<int>(i);
+                segAlong = along;
             }
         }
     }
@@ -77,6 +81,8 @@ BonePick pickBone(const std::vector<std::unique_ptr<Model>>& models, float px, f
     } else if (seg >= 0 && segDist <= kPickRadiusPx) {
         pick.model = segModel;
         pick.bone = seg;
+        pick.child = segChild;
+        pick.along = segAlong;
     } else if (joint >= 0 && jointDist <= kPickRadiusPx) {
         pick.model = jointModel;
         pick.bone = joint;

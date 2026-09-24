@@ -16,6 +16,7 @@
 #include "vulkanwindow.h"
 
 #include "ikdiagnostics.h"
+#include "ikscript.h"
 #include "rendering/vulkanrenderer.h"
 #include "scene/scene.h"
 
@@ -36,6 +37,9 @@ void VulkanWindow::onIkTick() {
     if (m_diag && m_diag->benchActive && m_ik.dragging) {
         benchAdvance(); // the scripted cursor: moves m_ik.lastTarget along the bench path
     }
+    if (m_script && m_ik.dragging) {
+        scriptDragTick(); // the scripted test's cursor (vulkanwindow_script.cpp)
+    }
     if (m_ik.settling) {
         // Animated release settle: one capped round per tick until the feet land (the landing
         // tick's frame is requested by finishIkSettle itself).
@@ -46,11 +50,14 @@ void VulkanWindow::onIkTick() {
             if (m_diag && m_diag->benchActive) {
                 benchFinish();
             }
+            if (m_script) {
+                scriptSettled();
+            }
         }
     } else if (m_ik.dragging && m_ik.hasTarget) {
-        // Redraw only when the solve actually moved the pose: during a held-still drag the
-        // settle-freeze stops solving entirely, and re-rendering an unchanged frame at 60 Hz
-        // would burn GPU/battery for nothing (rendering is event-driven everywhere else too).
+        // Redraw only when the solve actually moved the pose: under a still cursor it converges
+        // to the same pose every tick, and re-rendering an unchanged frame at 60 Hz would burn
+        // GPU/battery for nothing (rendering is event-driven everywhere else too).
         if (issueIkTarget()) {
             m_ik.poseChanged = true; // a real edit: the release may settle + commit undo
             requestUpdate();
@@ -58,7 +65,7 @@ void VulkanWindow::onIkTick() {
     }
     if (m_diag) {
         glm::vec3  effector;
-        const bool live = m_ik.dragging && m_ik.hasTarget && scene().selectedBoneWorldPosition(effector);
+        const bool live = m_ik.dragging && m_ik.hasTarget && scene().ikGrabPointWorld(effector);
         m_diag->tickEnd(tickStart, live ? &effector : nullptr, m_ik.lastTarget);
     }
 }
@@ -88,7 +95,9 @@ bool VulkanWindow::beginJointGesture(const QPointF& localPos, bool fkModifier) {
 
 bool VulkanWindow::beginIkDrag() {
     m_posingBone = false;
-    m_ik.dragging = scene().beginBoneIkDrag() && scene().selectedBoneWorldPosition(m_ik.planePoint);
+    // (The plane passes through the point of the bone the user took hold of — the joint itself
+    // for a click on the joint — and the targets are where that point should go.)
+    m_ik.dragging = scene().beginBoneIkDrag() && scene().ikGrabPointWorld(m_ik.planePoint);
     if (m_ik.dragging) {
         m_ik.hasTarget = false;
         m_ik.poseChanged = false;
@@ -156,6 +165,9 @@ void VulkanWindow::finishIkSettle() {
 }
 
 bool VulkanWindow::dragPlaneHit(const QPointF& localPos, glm::vec3& outWorld) const {
+    if (!m_renderer) {
+        return false; // (a drag implies a renderer; the guard keeps the invariant explicit)
+    }
     const glm::mat4 view = m_renderer->camera().view();
     const glm::vec3 planeNormal(view[0][2], view[1][2], view[2][2]); // toward the camera
     const Ray       ray = cursorRay(localPos);
@@ -180,6 +192,9 @@ void VulkanWindow::setIkTarget(const glm::vec3& target) {
 }
 
 bool VulkanWindow::stepIkDepth(float notches, const QPointF& cursorPos) {
+    if (!m_renderer) {
+        return false;
+    }
     Camera&         camera = m_renderer->camera();
     const glm::mat4 view = camera.view();
     const glm::vec3 towardCamera(view[0][2], view[1][2], view[2][2]);
@@ -250,7 +265,7 @@ void VulkanWindow::onFallTick() {
 }
 
 void VulkanWindow::finishGroundFall() {
-    if (!m_fall.timer || !m_fall.timer->isActive()) {
+    if (!m_fall.timer->isActive()) { // (the timer is made in the constructor: never null)
         return;
     }
     m_fall.timer->stop();

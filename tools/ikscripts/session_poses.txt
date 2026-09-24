@@ -1,0 +1,60 @@
+# Whole poses built the way a user builds them — several drags in a row, from the views a user
+# works in — and looked at from a three-quarter view at the end. Each drag starts from the pose
+# the last one left: this is where the drags' interplay shows (pins, healing, hanging arms).
+
+# A: a walking pose. Front foot forward, back foot back, the arms swung against the legs.
+view right
+press lFoot
+dragv -0.30 0 40 20
+release
+press rFoot
+dragv 0.22 0.04 40 20
+release
+press rHand
+dragv -0.22 0.12 40 20
+release
+press lHand
+dragv 0.18 0.08 40 20
+release
+expect lowest > 0
+expect gaze > -8
+shot 41_walk_side
+orbit 40 -10
+shot 42_walk_threeq
+reset
+
+# B: sitting on the floor, a hand brought onto the knee.
+view right
+press hip
+dragv 0.45 -0.85 100 40
+release
+press lHand
+dragv -0.30 0.10 50 30
+release
+expect lowest > 0
+shot 43_sit_hand_to_knee_side
+orbit 40 -10
+shot 44_sit_threeq
+reset
+
+# C: reaching up high with one hand, from the front.
+view front
+press rHand
+dragv -0.15 1.00 60 40
+expect steps == 0
+shot 45_reach_up_front
+release
+orbit 50 -10
+shot 46_reach_up_threeq
+reset
+
+# D: picking something up off the floor in front of her.
+view right
+press rHand
+dragv -0.45 -0.78 70 40
+expect lowest > 0
+shot 47_pick_up_side
+release
+orbit 40 -10
+shot 48_pick_up_threeq
+quit

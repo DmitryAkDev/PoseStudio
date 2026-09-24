@@ -1,0 +1,86 @@
+# Side view (camera at +X): screen-right is the figure's BACK, so forward = negative "right".
+# Every gesture is a TEST as well as a picture: the `expect` lines are regression guards set from
+# what the app does today (see README.md), the shot is for the eye.
+view right
+
+# The chest nudged 10cm back: two small steps, upright (a lean-back allowance was tried and thrown out).
+press chest@0.6
+dragv 0.10 0 50 40
+shot 01_chest_back_10
+expect grab < 3
+expect steps <= 2
+expect gaze > -8
+release
+reset
+
+# The head pulled back: she steps back under it, upright, the head level (the neck is the spine's
+# top — uncoupled it took the drag alone, and one generation threw its head back to the sky).
+press head
+dragv 0.15 -0.03 50 40
+shot 02_head_back_15
+expect grab < 3
+expect gaze > -10
+expect gaze < 12
+expect euler.neck.x < 8
+expect euler.neck.x > -8
+release
+reset
+
+# A bow by the chest: she folds at the hips, arms hanging, looking at the floor ahead of her.
+press chest@0.6
+dragv -0.25 -0.10 50 40
+shot 03_bow_chest
+expect grab < 5
+expect gaze > -60
+expect gaze < -30
+expect lowest > 0
+release
+reset
+
+press head
+dragv -0.30 -0.10 50 40
+shot 04_bow_head
+expect grab < 3
+expect steps == 0
+# (She looks at the floor ahead of her — riding a flexed neck she stared back at her own feet, -70.)
+expect gaze > -60
+release
+reset
+
+# The chest taken 20cm forward: a lean, then a walk. The head stays up.
+press chest@0.6
+dragv -0.20 0 60 50
+shot 05_chest_fwd_20_walk
+expect grab < 3
+expect gaze > -10
+release
+reset
+
+# Hips 10cm back: the hip hinge (chest forward over the feet), the head up.
+press hip
+dragv 0.10 0 50 40
+shot 06_hips_back_10_hinge
+expect grab < 3
+expect steps == 0
+expect gaze > -10
+release
+reset
+
+press hip
+dragv 0 -0.30 50 40
+shot 07_crouch_30
+expect grab < 3
+expect steps == 0
+expect gaze > -5
+expect lowest > 0
+release
+reset
+
+press lHand
+dragv -0.35 0.30 50 40
+shot 08_hand_fwd_up
+expect grab < 3
+expect steps == 0
+expect hips < 20
+release
+quit

@@ -79,6 +79,10 @@ std::vector<FigureBone> parseSkeleton(const nlohmann::json& nodeLibrary) {
         }
         FigureBone bone;
         bone.name = node.value("id", node.value("name", std::string()));
+        bone.nodeName = node.value("name", bone.name); // the cross-file identity (figuredata.h)
+        if (bone.nodeName.empty()) {
+            bone.nodeName = bone.name;
+        }
         // Rest transforms read "value" first (see restVec3Channels): a scene's dialed
         // current_value is the posed state, and the bind must come from rest.
         if (const auto cp = node.find("center_point"); cp != node.end()) {

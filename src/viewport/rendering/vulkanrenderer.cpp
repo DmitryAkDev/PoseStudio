@@ -10,6 +10,7 @@
 #include "postprocess.h"
 #include "shaderlibrary.h"
 #include "vulkancontext.h"
+#include "vulkanbuffer.h"
 #include "vulkanswapchain.h"
 
 #include "grid.h"
@@ -244,9 +245,19 @@ bool VulkanRenderer::drawFrame() {
         VK_CHECK(acquire);
     }
 
+    // FRAME CAPTURE (requestCapture): this frame's composited image is copied into a host buffer.
+    const VkExtent2D captureExtent = m_swapchain->extent();
+    const bool capturing = m_captureRequested && m_swapchain->readable();
+    VulkanBuffer captureBuffer;
+    if (capturing) {
+        captureBuffer = VulkanBuffer(m_context, static_cast<VkDeviceSize>(captureExtent.width) * captureExtent.height * 4,
+                                     VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_AUTO,
+                                     VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT);
+    }
+
     VkCommandBuffer cmd = m_commandBuffers[m_currentFrame];
     VK_CHECK(vkResetCommandBuffer(cmd, 0));
-    recordCommandBuffer(cmd, imageIndex);
+    recordCommandBuffer(cmd, imageIndex, capturing ? captureBuffer.handle() : VK_NULL_HANDLE);
 
     // Reset the fence only once we're committing to a submit that will re-signal it: an early-out
     // above — or a throw during recording — must leave it signalled, because an unsignalled fence
@@ -265,6 +276,23 @@ bool VulkanRenderer::drawFrame() {
     submit.signalSemaphoreCount = 1;
     submit.pSignalSemaphores = &renderFinished;
     VK_CHECK(vkQueueSubmit(m_context.graphicsQueue(), 1, &submit, inFlight));
+    if (capturing) {
+        // (A diagnostic path: waiting for the frame here is its whole cost.)
+        m_captureRequested = false;
+        VK_CHECK(vkWaitForFences(device, 1, &inFlight, VK_TRUE, UINT64_MAX));
+        captureBuffer.invalidate();
+        const VkFormat format = m_swapchain->colorFormat();
+        m_capture.width = captureExtent.width;
+        m_capture.height = captureExtent.height;
+        m_capture.bgra = format == VK_FORMAT_B8G8R8A8_SRGB || format == VK_FORMAT_B8G8R8A8_UNORM;
+        const auto* bytes = static_cast<const unsigned char*>(captureBuffer.mappedData());
+        const std::size_t count = static_cast<std::size_t>(captureExtent.width) * captureExtent.height * 4;
+        if (bytes != nullptr) {
+            m_capture.pixels.assign(bytes, bytes + count);
+        } else {
+            m_capture.pixels.clear();
+        }
+    }
 
     VkSwapchainKHR swapchain = m_swapchain->handle();
     VkPresentInfoKHR present{};
@@ -308,7 +336,16 @@ bool VulkanRenderer::drawFrame() {
  * Every pass's inter-pass synchronisation is expressed by its render pass's external
  * dependencies (renderpassbuilder.h), not by barriers here.
  */
-void VulkanRenderer::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex) {
+bool VulkanRenderer::takeCapture(CapturedFrame& out) {
+    if (m_capture.pixels.empty()) {
+        return false;
+    }
+    out = std::move(m_capture);
+    m_capture = CapturedFrame{};
+    return true;
+}
+
+void VulkanRenderer::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex, VkBuffer captureInto) {
     VkCommandBufferBeginInfo begin{};
     begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     VK_CHECK(vkBeginCommandBuffer(cmd, &begin));
@@ -395,6 +432,33 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageInde
     m_postProcess->recordComposite(cmd, pbr && m_scene->lightingSettings().tonemap, pbr,
                                    outlined ? kOutlineWidthLogicalPx * m_uiScale : 0.0f);
     vkCmdEndRenderPass(cmd);
+
+    if (captureInto != VK_NULL_HANDLE) {
+        // FRAME CAPTURE: the pass left the image in its present layout — to a copy source, into the
+        // host buffer, and back.
+        VkImageMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = m_swapchain->image(imageIndex);
+        barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        barrier.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                             0, nullptr, 0, nullptr, 1, &barrier);
+        VkBufferImageCopy region{};
+        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.imageExtent = {extent.width, extent.height, 1};
+        vkCmdCopyImageToBuffer(cmd, barrier.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, captureInto, 1, &region);
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        barrier.dstAccessMask = 0;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0,
+                             nullptr, 0, nullptr, 1, &barrier);
+    }
 
     VK_CHECK(vkEndCommandBuffer(cmd));
 }

@@ -271,7 +271,7 @@ void VulkanWindow::wheelEvent(QWheelEvent* event) {
         // so the step matches the view's scale, and the raw target is re-derived from the
         // CURRENT cursor through the moved plane so the joint stays under the pointer while its
         // depth changes. The 60 Hz timer picks the new target up like any cursor motion (same
-        // filter, same governors), so a notch reads as a smooth push rather than a jump, and the
+        // filter, same damped follower), so a notch reads as a smooth push rather than a jump, and the
         // Armature's floor clamp on the drag target still applies. The plane is kept at least
         // 10cm in front of the camera: pulled through it, the cursor ray could no longer hit it.
         stepIkDepth(steps, event->position());

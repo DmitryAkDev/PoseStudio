@@ -1,0 +1,74 @@
+# The view a user actually poses in: the Home view (perspective, a little above, in front).
+# The drag plane is the camera's, so "down" on screen is down AND toward the camera.
+view home
+
+# The hips pulled straight down on screen.
+press hip
+dragv 0 -0.30 50 40
+shot 31_home_hips_down_30
+expect grab < 3
+expect steps == 0
+expect lowest > 0
+release
+reset
+
+# The chest pulled down on screen: a bow toward the camera.
+press chest@0.6
+dragv 0 -0.25 50 40
+shot 32_home_chest_down_25
+expect lowest > 0
+release
+reset
+
+# The head pulled to one side and down.
+press head
+dragv 0.15 -0.10 50 40
+shot 33_home_head_side_down
+expect grab < 5
+# (The body leans and the head tilts a little: it used to be a neck bent to its 40 degree limit.)
+expect headroll < 30
+expect headroll > -30
+release
+reset
+
+# A hand raised up and out.
+press lHand
+dragv 0.20 0.55 50 40
+shot 34_home_hand_up_out
+expect grab < 5
+expect steps == 0
+release
+reset
+
+# A hand pushed down to the floor beside her.
+press lHand
+dragv 0.05 -0.75 60 40
+shot 35_home_hand_to_floor
+expect lowest > 0
+release
+reset
+
+# A foot lifted and taken out to the side.
+press lFoot
+dragv 0.25 0.20 50 40
+shot 36_home_foot_out_up
+expect grab < 5
+expect steps == 0
+release
+reset
+
+# From a three-quarter view: the hips taken down and to screen-left.
+orbit 40 5
+press hip
+dragv -0.15 -0.35 60 40
+shot 37_threeq_hips_down_left
+expect lowest > 0
+release
+reset
+
+# ... and the chest pushed away to screen-right.
+press chest@0.6
+dragv 0.22 -0.05 60 50
+shot 38_threeq_chest_right
+release
+quit

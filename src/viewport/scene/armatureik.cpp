@@ -1,28 +1,22 @@
 /**
  * @file armatureik.cpp
- * @brief Armature's full-body-IK integration: the engine boundary of the FBIK system (scene/ik/)
- *        — the drag lifecycle (beginIkDrag / dragIkTo / settleIkTick / endIkDrag) with its
- *        damped-motion governors, and the user-pin API.
+ * @brief Armature's full-body-IK drag LIFECYCLE — the engine side of the FBIK system (scene/ik/):
+ *        building the per-figure IkRig and the joint solver's skeleton, beginIkDrag (contacts,
+ *        user pins, the grab offset of a promoted grab, the posture reference), dragIkTo (the
+ *        model-space target: grab offset, floor and body-volume clamps — then the tick's solve),
+ *        settleIkTick / endIkDrag, the FK collision stop's measure, and the user-pin API.
  *
- * Everything FBIK needs from the engine lives in three translation units. This file builds the
- * per-figure IkRig from the bind skeleton, detects ground contacts, drives the per-tick drag
- * solve with its governors (under-relaxation, proportional world-space cap, motion shaping,
- * reversal-gated micro-damping, settle-freeze) and the animated pose-holding release settle;
- * armatureikextract.cpp holds the ROTATION EXTRACTION that converts the solver's joint positions
- * back into the engine's per-channel Euler pose (+ the root's pose translation); and
- * armatureikpins.cpp holds the exact joint-space pin refinement (damped least squares) with the
- * drag-tick floor lift. The governor constants the first two share sit in armatureik_detail.h.
- * The solver itself is armature-agnostic (scene/ik/, pure positions); these files are the only
- * place the two meet, so solver work and engine work can evolve independently. Vulkan-free like
- * the rest of the Armature, so the IK harness runs this exact loop. See CLAUDE.md's FBIK section
- * for the design history — most numeric policies here trace to a specific user-visible failure,
- * documented at their definitions.
+ * The per-tick SOLVE — the drag's tasks and stiffness model handed to scene/ik/jointsolver.h and
+ * applied in full, with the rig's per-tick policy around it — is armatureiksolve.cpp. Together
+ * the two files are the only place the engine and scene/ik/ meet. Vulkan-free like the rest of
+ * the Armature, so the IK harness runs this exact loop.
  */
 
 #include "armature.h"
 
-#include "armatureik_detail.h" // the governor constants + wrappedAngleDelta
-#include "ikrig.h"             // full-body IK orchestrator
+#include "ikmath.h"
+#include "ikrig.h"             // the drag's policy: contacts, pins, volumes, stepping, lift-off
+#include "jointsolver.h"       // complete type for the unique_ptr
 
 #include <glm/gtc/quaternion.hpp>
 
@@ -31,25 +25,54 @@
 #include <cstdio>
 #include <cstddef>
 #include <cstdlib>
+#include <string>
 #include <vector>
 
 namespace pose {
 
 namespace {
 
-// POSESTUDIO_IK_TRACE=1: the per-drag (beginIkDrag) and per-tick (dragIkTo) diagnostics.
+// POSESTUDIO_IK_TRACE=1: the per-drag (beginIkDrag) diagnostics (armatureiksolve.cpp prints the
+// per-tick ones).
 const bool kIkTrace = std::getenv("POSESTUDIO_IK_TRACE") != nullptr;
+
+
+// IK_DRAG_STATE_TRACE=1: the DETERMINISM probe — a fingerprint of the pose at every press and
+// every tick, so two drags meant to be identical can be compared line by line (the first use
+// found a zero Euler composing to the bind only to a rounding: Armature::recomposePoseLocal).
+const bool kDragStateTrace = std::getenv("IK_DRAG_STATE_TRACE") != nullptr;
+
+/// A cheap order-sensitive fingerprint of a pose's channels (x + 3y + 7z, summed over bones).
+double poseFingerprint(const std::vector<glm::vec3>& perBone) {
+    double sum = 0.0;
+    for (const glm::vec3& v : perBone) {
+        sum += v.x * 1.0 + v.y * 3.0 + v.z * 7.0;
+    }
+    return sum;
+}
+
+/// The bone names flagged in a per-bone mask, space-separated, for a trace line.
+void printFlaggedBones(const std::vector<char>& mask, const std::vector<std::string>& names) {
+    for (std::size_t i = 0; i < mask.size() && i < names.size(); ++i) {
+        if (mask[i]) {
+            std::fprintf(stderr, " %s", names[i].c_str());
+        }
+    }
+}
 
 } // namespace
 
-bool Armature::beginIkDrag() {
-    if (m_selectedBone < 0 || m_selectedBone >= static_cast<int>(m_bones.size()) ||
-        m_bones.empty()) {
+bool Armature::ensureIkRig() {
+    if (m_ikRig) {
+        return true;
+    }
+    if (m_bones.empty()) {
         return false;
     }
-    if (!m_ikRig) {
-        // First IK drag on this figure: build the rig (graph, constraints, masses) from the bind
-        // skeleton, plus the model-space bind joint positions the extraction walk reads.
+    {
+        // First use on this figure: build the rig (body tree, masses, clearances, body volumes)
+        // from the bind skeleton, plus the model-space bind joint positions (the foot contact
+        // model finds the ball of a foot by bind height).
         std::vector<IkRigBone> rigBones(m_bones.size());
         std::vector<glm::vec3> bindPos(m_bones.size(), glm::vec3(0.0f));
         for (std::size_t i = 0; i < m_bones.size(); ++i) {
@@ -61,14 +84,211 @@ bool Armature::beginIkDrag() {
             rigBone.name = m_boneNames[i];
             rigBone.parent = bone.parent;
             rigBone.bindPos = bindPos[i];
-            rigBone.orientAxes = glm::mat3(bone.orient);
-            rigBone.rotMinDeg = bone.rotMin;
-            rigBone.rotMaxDeg = bone.rotMax;
-            rigBone.rotLimited = bone.rotLimited;
         }
         m_ikRig = std::make_unique<IkRig>();
-        m_ikRig->build(rigBones);
+        m_ikRig->build(rigBones, m_bodyMesh.empty() ? nullptr : &m_bodyMesh);
         m_ikBindPos = std::move(bindPos);
+        buildJointSolver();
+    }
+    return true;
+}
+
+float Armature::fkVolumeDepth(int rotatedBone) const {
+    if (!m_ikRig || rotatedBone < 0 || rotatedBone >= static_cast<int>(m_bones.size())) {
+        return 0.0f;
+    }
+    const int n = static_cast<int>(m_bones.size());
+    std::vector<char> inSub(static_cast<std::size_t>(n), 0);
+    for (int i = 0; i < n; ++i) {
+        for (int cur = i; cur >= 0; cur = m_bones[static_cast<std::size_t>(cur)].parent) {
+            if (cur == rotatedBone) {
+                inSub[static_cast<std::size_t>(i)] = 1;
+                break;
+            }
+        }
+    }
+    const auto pos = [&](int i) { return glm::vec3(m_poseGlobal[static_cast<std::size_t>(i)][3]); };
+    float worst = 0.0f;
+    for (const BodyVolume& v : m_ikRig->bodyVolumes()) {
+        const VolumeAxis ax = volumeAxis(v, n, pos);
+        if (!ax.ok) {
+            continue;
+        }
+        const bool volumeMoves = inSub[static_cast<std::size_t>(v.a)] || inSub[static_cast<std::size_t>(v.b)];
+        for (int i = 0; i < n; ++i) {
+            const char applies = v.applies[static_cast<std::size_t>(i)];
+            if (!applies || (inSub[static_cast<std::size_t>(i)] != 0) == volumeMoves) {
+                continue; // no relative motion: this rotation cannot change the pair
+            }
+            const glm::vec3 P = pos(i);
+            const float t = ax.ab2 > 1e-12f ? glm::clamp(glm::dot(P - ax.A, ax.ab) / ax.ab2, 0.0f, 1.0f) : 0.0f;
+            const float d = glm::length(P - (ax.A + ax.ab * t));
+            if (applies == kVolumeAppliesRider) {
+                worst = std::max(worst, volumeRadiusAt(v, t) + m_ikRig->riderClearance() - d);
+                continue;
+            }
+            float pair = volumeRadiusAt(v, t) + m_ikRig->volumeClearance(i) - d;
+            // The segment into the joint (two limbs cross at their middles).
+            const float segR = m_ikRig->volumeSegmentRadius(i);
+            const int par = m_bones[static_cast<std::size_t>(i)].parent;
+            if (volumeAppliesSegment(v, applies) && segR > 0.0f && par >= 0) {
+                float sPar = 0.0f;
+                float tPar = 0.0f;
+                const float dSeg = closestSegmentPoints(pos(par), P, ax.A, ax.B, sPar, tPar);
+                pair = std::max(pair, volumeRadiusAt(v, tPar) + std::max(kVolumeSegmentFlesh * segR, m_ikRig->volumeClearance(i)) - dSeg);
+            }
+            static const bool kDepthTrace = std::getenv("IK_FK_DEPTH_TRACE") != nullptr; // which pair stops an FK turn
+            if (kDepthTrace && pair > 1.0e-3f) {
+                std::fprintf(stderr, "[fk-depth] rotated %s: %s inside volume %s-%s by %.1f mm", m_boneNames[static_cast<std::size_t>(rotatedBone)].c_str(),
+                             m_boneNames[static_cast<std::size_t>(i)].c_str(), m_boneNames[static_cast<std::size_t>(v.a)].c_str(),
+                             m_boneNames[static_cast<std::size_t>(v.b)].c_str(), pair * 1000.0f);
+                std::fputc(10, stderr);
+            }
+            worst = std::max(worst, pair);
+        }
+    }
+    return worst;
+}
+
+/// A segment grabbed nearer its far joint than this share of its length drags the FAR joint (the
+/// knee for a thigh, the elbow for an upper arm, the hand for a forearm), nearer its near joint
+/// the near one. Well short of the middle: what a hand laid on a thigh or an upper arm means to
+/// move is the limb, and only a grab right by the socket means the socket (the pelvis, the
+/// shoulder); and the far joint's target is the cursor's carried out along the segment, by
+/// 1 / share — under a third of the way along that lever turns a twitch into a swing.
+constexpr float kSegmentGrabNear = 0.35f;
+
+bool Armature::isTwistBone(int bone) const {
+    if (bone < 0 || bone >= static_cast<int>(m_bones.size())) {
+        return false;
+    }
+    // Two locked axes and the free one ALONG the bone: a hinge (an elbow, on the generations
+    // that lock its other two channels) has two locked axes too, its free one across the bone.
+    const Bone& b = m_bones[static_cast<std::size_t>(bone)];
+    int locked = 0;
+    int freeAxis = -1;
+    for (int a = 0; a < 3; ++a) {
+        if (b.rotLimited[a] && (b.rotMax[a] - b.rotMin[a]) < 2.0f) {
+            ++locked;
+        } else {
+            freeAxis = a;
+        }
+    }
+    if (locked != 2 || freeAxis < 0) {
+        return false;
+    }
+    glm::vec3 along(0.0f);
+    float longest = 0.0f;
+    for (const int c : m_children[static_cast<std::size_t>(bone)]) {
+        const glm::vec3 offset(m_bones[static_cast<std::size_t>(c)].localBind[3]);
+        if (glm::length(offset) > longest) {
+            longest = glm::length(offset);
+            along = offset;
+        }
+    }
+    if (longest < 1.0e-4f) {
+        along = glm::vec3(b.localBind[3]); // (a leaf helper: the way it lies from its parent)
+        longest = glm::length(along);
+    }
+    return longest > 1.0e-4f && std::abs(glm::dot(glm::vec3(b.orient[freeAxis]), along / longest)) > 0.8f;
+}
+
+int Armature::mainChild(int bone) const {
+    if (bone < 0 || bone >= static_cast<int>(m_children.size())) {
+        return -1;
+    }
+    // The child with the biggest subtree (children follow parents in the bone order).
+    int best = -1;
+    int bestSize = 0;
+    for (const int c : m_children[static_cast<std::size_t>(bone)]) {
+        int size = 0;
+        std::vector<int> stack{c};
+        while (!stack.empty()) {
+            const int node = stack.back();
+            stack.pop_back();
+            ++size;
+            stack.insert(stack.end(), m_children[static_cast<std::size_t>(node)].begin(),
+                         m_children[static_cast<std::size_t>(node)].end());
+        }
+        if (size > bestSize) {
+            bestSize = size;
+            best = c;
+        }
+    }
+    return best;
+}
+
+bool Armature::sameRigidSegment(int a, int b) const {
+    if (a == b) {
+        return a >= 0;
+    }
+    int nearA = -1, farA = -1, nearB = -1, farB = -1;
+    return rigidSegment(a, nearA, farA) && rigidSegment(b, nearB, farB) && nearA == nearB && farA == farB;
+}
+
+bool Armature::rigidSegment(int bone, int& nearJoint, int& farJoint) const {
+    nearJoint = bone;
+    while (isTwistBone(nearJoint) && m_bones[static_cast<std::size_t>(nearJoint)].parent >= 0) {
+        nearJoint = m_bones[static_cast<std::size_t>(nearJoint)].parent;
+    }
+    farJoint = mainChild(bone);
+    while (farJoint >= 0 && isTwistBone(farJoint)) {
+        farJoint = mainChild(farJoint);
+    }
+    if (farJoint < 0 && nearJoint != bone) {
+        // (A LEAF twist helper beside the limb's next joint, as one generation hangs them: the
+        // segment is its parent's.)
+        for (int next = mainChild(nearJoint); next >= 0; next = mainChild(next)) {
+            if (!isTwistBone(next)) {
+                farJoint = next;
+                break;
+            }
+        }
+    }
+    return farJoint >= 0 && farJoint != nearJoint;
+}
+
+void Armature::setIkGrabPoint(int bone, const glm::vec3& worldPoint) {
+    if (bone < 0 || bone >= static_cast<int>(m_bones.size())) {
+        m_ikGrabBone = -1;
+        return;
+    }
+    m_ikGrabBone = bone;
+    m_ikGrabLocal = glm::vec3(glm::inverse(m_transform * m_poseGlobal[static_cast<std::size_t>(bone)]) *
+                              glm::vec4(worldPoint, 1.0f));
+}
+
+void Armature::setIkGrabOnSegment(int bone, float share) {
+    int nearJoint = -1;
+    int farJoint = -1;
+    if (bone < 0 || bone >= static_cast<int>(m_bones.size()) || !rigidSegment(bone, nearJoint, farJoint)) {
+        m_ikGrabBone = -1;
+        return;
+    }
+    const glm::vec3 from(m_poseGlobal[static_cast<std::size_t>(nearJoint)][3]);
+    const glm::vec3 to(m_poseGlobal[static_cast<std::size_t>(farJoint)][3]);
+    const glm::vec3 point = glm::mix(from, to, glm::clamp(share, 0.0f, 1.0f));
+    m_ikGrabBone = bone;
+    m_ikGrabLocal = glm::vec3(glm::inverse(m_poseGlobal[static_cast<std::size_t>(bone)]) * glm::vec4(point, 1.0f));
+}
+
+glm::vec3 Armature::ikGrabPointWorld() const {
+    if (m_ikGrabBone >= 0 && m_ikGrabBone == m_selectedBone && m_ikGrabBone < static_cast<int>(m_bones.size())) {
+        return glm::vec3(m_transform * m_poseGlobal[static_cast<std::size_t>(m_ikGrabBone)] * glm::vec4(m_ikGrabLocal, 1.0f));
+    }
+    if (m_selectedBone >= 0 && m_selectedBone < static_cast<int>(m_boneWorldPos.size())) {
+        return m_boneWorldPos[static_cast<std::size_t>(m_selectedBone)];
+    }
+    return glm::vec3(0.0f);
+}
+
+bool Armature::beginIkDrag() {
+    if (m_selectedBone < 0 || m_selectedBone >= static_cast<int>(m_bones.size()) ||
+        m_bones.empty()) {
+        return false;
+    }
+    if (!ensureIkRig()) {
+        return false;
     }
     // Current model-space joint positions, plus the ground contacts (detected by WORLD height —
     // the model transform may have grounded/translated the figure). Thresholds scale with the
@@ -78,7 +298,7 @@ bool Armature::beginIkDrag() {
     std::vector<int> contacts;
     for (std::size_t i = 0; i < m_bones.size(); ++i) {
         positions[i] = glm::vec3(m_poseGlobal[i][3]);
-        if (m_boneWorldPos[i].y < kIkContactHeight * sizeScale) {
+        if (m_boneWorldPos[i].y < IkRig::kContactHeight * sizeScale) { // the feet and toes standing, a knee kneeling, a hand on the floor
             contacts.push_back(static_cast<int>(i));
         }
     }
@@ -97,16 +317,7 @@ bool Armature::beginIkDrag() {
             }
         }
     }
-    m_ikPrevTargetValid = false;
-    m_ikStillTicks = 0;
-    m_ikErrCurMin = 1e30f;
-    m_ikErrPrevMin = 1e30f;
-    m_ikFrozen = false;
     m_ikSettleTicks = 0;
-    m_ikPrevEulerDelta.assign(m_bones.size(), glm::vec3(0.0f));
-    m_ikPrevTransDelta.assign(m_bones.size(), glm::vec3(0.0f));
-    m_ikAppliedSpeed = 0.0f;
-    m_ikAppliedEffSpeed = 0.0f;
     m_ikGrabOffset = glm::vec3(0.0f); // reset BEFORE the rig call — a failed begin must not
                                       // leave the previous drag's promotion offset behind
     // The rig solves in MODEL space; the world floor (y = 0) sits at model height -ty once the
@@ -121,38 +332,122 @@ bool Armature::beginIkDrag() {
             userPins.push_back(static_cast<int>(i));
         }
     }
-    if (!m_ikRig->beginDrag(m_selectedBone, positions, contacts, groundOffsetY, &userPins)) {
-        return false;
+    // WHAT the drag takes hold of (see setIkGrabPoint): the nearest real joint of the rigid
+    // segment the grab point lies on. (No grab point: the selected joint itself, as ever.)
+    int grabNode = m_selectedBone;
+    m_ikSegmentNear = m_ikSegmentFar = -1;
+    m_ikSegmentShare = 0.0f;
+    m_ikGrabFarJoint = false;
+    // (A TWIST bone's own joint is a point of its segment's body too — mid-thigh, mid-forearm —
+    // however it was picked: dragged as a joint in its own right, a mid-thigh twist bone rested
+    // 5-15cm short of its cursor, the planted foot below it holding the knee it has no say over.)
+    if (isTwistBone(m_selectedBone) && !(m_ikGrabBone == m_selectedBone && glm::length(m_ikGrabLocal) > 1.0e-4f)) {
+        m_ikGrabBone = m_selectedBone;
+        m_ikGrabLocal = glm::vec3(0.0f);
     }
-    // Rotational-prior exemption for each user pin's limb chain (see m_ikRotPriorExempt) — and
-    // for the DRAGGED limb's own chain (a limb effector only: a trunk drag's "limb" is the
-    // spine, whose unwitnessed twist is exactly what the prior exists to hold). The drag
-    // finisher determines those joints every tick as a pin's restoration does; under the
-    // prior they crept toward the drag-start pose between the solver's corrections — a lifted
-    // foot's knee wandered outward 0.1mm a tick and snapped back 2-4mm every ten (the
-    // reversal metric read 150mm of accumulated knee tremble over one 15cm foot lift).
-    m_ikRotPriorExempt = m_ikRig->userPinLimbNodes();
-    m_ikRotPriorSwingExempt.assign(m_bones.size(), 0);
-    if (!m_ikRig->effectorIsTrunk()) {
-        const int junction = m_ikRig->limbJunction(m_ikRig->dragEffector());
-        for (int cur = m_ikRig->dragEffector(); cur >= 0 && cur != junction;
-             cur = m_bones[static_cast<std::size_t>(cur)].parent) {
-            m_ikRotPriorSwingExempt[static_cast<std::size_t>(cur)] = 1; // swing only: see armature.h
+    const bool grabbedBody = m_ikGrabBone == m_selectedBone &&
+                             (glm::length(m_ikGrabLocal) > 1.0e-4f || isTwistBone(m_selectedBone));
+    if (grabbedBody && rigidSegment(m_selectedBone, m_ikSegmentNear, m_ikSegmentFar)) {
+        const glm::vec3 point(m_poseGlobal[static_cast<std::size_t>(m_selectedBone)] * glm::vec4(m_ikGrabLocal, 1.0f));
+        const glm::vec3& from = positions[static_cast<std::size_t>(m_ikSegmentNear)];
+        const glm::vec3 along = positions[static_cast<std::size_t>(m_ikSegmentFar)] - from;
+        const float length2 = glm::dot(along, along);
+        m_ikSegmentShare = length2 > 1.0e-8f ? glm::clamp(glm::dot(point - from, along) / length2, 0.0f, 1.0f) : 0.0f;
+        m_ikGrabFarJoint = m_ikSegmentShare >= kSegmentGrabNear;
+        grabNode = m_ikGrabFarJoint ? m_ikSegmentFar : m_ikSegmentNear;
+    }
+    syncRigRotations(); // (the floor clearances are read along DOWN in each bone's frame)
+    // (A limb the user takes hold of is the user's from here on: its contacts are no accidents.)
+    if (m_incidentalContact.size() != m_bones.size()) {
+        m_incidentalContact.assign(m_bones.size(), 0);
+    }
+    for (std::size_t i = 0; i < m_bones.size(); ++i) {
+        if (!m_incidentalContact[i]) {
+            continue;
+        }
+        const int junction = m_ikRig->limbJunction(static_cast<int>(i));
+        for (int cur = grabNode; cur >= 0 && m_incidentalContact[i]; cur = m_bones[static_cast<std::size_t>(cur)].parent) {
+            if (cur == junction) {
+                break;
+            }
+            for (int up = static_cast<int>(i); up >= 0 && up != junction; up = m_bones[static_cast<std::size_t>(up)].parent) {
+                if (up == cur) {
+                    m_incidentalContact[i] = 0;
+                    break;
+                }
+            }
         }
     }
+    m_ikRig->setIncidentalContacts(m_incidentalContact);
+    if (kDragStateTrace) {
+        std::fprintf(stderr, "[drag-state] incidental:");
+        printFlaggedBones(m_incidentalContact, m_boneNames);
+        std::fprintf(stderr, " | hangArms %zu found %d | postStepTurned:", m_jsHangArms.size(), m_jsHangArmsFound ? 1 : 0);
+        printFlaggedBones(m_jsPostStepTurned, m_boneNames);
+        std::fputc(10, stderr);
+        std::fprintf(stderr, "[drag-state] pose checksum %.9f trans %.9f transform y %.6f grab %d far %d seg %d/%d",
+                     poseFingerprint(m_boneEuler), poseFingerprint(m_boneTranslation), m_transform[3][1], grabNode,
+                     m_ikGrabFarJoint ? 1 : 0, m_ikSegmentNear, m_ikSegmentFar);
+        std::fputc(10, stderr);
+    }
+    if (!m_ikRig->beginDrag(grabNode, positions, contacts, groundOffsetY, &userPins)) {
+        return false;
+    }
+    m_jsFloorSeatStart = m_ikRig->floorSeat(); // (a constant of the drag: never a mode read off the pose it changes)
+    m_jsSeatNode = m_ikRig->floorSeatNode();
+    m_jsKneelStart = m_ikRig->onKnees();
+    m_jsKneelSeatY = m_jsKneelStart ? m_ikRig->kneelSeatHeight() : -1.0f;
+    m_jsKneelSeat = m_jsKneelStart ? m_ikRig->kneelSeat() : glm::vec3(0.0f, -1.0f, 0.0f);
+    m_jsHandTipValid.assign(m_bones.size(), 0);
+    m_jsContactGone.assign(m_bones.size(), 0.0f);
+    m_jsContactUnloaded.assign(m_bones.size(), 0);
+    m_jsContactLanding.assign(m_bones.size(), 0);
+    m_jsKneelTilt = 1.0;
+    m_jsSeatRolls = false;
+    // (The far joint stands only if the rig kept it: a toe or a fingertip it promotes onward is
+    // handled by the measured offset below like any other promotion.)
+    // (... and only for a LIMB's joint: a trunk segment does not pivot on its near joint, the
+    // body goes along — a chest asked 1 / share as far as the cursor went overshoots by as much,
+    // and the next tick asks it back. A trunk joint keeps the fixed offset below.)
+    m_ikGrabFarJoint = m_ikGrabFarJoint && m_ikRig->dragEffector() == m_ikSegmentFar && !m_ikRig->effectorIsTrunk();
     // Token-mass grabs (a finger, a toe, a face bone) are PROMOTED by the rig to the limb's
     // first real-mass joint (the hand, the foot, the head) — a finger pull is an arm gesture.
     // The drag targets from the window track the GRABBED joint, so they are shifted by the
     // model-space grab offset before reaching the rig — captured here, then carried through the
     // effector's rotation since drag start on every tick for LIMB effectors (see dragIkTo: a
-    // constant offset missed a twisting hand's fingertip by 18cm) and held fixed for a trunk
-    // effector.
+    // constant offset misses a twisting hand's fingertip by up to twice its length) and held
+    // fixed for a trunk effector.
     m_ikGrabRotStart = glm::mat3(m_poseGlobal[static_cast<std::size_t>(m_ikRig->dragEffector())]);
     if (m_ikRig->dragEffector() != m_selectedBone) {
         m_ikGrabOffset =
             glm::vec3(m_poseGlobal[static_cast<std::size_t>(m_selectedBone)][3]) -
             glm::vec3(m_poseGlobal[static_cast<std::size_t>(m_ikRig->dragEffector())][3]);
     }
+    // A grabbed BODY point: its offset from the effector is read off the pose on every tick (it
+    // is rigid with the grabbed bone, which turns as the limb or the spine does; the loop this
+    // closes has a gain of the offset over the lever that turns it — a fifth at the most).
+    m_ikGrabMeasured = grabbedBody;
+    // ... and so is a small bone's JOINT promoted to a TRUNK joint: a pectoral bone, which is what a
+    // click on a figure's chest finds as often as the chest itself (its joint stands in front of the
+    // spine, nearest the pixel), or a face bone on the head. Held FIXED, the offset did not turn with
+    // a chest that LEANS as it is dragged: pulled 18cm sideways by a pectoral, the grabbed point
+    // ended 40-47mm from the cursor and trailed it by 32-44mm all the way, on every rig (by the
+    // chest itself: 0.04 and 3); measured, 18 and 9 (what is left is the lean's: a point beside the
+    // spine drops as the chest rolls, and a standing body cannot be asked up). The fixed offset was
+    // the old position-space solver's, which passed cursor noise on fourteen-fold and trembled a
+    // grabbed head through this loop; here an eye grab rests 0.95mm from its cursor where it rested
+    // 9.9, trails it by 1.3mm where it trailed 9.7, and under +-2mm of cursor noise wobbles 15mm
+    // where it wobbled 14. IK_GRAB_TRUNK_FIXED / IK_GRAB_HEAD_FIXED are the A/B levers.
+    static const bool kTrunkFixed = std::getenv("IK_GRAB_TRUNK_FIXED") != nullptr;
+    static const bool kHeadFixed = std::getenv("IK_GRAB_HEAD_FIXED") != nullptr;
+    if (!kTrunkFixed && !grabbedBody && m_ikRig->dragEffector() != m_selectedBone && m_ikRig->effectorIsTrunk() &&
+        !m_ikRig->girdleGrab() && !(kHeadFixed && m_ikRig->dragEffector() == m_ikRig->headNode())) {
+        m_ikGrabBone = m_selectedBone;
+        m_ikGrabLocal = glm::vec3(0.0f);
+        m_ikGrabMeasured = true;
+    }
+    m_ikSegmentPrevValid = false;
+    m_ikSegmentTranslating = 0.0f;
     if (kIkTrace) {
         std::fprintf(stderr, "[ik] beginDrag effector=%s solved=%s pins:",
                      m_boneNames[static_cast<std::size_t>(m_selectedBone)].c_str(),
@@ -163,17 +458,102 @@ bool Armature::beginIkDrag() {
         std::fprintf(stderr, " contacts=%zu\n", contacts.size());
         std::fflush(stderr);
     }
-    // Capture each planted foot's current orientation for the flat-sole preservation (see
-    // m_ikFlatNodes in armature.h).
-    m_ikStartEuler = m_boneEuler; // the rotational prior (see armature.h)
-    m_ikFlatNodes.clear();
-    m_ikFlatRot.clear();
-    for (const IkEffector& pin : m_ikRig->pins()) {
-        if (pin.node >= 0 && pin.node < static_cast<int>(m_bones.size())) {
-            m_ikFlatNodes.push_back(pin.node);
-            m_ikFlatRot.push_back(glm::mat3(m_poseGlobal[static_cast<std::size_t>(pin.node)]));
+    // The POSTURE REFERENCE of the drag's solve — this moment's pose (every channel is pulled
+    // back toward it, which is what makes the solved pose a function of the targets) — and each
+    // pin's world orientation for its hold (see m_ikFlatNodes in armature.h).
+    m_ikStartEuler = m_boneEuler;
+    m_jsStartTranslation = m_boneTranslation;
+    captureFlatHold(false);
+    m_jsPinTargetValid.assign(m_bones.size(), 0);
+    m_jsPinsEasing = false;
+    m_jsSettling = false;
+    m_jsHoldValid = false;
+    m_jsFollowValid = false;
+    m_jsRootYield = 0.0f;
+    m_jsRootRise = 0.0f;
+    m_jsContactRise = 0.0f;
+    m_jsKneelYield = 0.0f;
+    m_jsKneelHold = 0.0f;
+    m_jsKneelSeatShift = glm::vec3(0.0f);
+    m_jsKneelUpright = 0.0f;
+    m_jsKneelUpRise = 0.0f;
+    m_jsLowestTargetY = 1.0e9f;
+    m_jsRiseProgress = 0.0f;
+    {
+        const std::size_t root = static_cast<std::size_t>(m_ikRig->rootNode());
+        m_jsRootRiseRoom = (m_ikBindPos[root].y + groundOffsetY) - positions[root].y;
+        // The root UPRIGHT: its world rotation now, reduced to its heading (read off whichever
+        // of its lateral and fore axes lies flatter — a root pitched 90 degrees has no fore
+        // heading, one rolled 90 no lateral), as an Euler pose on this rotation's own branch.
+        const Bone& bone = m_bones[root];
+        const glm::mat3 world(m_poseGlobal[root]);
+        glm::vec3 lateral = world * glm::vec3(1.0f, 0.0f, 0.0f);
+        glm::vec3 fore = world * glm::vec3(0.0f, 0.0f, 1.0f);
+        lateral.y = 0.0f;
+        fore.y = 0.0f;
+        const float yaw = glm::length(lateral) >= glm::length(fore) ? std::atan2(-lateral.z, lateral.x)
+                                                                     : std::atan2(fore.x, fore.z);
+        const glm::mat3 upright(glm::mat4_cast(glm::angleAxis(yaw, glm::vec3(0.0f, 1.0f, 0.0f))));
+        m_jsRootHeading = yaw;
+        m_jsStartGrabFromRoot = positions[static_cast<std::size_t>(m_ikRig->dragEffector())] - positions[root];
+        m_jsEffectorStartRot = glm::mat3(m_poseGlobal[static_cast<std::size_t>(m_ikRig->dragEffector())]);
+        m_jsPrevGoalValid = false;
+        m_jsTrunkInSolve = false;
+        m_jsHingeRelease = 0.0f;
+        m_jsTrunkFollow = glm::vec2(0.0f);
+        m_jsUnfoldShift = glm::vec2(0.0f);
+        m_jsTrunkWalk = 0.0f;
+        m_jsTrunkCounter = 0.0f;
+        m_jsWasSuspended = false;
+        m_jsWasSwinging = false;
+        m_jsLimbSocket = -1;
+        m_jsTrunkHinge = 0.0f;
+        m_jsHangArms.clear();
+        m_jsHangArmsFound = false;
+        m_jsPostStepEuler.assign(m_bones.size(), glm::vec3(0.0f));
+        m_jsPostStepTurned.assign(m_bones.size(), 0);
+        m_jsHeadChain.clear();
+        m_jsHeadFree.clear();
+        m_jsHeadBase = -1;
+        m_jsHeadFound = false;
+        m_jsLiftEasing = false;
+        m_jsLiftDeficit = glm::vec3(0.0f);
+        m_jsHangDeficit = glm::vec3(0.0f);
+        m_jsLeanMoment = -1.0f;
+        m_jsStartPos.resize(m_bones.size());
+        m_jsStartRot.resize(m_bones.size());
+        for (std::size_t i = 0; i < m_bones.size(); ++i) {
+            m_jsStartPos[i] = glm::vec3(m_poseGlobal[i][3]);
+            m_jsStartRot[i] = glm::mat3(m_poseGlobal[i]);
+        }
+        m_jsEffectorStartPos = glm::vec3(m_poseGlobal[static_cast<std::size_t>(m_ikRig->dragEffector())][3]);
+        const glm::mat3 parentRot = bone.parent >= 0 ? glm::mat3(m_poseGlobal[static_cast<std::size_t>(bone.parent)])
+                                                     : glm::mat3(1.0f);
+        const glm::mat3 local = glm::mat3(bone.invOrient) * glm::transpose(parentRot) * upright * glm::mat3(bone.orient);
+        m_jsRootUprightEuler = eulerFromMatrix(local, bone.rotationOrder);
+        for (int a = 0; a < 3; ++a) {
+            while (m_jsRootUprightEuler[a] - m_boneEuler[root][a] > 180.0f) {
+                m_jsRootUprightEuler[a] -= 360.0f;
+            }
+            while (m_jsRootUprightEuler[a] - m_boneEuler[root][a] < -180.0f) {
+                m_jsRootUprightEuler[a] += 360.0f;
+            }
         }
     }
+    m_jsHullKey = -1.0f;
+    m_jsLastSupport.clear();
+    m_jsGrowFrom.clear();
+    m_jsGrown = 0.0f;
+    m_jsBalanceSlack = 0.0f;
+    m_jsBalanceBase = -1.0f;
+    m_jsBall.assign(m_bones.size(), -2);
+    m_jsToeMates.assign(m_bones.size(), {});
+    m_jsBallTargetValid.assign(m_bones.size(), 0);
+    m_jsKneeUnderValid = 0;
+    m_jsFootAllowValid = 0;
+    m_jsTargetDown = 0.0f;
+    m_jsHandSlideEase = 0.0f;
+    m_jsBallOffset.assign(m_bones.size(), glm::vec3(0.0f));
     return true;
 }
 
@@ -181,383 +561,123 @@ bool Armature::dragIkTo(const glm::vec3& targetWorld) {
     if (!m_ikRig || !m_ikRig->dragActive() || m_bones.empty()) {
         return false;
     }
-    // The rig solves in model space; frames seed the constraint orientation from the live pose.
-    // The grab offset re-targets a promoted drag (finger -> hand etc., see beginIkDrag).
+    if (kDragStateTrace) {
+        std::fprintf(stderr, "[drag-tick] target(%.6f %.6f %.6f) pose %.9f", targetWorld.x, targetWorld.y, targetWorld.z,
+                     poseFingerprint(m_boneEuler));
+        std::fputc(10, stderr);
+    }
+    // The solve works in model space. The grab offset re-targets a promoted drag (finger ->
+    // hand etc., see beginIkDrag).
     // The promoted grab's offset rides the effector's rotation since drag start — for LIMB
-    // effectors only. A finger on a twisting hand needs it (a constant offset missed the
-    // fingertip by 18cm). A face bone promoted to the HEAD must NOT: the neck's aim fit
-    // rotates the head with every head move, the long face offset then swings the target,
-    // the head follows, the neck re-aims — a feedback loop with gain near one that made a
-    // grabbed head tremble spastically (the eye-grab harness phase: 3.3m of accumulated
-    // reversal). The head's own rotation is never solved, so a fixed offset is the honest
-    // model there (its error stays within the neck's small range).
+    // effectors. A finger on a twisting hand needs it (a constant offset misses the
+    // fingertip). A small bone promoted to a TRUNK joint — a pectoral to the chest, a face bone to
+    // the head — has its offset MEASURED off the pose every tick instead (m_ikGrabMeasured, set in
+    // beginIkDrag; the fixed offset kept here is only the IK_GRAB_TRUNK_FIXED / _HEAD_FIXED probes').
     const glm::mat3 grabRot =
         m_ikRig->effectorIsTrunk()
             ? glm::mat3(1.0f)
             : glm::mat3(m_poseGlobal[static_cast<std::size_t>(m_ikRig->dragEffector())]) *
                   glm::transpose(m_ikGrabRotStart);
-    glm::vec3 target =
-        glm::vec3(m_ikInvTransform * glm::vec4(targetWorld, 1.0f)) - grabRot * m_ikGrabOffset;
-    // The floor bounds the cursor too: the grabbed joint cannot be asked below its clearance
-    // (the solver would refuse and the exact drag refinement would then push it through).
+    glm::vec3 grabOffset = grabRot * m_ikGrabOffset;
+    const glm::vec3 cursor(m_ikInvTransform * glm::vec4(targetWorld, 1.0f));
+    bool mapped = false;
+    glm::vec3 mappedTarget(0.0f);
+    if (m_ikGrabFarJoint && m_ikSegmentNear >= 0 && m_ikSegmentFar == m_ikRig->dragEffector() &&
+        m_selectedBone >= 0 && m_selectedBone < static_cast<int>(m_bones.size())) {
+        // The grab point lies on a rigid segment, `share` of the way from its near joint to the
+        // far one the solve drags: the far joint's target is the cursor's place carried OUT from
+        // the near joint by 1 / share — a dilation about the socket. With the far joint on that
+        // target the point is on the cursor exactly; and a cursor that leaves the point's own
+        // sphere (it drags in a plane: a thigh pulled up in a side view is a target INSIDE it)
+        // becomes a far-joint target as far, in proportion, inside or outside ITS sphere — so
+        // what the knee's or the elbow's own drag does with such a target (the height kept, the
+        // swing found for it) it does for the grabbed point too: a knee taken to the cursor's
+        // height / share above the socket puts the point at the cursor's height. (Exact for a
+        // near joint that stays put — a socket mostly does — and read off the pose afresh every
+        // tick for one that does not.)
+        // ... as far as the near joint STAYS PUT. Let r be the share of the far joint's travel
+        // that is the whole limb translating (the near joint going along: the body following an
+        // out-of-reach pull, a figure hanging from the grabbed arm). Per tick the dilation leaves
+        // -r (1 - share) / share of the point's miss — nothing at r = 0, a growing oscillation
+        // once the body goes with the limb (a forearm grabbed a third of the way along and pulled
+        // up until she hangs from it: -1.9 a tick) — and the plain measured offset (the far
+        // joint asked to the cursor plus where it now stands from the point) leaves
+        // (1 - r)(1 - share): exact at r = 1, slow at r = 0 and blind to the proportion above.
+        // Blended by lambda = share (1 - r) / (share (1 - r) + r) the two cancel; r is read off
+        // the two joints' travel over the last tick, smoothed.
+        const glm::vec3 from(m_poseGlobal[static_cast<std::size_t>(m_ikSegmentNear)][3]);
+        const glm::vec3 farPos(m_poseGlobal[static_cast<std::size_t>(m_ikSegmentFar)][3]);
+        const glm::vec3 point(m_poseGlobal[static_cast<std::size_t>(m_selectedBone)] * glm::vec4(m_ikGrabLocal, 1.0f));
+        if (m_ikSegmentPrevValid) {
+            const float farWent = glm::length(farPos - m_ikSegmentPrevFar);
+            if (farWent > 1.0e-3f) {
+                const float along = glm::clamp(glm::length(from - m_ikSegmentPrevNear) / farWent, 0.0f, 1.0f);
+                m_ikSegmentTranslating = glm::mix(m_ikSegmentTranslating, along, 0.5f);
+            }
+        }
+        m_ikSegmentPrevNear = from;
+        m_ikSegmentPrevFar = farPos;
+        m_ikSegmentPrevValid = true;
+        const float share = m_ikSegmentShare; // (>= kSegmentGrabNear: that is what made this a far-joint grab)
+        const float swings = share * (1.0f - m_ikSegmentTranslating);
+        const float trust = swings / std::max(swings + m_ikSegmentTranslating, 1.0e-4f);
+        // (The dilation is for a cursor ON or INSIDE the point's sphere. Outside it the excess
+        // passes on as it is, not 1 / share as large: a forearm grabbed 40% of the way along and
+        // raised 90cm asked the hand 2.25m up, and she was lifted off the floor by it.)
+        const glm::vec3 reach = cursor - from;
+        const float out = glm::length(reach);
+        const float length = glm::length(farPos - from);
+        glm::vec3 dilated = from + reach / share;
+        if (out > share * length && out > 1.0e-5f) {
+            dilated = from + reach * ((length + out - share * length) / out);
+        }
+        mappedTarget = glm::mix(cursor + (farPos - point), dilated, trust);
+        mapped = true;
+    } else if (m_ikGrabMeasured && m_selectedBone >= 0 && m_selectedBone < static_cast<int>(m_bones.size())) {
+        grabOffset = glm::vec3(m_poseGlobal[static_cast<std::size_t>(m_selectedBone)] * glm::vec4(m_ikGrabLocal, 1.0f)) -
+                     glm::vec3(m_poseGlobal[static_cast<std::size_t>(m_ikRig->dragEffector())][3]);
+    } else if (m_ikRig->girdleGrab() && m_selectedBone >= 0 && m_selectedBone < static_cast<int>(m_bones.size())) {
+        // A joint of the pelvis girdle promoted to the root (IkRig::girdleGrab): the offset is
+        // MEASURED, on the pose as it stands. The root's rotation is one of a pelvis drag's
+        // unknowns (a sway rolls it, a kneel pitches it 40 degrees) and the pelvis bone and the
+        // first spine bone turn under one, so no frame captured at the press carries the offset;
+        // measured, the grabbed joint is on the cursor exactly wherever the pose rests (the
+        // offset's own dependence on the target is a few percent: a lever of 2-15cm).
+        grabOffset = glm::vec3(m_poseGlobal[static_cast<std::size_t>(m_selectedBone)][3]) -
+                     glm::vec3(m_poseGlobal[static_cast<std::size_t>(m_ikRig->dragEffector())][3]);
+    }
+    glm::vec3 target = mapped ? mappedTarget : cursor - grabOffset;
+    // The floor bounds the cursor too: the grabbed joint cannot be asked below its clearance.
     target.y = std::max(target.y, -m_transform[3][1] +
                                       m_ikRig->floorClearance(m_ikRig->dragEffector()));
-
-    // Settle-freeze (see the m_ikFrozen note in armature.h): once the still-cursor error trend stops
-    // improving, stop solving entirely — a genuinely frozen pose, zero trembling — and resume
-    // the instant the cursor moves again. This, not budget tuning, is what makes a held pose
-    // rock-still: any solving at all lets configuration flip-flops consume whatever budget
-    // exists.
-    const float targetDelta =
-        m_ikPrevTargetValid ? glm::length(target - m_ikPrevTarget) : kIkMaxWorldStep;
-    if (!m_ikPrevTargetValid) {
-        m_ikStillAnchor = target;
-    }
-    m_ikPrevTarget = target;
-    m_ikPrevTargetValid = true;
-    if (glm::length(target - m_ikStillAnchor) > 0.004f) {
-        // The target genuinely moved (possibly by slow accumulation): re-anchor and stay live.
-        m_ikStillAnchor = target;
-        m_ikStillTicks = 0;
-        m_ikErrCurMin = 1e30f;
-        m_ikErrPrevMin = 1e30f;
-        m_ikFrozen = false;
-    }
-    if (m_ikRig->stepPending() || m_ikRig->suspendPending()) {
-        // A balance step is in flight or its trigger is confirming (or a lift is confirming):
-        // all live on the solve ticks, so the settle-freeze must not engage — mid-step it
-        // would leave the foot hanging mid-air, and mid-confirm it would race the pelvis-walk's
-        // final GATHERING step and plant the figure in a mid-stride stance.
-        m_ikStillTicks = 0;
-        m_ikErrCurMin = 1e30f;
-        m_ikErrPrevMin = 1e30f;
-        m_ikFrozen = false;
-    }
-    if (m_ikFrozen) {
-        m_ikAppliedSpeed = 0.0f; // a frozen tick moves nothing: the shaping restarts from rest
-        m_ikAppliedEffSpeed = 0.0f;
-        return false; // settled: hold perfectly still until the cursor moves again
-    }
-
-    std::vector<glm::vec3> positions(m_bones.size());
-    std::vector<glm::quat> frames(m_bones.size());
-    for (std::size_t i = 0; i < m_bones.size(); ++i) {
-        positions[i] = glm::vec3(m_poseGlobal[i][3]);
-        frames[i] = glm::quat_cast(glm::mat3(m_poseGlobal[i]));
-    }
-    // Entry goal error (pre-solve), for the governor's error-scaled settle allowance below.
-    float entryErr = glm::length(
-        positions[static_cast<std::size_t>(m_ikRig->dragEffector())] - target);
-    for (const IkEffector& pin : m_ikRig->pins()) {
-        entryErr = std::max(
-            entryErr,
-            glm::length(positions[static_cast<std::size_t>(pin.node)] - pin.target));
-    }
-    if (!m_ikRig->solveDrag(target, positions, frames)) {
-        m_ikAppliedSpeed = 0.0f; // deadband tick: nothing moved
-        m_ikAppliedEffSpeed = 0.0f;
-        return false;
-    }
-    // Diagnostic: POSESTUDIO_IK_TRACE=1 prints per-tick drag state (world-space heights), with
-    // the worst contact-pin error at solve entry (the FK pose), in the solver's output, and —
-    // appended at the end of the tick — in the applied pose.
-    if (kIkTrace) {
-        const glm::vec3 effW = m_boneWorldPos[static_cast<std::size_t>(m_selectedBone)];
-        float solvedPinErr = 0.0f;
-        for (const IkEffector& pin : m_ikRig->pins()) {
-            solvedPinErr = std::max(
-                solvedPinErr,
-                glm::length(positions[static_cast<std::size_t>(pin.node)] - pin.target));
-        }
-        const float solvedEffErr = glm::length(
-            positions[static_cast<std::size_t>(m_ikRig->dragEffector())] - target);
-        std::fprintf(stderr,
-                     "[ik] tgt(%.3f %.3f %.3f) eff(%.3f %.3f %.3f) pins=%zu frozen=%d pinErr "
-                     "entry=%.4f solved=%.4f solvedEff=%.4f",
-                     targetWorld.x, targetWorld.y, targetWorld.z, effW.x, effW.y, effW.z,
-                     m_ikRig->pins().size(), m_ikFrozen ? 1 : 0, entryErr, solvedPinErr,
-                     solvedEffErr);
-    }
-
-    // Pre-solve pose snapshot for the world-space governor below.
-    const std::vector<glm::vec3> preEuler = m_boneEuler;
-    const std::vector<glm::vec3> preTranslation = m_boneTranslation;
-    std::vector<glm::vec3> preWorld(m_bones.size());
-    for (std::size_t i = 0; i < m_bones.size(); ++i) {
-        preWorld[i] = glm::vec3(m_poseGlobal[i][3]);
-    }
-
-    applyIkSolution(positions, m_ikRig->activeNodes(), /*rotationPrior=*/true);
-
-    // World-space governor: every event, only a FRACTION of the solve's pose delta is applied
-    // (kIkRelaxation, under-relaxation — damps the alternation between near-equal configurations
-    // that reads as trembling), and total per-event movement is capped proportionally to the
-    // target's own motion plus a small constant settle allowance. Catch-up (feet re-planting
-    // after a crouch) flows through that allowance over ~a second of holding — visible as the
-    // figure gently settling, which is exactly the natural motion a drag should show.
-    // The floor gives catch-up (feet re-planting behind a fast gesture) a steady flow — but it
-    // is scaled by the ENTRY goal error: with goals far off (a crouch's feet re-planting, a
-    // hover healing), catch-up flows at the full 12mm/tick, while a near-converged pose during a
-    // SLOW pull can only creep (3mm/tick). The fixed floor let solver churn flow at 12mm/tick
-    // through the whole slow drag — idle joints visibly trembled while the user was pulling
-    // (the settle-freeze only covers a STILL cursor; a creeping drag never freezes). The 12mm
-    // ceiling is load-bearing for the crouch: a 25-40mm ceiling let its re-planting feet wander
-    // (synthetic crouch foot drift 0.03 -> 0.10-0.13) while barely speeding up a flick's
-    // catch-up — the solver's own per-tick progress, not this floor, bounds that.
-    const float capFloor = glm::clamp(0.25f * entryErr, 0.003f, 0.012f);
-    float cap = glm::clamp(3.0f * targetDelta, capFloor, kIkMaxWorldStep);
-    // Motion shaping (see kIkAccel/kIkDecel): ease-in — the allowance grows at most kIkAccel
-    // over last tick's applied speed — and ease-out — never above the braking curve toward the
-    // goals (the tracking term keeps a moving cursor's pursuit unthrottled).
-    cap = std::min(cap, m_ikAppliedSpeed + kIkAccel);
-    cap = std::min(cap, std::sqrt(2.0f * kIkDecel * entryErr) + 3.0f * targetDelta);
-    cap = std::max(cap, std::min(m_ikAppliedSpeed - kIkBrake, kIkMaxWorldStep));
-    float worst = 0.0f;
-    for (std::size_t i = 0; i < m_bones.size(); ++i) {
-        worst = std::max(worst, glm::length(glm::vec3(m_poseGlobal[i][3]) - preWorld[i]));
-    }
-    float s = std::min(kIkRelaxation, (worst > 1e-6f) ? cap / worst : 1.0f);
-    // The GRABBED joint's own step is shaped too (see m_ikAppliedEffSpeed): its allowance grows
-    // at most kIkAccel over its own last applied speed (never below the settle floor).
-    const std::size_t effIdx = static_cast<std::size_t>(m_ikRig->dragEffector());
-    const float effMove = glm::length(glm::vec3(m_poseGlobal[effIdx][3]) - preWorld[effIdx]);
-    const float effCap = std::max(capFloor, m_ikAppliedEffSpeed + kIkAccel);
-    if (effMove * s > effCap && effMove > 1e-6f) {
-        s = effCap / effMove;
-    }
-    {
+    // The body volumes bound it too (see IkRig::bodyVolumes): a cursor inside the torso asks
+    // for the hand at the chest's surface, not through it.
+    if (!m_ikRig->bodyVolumes().empty()) {
+        std::vector<glm::vec3> current(m_bones.size());
         for (std::size_t i = 0; i < m_bones.size(); ++i) {
-            // Reversal-gated micro-motion damping (see kIkMicroDampDeg): a delta opposing the
-            // previous tick's applied delta is the loop's own oscillation and eases in softly;
-            // anything else passes at full rate — the residual tick-to-tick shimmer of idle
-            // joints dies here without shaving sustained motion.
-            glm::vec3 eulerDelta(0.0f);
-            for (int a = 0; a < 3; ++a) {
-                eulerDelta[a] = wrappedAngleDelta(m_boneEuler[i][a], preEuler[i][a]);
-            }
-            const glm::vec3 transDelta = m_boneTranslation[i] - preTranslation[i];
-            float fRot = 1.0f;
-            if (glm::dot(eulerDelta, m_ikPrevEulerDelta[i]) < 0.0f) {
-                const float e = std::max(
-                    {std::abs(eulerDelta.x), std::abs(eulerDelta.y), std::abs(eulerDelta.z)});
-                fRot = e / (e + kIkMicroDampDeg);
-            }
-            float fTrans = 1.0f;
-            if (glm::dot(transDelta, m_ikPrevTransDelta[i]) < 0.0f) {
-                const float tLen = glm::length(transDelta);
-                fTrans = tLen / (tLen + kIkMicroDampTrans);
-            }
-            for (int a = 0; a < 3; ++a) {
-                m_boneEuler[i][a] = preEuler[i][a] + eulerDelta[a] * s * fRot;
-            }
-            m_boneTranslation[i] = preTranslation[i] + transDelta * s * fTrans;
-            m_ikPrevEulerDelta[i] = eulerDelta * s * fRot;
-            m_ikPrevTransDelta[i] = transDelta * s * fTrans;
-            clampBoneEuler(static_cast<int>(i));
-            recomposePoseLocal(i);
+            current[i] = glm::vec3(m_poseGlobal[i][3]);
         }
-        computeSkinMatrices();
+        target = m_ikRig->clampOutOfVolumes(m_ikRig->dragEffector(), target, current);
     }
-    if (kIkTrace) {
-        // Before the pin refinement: the governed pose's pin errors, lateral (XZ) and sink.
-        float lat = 0.0f;
-        float sink = 0.0f;
-        for (const IkEffector& pin : m_ikRig->pins()) {
-            const glm::vec3 p(m_poseGlobal[static_cast<std::size_t>(pin.node)][3]);
-            lat = std::max(lat, glm::length(glm::vec2(p.x - pin.target.x, p.z - pin.target.z)));
-            sink = std::max(sink, pin.target.y - p.y);
-        }
-        std::fprintf(stderr, " preLat=%.4f preSink=%.4f", lat, sink);
-    }
-    refinePins(false, &target); // the APPLIED pose is what the user sees: user pins AND the
-                                // grabbed joint exact (see armature.h)
-    if (kIkTrace) {
-        float appliedPinErr = 0.0f;
-        float lowestPinY = 1e30f;
-        for (const IkEffector& pin : m_ikRig->pins()) {
-            const glm::vec3 p(m_poseGlobal[static_cast<std::size_t>(pin.node)][3]);
-            appliedPinErr = std::max(appliedPinErr, glm::length(p - pin.target));
-            lowestPinY = std::min(lowestPinY, p.y - pin.target.y);
-        }
-        std::fprintf(stderr, " applied=%.4f pinDy=%.4f s=%.3f\n", appliedPinErr, lowestPinY, s);
-        // Per-joint solver-vs-applied residual along each pin's chain and the effector's (mm):
-        // where the extraction loses the solver's configuration.
-        const auto chainResidual = [&](int node, int levels) {
-            for (int cur = node, k = 0; cur >= 0 && k < levels;
-                 cur = m_bones[static_cast<std::size_t>(cur)].parent, ++k) {
-                const glm::vec3 applied(m_poseGlobal[static_cast<std::size_t>(cur)][3]);
-                std::fprintf(stderr, " %s:%.1f", m_boneNames[static_cast<std::size_t>(cur)].c_str(),
-                             glm::length(applied - positions[static_cast<std::size_t>(cur)]) * 1000.0f);
-            }
-        };
-        std::fprintf(stderr, "[ik]   residual eff");
-        chainResidual(m_ikRig->dragEffector(), 5);
-        for (const IkEffector& pin : m_ikRig->pins()) {
-            std::fprintf(stderr, " | pin");
-            chainResidual(pin.node, 4);
-        }
-        std::fprintf(stderr, "\n");
-    }
-    // LIVE CONTACT RE-DETECTION (see IkRig::updateContacts): the APPLIED pose is what touches
-    // the floor. A joint that came down onto it this tick is a support from the next solve on
-    // (the hands in a deep crouch, a knee coming down); one the SOLVER could not hold on its
-    // spot — the body pulling it off — is let go again.
-    {
-        std::vector<glm::vec3> applied(m_bones.size());
-        for (std::size_t i = 0; i < m_bones.size(); ++i) {
-            applied[i] = glm::vec3(m_poseGlobal[i][3]);
-        }
-        if (m_ikRig->updateContacts(applied, positions) && kIkTrace) {
-            std::fprintf(stderr, "[ik] contacts now:");
-            for (const IkEffector& pin : m_ikRig->pins()) {
-                std::fprintf(stderr, " %s(y=%.3f)",
-                             m_boneNames[static_cast<std::size_t>(pin.node)].c_str(), pin.target.y);
-            }
-            std::fprintf(stderr, "\n");
-        }
-    }
-    // The velocity state for next tick's motion shaping: what actually moved this tick.
-    {
-        float applied = 0.0f;
-        for (std::size_t i = 0; i < m_bones.size(); ++i) {
-            applied = std::max(applied,
-                               glm::length(glm::vec3(m_poseGlobal[i][3]) - preWorld[i]));
-        }
-        m_ikAppliedSpeed = applied;
-        m_ikAppliedEffSpeed = glm::length(glm::vec3(m_poseGlobal[effIdx][3]) - preWorld[effIdx]);
-    }
-    // Track the still-cursor error trend for the settle-freeze (see armature.h): collect worst-goal-
-    // error minima in 6-tick windows; a window that fails to improve on the previous one means
-    // any remaining motion is churn, not catch-up — freeze.
-    float pinErr = 0.0f;
-    for (const IkEffector& pin : m_ikRig->pins()) {
-        pinErr = std::max(
-            pinErr, glm::length(glm::vec3(m_poseGlobal[static_cast<std::size_t>(pin.node)][3]) -
-                                pin.target));
-    }
-    const float err = std::max(
-        pinErr,
-        glm::length(
-            glm::vec3(m_poseGlobal[static_cast<std::size_t>(m_ikRig->dragEffector())][3]) -
-            target));
-    m_ikErrCurMin = std::min(m_ikErrCurMin, err);
-    ++m_ikStillTicks;
-    if (m_ikStillTicks % 6 == 0) {
-        // Freeze only with the pins decently PLANTED: freezing on a stalled catch-up would lock
-        // the figure with its feet in the air. Unplantable pins (pathological pose) keep gently
-        // settling instead — motion, not levitation.
-        if (m_ikErrPrevMin < 1e29f && m_ikErrCurMin > m_ikErrPrevMin - 0.001f &&
-            pinErr < 0.05f) {
-            m_ikFrozen = true;
-        }
-        m_ikErrPrevMin = m_ikErrCurMin;
-        m_ikErrCurMin = 1e30f;
-    }
-    return true;
+    return dragIkTick(target); // the solve: converged and applied in full (armatureiksolve.cpp)
 }
 
 bool Armature::settleIkTick() {
     if (!m_ikRig || !m_ikRig->dragActive() || m_bones.empty() || m_ikRig->pins().empty()) {
         return false;
     }
-    // The animated release settle: with the drag goal gone, relax the body onto its pins ONE
-    // capped round per tick. During the drag an unreachable goal fights the pins every tick and
-    // can hold an equilibrium with a foot hovering off its plant; on release those feet must
-    // visibly LAND — the old one-shot multi-round settle applied the whole landing in a single
-    // frame, which the user saw as the pose popping away from where they let go.
-    const auto worstPinError = [&]() {
-        float err = 0.0f;
-        for (const IkEffector& pin : m_ikRig->pins()) {
-            err = std::max(
-                err, glm::length(glm::vec3(m_poseGlobal[static_cast<std::size_t>(pin.node)][3]) -
-                                 pin.target));
-        }
-        return err;
-    };
-    const float errBefore = worstPinError();
-    // Planted at 1.5mm: the pin refinement (refinePins) closes a contact's last millimetres
-    // exactly, so the settle no longer stops at the old 5mm "close enough" band.
-    if (errBefore < 0.0015f || ++m_ikSettleTicks > 45) {
-        return false; // planted (or out of budget — never loop a stubborn pose forever)
+    return settleIkSolveTick();
+}
+
+void Armature::syncRigRotations() {
+    if (!m_ikRig) {
+        return;
     }
-    const std::vector<glm::vec3> preEuler = m_boneEuler;
-    const std::vector<glm::vec3> preTranslation = m_boneTranslation;
-    std::vector<glm::vec3> positions(m_bones.size());
-    std::vector<glm::quat> frames(m_bones.size());
-    std::vector<glm::vec3> preWorld(m_bones.size());
+    std::vector<glm::mat3> rotations(m_bones.size());
     for (std::size_t i = 0; i < m_bones.size(); ++i) {
-        positions[i] = glm::vec3(m_poseGlobal[i][3]);
-        frames[i] = glm::quat_cast(glm::mat3(m_poseGlobal[i]));
-        preWorld[i] = positions[i];
+        rotations[i] = glm::mat3(m_poseGlobal[i]);
     }
-    if (m_ikSettleTicks == 1) {
-        // First settle tick: the CURRENT pose (mouse-up) becomes the settle's prior, and the
-        // released joint is pinned right where the user let it go — the pose must HOLD.
-        m_ikRig->beginSettle(positions);
-        m_ikSettleStrain = errBefore; // see armature.h: the hold bound scales with this
-    }
-    if (!m_ikRig->settleToPins(positions, frames)) {
-        return false;
-    }
-    applyIkSolution(positions, m_ikRig->activeNodes(), /*rotationPrior=*/false);
-    // Per-tick smoothness cap (the drag governor's shape with a fixed allowance — there is no
-    // target motion to scale by): ~2cm/tick ≈ 1.2 m/s, a quick but visible landing — shaped by
-    // the same motion easing as the drag (the release CONTINUES at the drag's speed and brakes
-    // into the plant, instead of popping to the fixed rate and stopping flat).
-    constexpr float kSettleStepCap = 0.02f;
-    const float cap =
-        std::min({kSettleStepCap, m_ikAppliedSpeed + kIkAccel,
-                  std::sqrt(2.0f * kIkDecel * errBefore)});
-    float worst = 0.0f;
-    for (std::size_t i = 0; i < m_bones.size(); ++i) {
-        worst = std::max(worst, glm::length(glm::vec3(m_poseGlobal[i][3]) - preWorld[i]));
-    }
-    // s <= kIkRelaxation < 1 always: the under-relaxed fraction is applied unconditionally.
-    const float s = std::min(kIkRelaxation, (worst > 1e-6f) ? cap / worst : 1.0f);
-    for (std::size_t i = 0; i < m_bones.size(); ++i) {
-        for (int a = 0; a < 3; ++a) {
-            m_boneEuler[i][a] =
-                preEuler[i][a] + wrappedAngleDelta(m_boneEuler[i][a], preEuler[i][a]) * s;
-        }
-        m_boneTranslation[i] =
-            preTranslation[i] + (m_boneTranslation[i] - preTranslation[i]) * s;
-        clampBoneEuler(static_cast<int>(i));
-        recomposePoseLocal(i);
-    }
-    computeSkinMatrices();
-    refinePins(true, nullptr); // pins (and the held effector) exact through the settle too
-    // Pose-hold bound: the released joint must stay where the user let it go — even with it
-    // pinned, extraction residual can leak a few mm per tick, and cumulative drift is exactly
-    // the "pose changed after release" complaint. Plus the monotone guard: a round that failed
-    // to meaningfully improve the worst pin error is reverted and ends the settle — a release
-    // can only ever be improved by settling, and it can never wander (the old 1e-4 threshold
-    // let the solver fund centimeters of drift with 0.1mm of pin progress).
-    bool holdViolated = false;
-    if (m_ikRig->dragEffector() >= 0) {
-        const glm::vec3 eff =
-            glm::vec3(m_poseGlobal[static_cast<std::size_t>(m_ikRig->dragEffector())][3]);
-        const float holdBound = m_ikRig->effectorIsTrunk()
-                                    ? 0.10f
-                                    : glm::clamp(3.0f * m_ikSettleStrain, 0.02f, 0.10f);
-        holdViolated = glm::length(eff - m_ikRig->settleEffectorTarget()) > holdBound;
-    }
-    if (holdViolated || worstPinError() > errBefore - 5e-4f) {
-        m_boneEuler = preEuler;
-        m_boneTranslation = preTranslation;
-        for (std::size_t i = 0; i < m_bones.size(); ++i) {
-            recomposePoseLocal(i);
-        }
-        computeSkinMatrices();
-        m_ikAppliedSpeed = 0.0f;
-        return false;
-    }
-    // Velocity state for the next settle tick's motion shaping.
-    float applied = 0.0f;
-    for (std::size_t i = 0; i < m_bones.size(); ++i) {
-        applied = std::max(applied, glm::length(glm::vec3(m_poseGlobal[i][3]) - preWorld[i]));
-    }
-    m_ikAppliedSpeed = applied;
-    return true;
+    m_ikRig->setBoneRotations(rotations);
 }
 
 void Armature::endIkDrag() {
@@ -571,15 +691,16 @@ void Armature::holdNudgedBoneThroughDrag(int bone) {
         bone >= static_cast<int>(m_bones.size())) {
         return;
     }
-    if (m_ikRotPriorExempt.size() != m_bones.size()) {
-        m_ikRotPriorExempt.assign(m_bones.size(), 0);
+    // The user's rotation becomes part of the posture the solve eases toward.
+    if (static_cast<std::size_t>(bone) < m_ikStartEuler.size()) {
+        m_ikStartEuler[static_cast<std::size_t>(bone)] = m_boneEuler[static_cast<std::size_t>(bone)];
     }
-    m_ikRotPriorExempt[static_cast<std::size_t>(bone)] = 1;
     // A promoted grab (a finger driving the hand): the offset the window's targets are shifted
     // by is (grabbed - solved) in the effector's DRAG-START frame (see dragIkTo), so re-capture
     // it from the current positions through the effector's rotation since drag start.
     const int eff = m_ikRig->dragEffector();
-    if (eff >= 0 && eff != m_selectedBone && eff < static_cast<int>(m_bones.size())) {
+    if (eff >= 0 && eff != m_selectedBone && eff < static_cast<int>(m_bones.size()) &&
+        m_selectedBone >= 0 && m_selectedBone < static_cast<int>(m_bones.size())) {
         const glm::mat3 grabRot =
             m_ikRig->effectorIsTrunk()
                 ? glm::mat3(1.0f)
@@ -628,6 +749,52 @@ std::vector<int> Armature::activeContactPins() const {
         }
     }
     return out;
+}
+
+void Armature::captureFlatHold(bool restOrientation) {
+    m_ikFlatNodes.clear();
+    m_ikFlatRot.clear();
+    m_ikFlatOwner.clear();
+    if (!m_ikRig) {
+        return;
+    }
+    const std::vector<IkEffector>& pins = m_ikRig->pins();
+    for (std::size_t p = 0; p < pins.size(); ++p) {
+        const int node = pins[p].node;
+        if (node < 0 || node >= static_cast<int>(m_bones.size())) {
+            continue;
+        }
+        if (m_ikRig->pinIsLive(p)) {
+            continue; // a floor contact the pose made holds its place, not its orientation —
+                      // exactly like one the drag brings down itself (IkRig::seedPoseContacts)
+        }
+        const bool user = m_ikRig->pinIsUser(p);
+        // The rest pose's world rotation is the identity: a bone's bind is translation-only
+        // (its orientation cancels at rest), so "flat on the floor" is the identity frame.
+        const auto rotOf = [&](int b) {
+            return (restOrientation && !user) ? glm::mat3(1.0f)
+                                              : glm::mat3(m_poseGlobal[static_cast<std::size_t>(b)]);
+        };
+        m_ikFlatNodes.push_back(node);
+        m_ikFlatRot.push_back(rotOf(node));
+        m_ikFlatOwner.push_back(node);
+        if (user) {
+            continue; // a user pin's subtree keeps its own local pose (the pin is held 6-DoF)
+        }
+        // A contact's riders — its whole subtree, the toes — hold their world orientation
+        // too (see m_ikFlatOwner): the sole may pitch, the toes stay flat on the floor.
+        std::vector<int> stack(m_children[static_cast<std::size_t>(node)].begin(),
+                               m_children[static_cast<std::size_t>(node)].end());
+        while (!stack.empty()) {
+            const int c = stack.back();
+            stack.pop_back();
+            m_ikFlatNodes.push_back(c);
+            m_ikFlatRot.push_back(rotOf(c));
+            m_ikFlatOwner.push_back(node);
+            stack.insert(stack.end(), m_children[static_cast<std::size_t>(c)].begin(),
+                         m_children[static_cast<std::size_t>(c)].end());
+        }
+    }
 }
 
 } // namespace pose

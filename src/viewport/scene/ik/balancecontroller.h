@@ -50,8 +50,8 @@ public:
     /// True if @p p lies inside (or on) the counter-clockwise hull.
     static bool insidePolygon(const std::vector<glm::vec2>& hull, const glm::vec2& p);
 
-    /// The balanced point nearest @p p: @p p itself when it lies at least @p margin inside the
-    /// hull, else the closest boundary point pulled @p margin toward the hull's interior.
+    /// The balanced point nearest @p p: the nearest point of the hull SHRUNK by @p margin (@p p
+    /// itself inside it) — continuous in @p p, which the solver's balance row depends on.
     /// Degenerate hulls (a single planted foot, one contact point) resolve to the point/segment.
     static glm::vec2 closestBalancedPoint(const std::vector<glm::vec2>& hull, const glm::vec2& p,
                                           float margin);
