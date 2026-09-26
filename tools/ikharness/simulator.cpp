@@ -10,6 +10,7 @@
 #include "bonealiases.h"
 
 #include "armature.h"
+#include "balancecontroller.h"
 #include "cursorfilter.h"
 #include "bodyvolume.h"
 #include "ikmath.h"
@@ -254,7 +255,7 @@ RunResult runScenario(const std::vector<ArmatureBone>& baseBones, const Scenario
     for (std::size_t i = 0; i < n; ++i) {
         r.startEuler[i] = arm.boneEuler(i);
     }
-    if (!arm.beginIkDrag()) {
+    if (!arm.beginIkDrag(sc.scoped ? pose::IkScope::Chain : pose::IkScope::Body)) {
         r.error = "beginIkDrag failed";
         return r;
     }
@@ -669,7 +670,7 @@ RunResult runScenario(const std::vector<ArmatureBone>& baseBones, const Scenario
                 r.headJumpMax = std::max(r.headJumpMax, step);
             }
             r.minJointY = std::min(r.minJointY, static_cast<double>(p.y - bindY[i]));
-            if (bodyNode[i]) {
+            if (bodyNode[i] && !arm.footLyingExempt(static_cast<int>(i))) { // (a lying foot's ankle and mid-foot: their clearances are the standing foot's)
                 const double pen = rig->floorClearance(static_cast<int>(i)) - p.y;
                 if (pen > r.penetrationMax) {
                     r.penetrationMax = pen;
@@ -687,7 +688,12 @@ RunResult runScenario(const std::vector<ArmatureBone>& baseBones, const Scenario
         }
         // (IK_HARNESS_POSE_TRACE=<n> > 1: that many ticks instead of the first six.)
         static const int kJumpDumpLimit = std::max(6, std::atoi(std::getenv("IK_HARNESS_POSE_TRACE") ? std::getenv("IK_HARNESS_POSE_TRACE") : "0"));
-        if (kJumpTrace && tickJump > 0.03 && jumpDumps < kJumpDumpLimit) {
+        // (IK_HARNESS_POSE_TRACE_MM=<mm> lowers the dump's threshold from 30mm: a hold-still gate
+        // of 25 that fails at 27 names its joint that way.)
+        static const double kJumpDumpM = std::getenv("IK_HARNESS_POSE_TRACE_MM") != nullptr
+                                             ? std::atof(std::getenv("IK_HARNESS_POSE_TRACE_MM")) * 0.001
+                                             : 0.03;
+        if (kJumpTrace && tickJump > kJumpDumpM && jumpDumps < kJumpDumpLimit) {
             ++jumpDumps;
             std::printf("[pose] the joint that jumped farthest: %s\n", arm.boneName(tickJumpJoint).c_str());
             std::printf("[pose] tick %d: a joint jumped %.1f mm; cursor(%.3f %.3f %.3f) grab(%.3f %.3f %.3f)\n",
@@ -963,7 +969,7 @@ RunResult runScenario(const std::vector<ArmatureBone>& baseBones, const Scenario
             }
             for (std::size_t i = 0; i < n; ++i) {
                 r.settleMaxStep = std::max(r.settleMaxStep, static_cast<double>(glm::length(arm.boneWorldPosition(i) - before[i])));
-                if (bodyNode[i]) {
+                if (bodyNode[i] && !arm.footLyingExempt(static_cast<int>(i))) {
                     r.penetrationMax = std::max(
                         r.penetrationMax,
                         static_cast<double>(rig->floorClearance(static_cast<int>(i)) -
@@ -1041,8 +1047,18 @@ RunResult runScenario(const std::vector<ArmatureBone>& baseBones, const Scenario
         }
     }
     r.endPos.resize(n);
+    r.endPalm.resize(n);
     for (std::size_t i = 0; i < n; ++i) {
         r.endPos[i] = arm.boneWorldPosition(i);
+        r.endPalm[i] = arm.handPalmNormal(static_cast<int>(i));
+    }
+    if (const IkRig* rigEnd = arm.ikRig(); rigEnd != nullptr && rigEnd->masses().size() == n) {
+        std::vector<int> parents(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            parents[i] = bones[i].parent;
+        }
+        r.comStart = BalanceController::centerOfMass(r.startPos, parents, rigEnd->masses());
+        r.comEnd = BalanceController::centerOfMass(r.endPos, parents, rigEnd->masses());
     }
     r.volumePenetrationEnd = volumeDepth();
     r.riderPenetrationEnd = riderDepth();

@@ -527,6 +527,18 @@ void IkRig::plantContacts(const std::vector<int>& contactNodes,
     // The contacts the POSE made (see the top of this function), as live pins — after every
     // per-pin array above exists (addLivePin appends to them all), before the active set.
     seedPoseContacts(positions);
+    // (... and the imbalance the pose BEGINS with is measured against the support they make too:
+    // against the FEET alone, a kneeling body — its weight over its knees, a third of a metre
+    // ahead of its feet — began every drag "30cm out of balance", and that forgiveness hid the
+    // real need of the leaning stand a chest rise out of a flat kneel ended in: no step ever
+    // came, 2026-09-26.)
+    static const bool kStartImbalanceFeetOnly = std::getenv("IK_START_IMBALANCE_FEET_ONLY") != nullptr; // A/B probe
+    if (dragStart && !kNoStartImbalance && !kStartImbalanceFeetOnly && !m_supportHull.empty() && positions.size() == m_parents.size()) {
+        glm::vec2 need(0.0f);
+        BalanceController::balanceCorrection(positions, m_parents, m_masses, m_supportHull,
+                                             kBalanceMargin * m_sizeScale, need);
+        m_startImbalance = glm::length(need);
+    }
 
     // Active subgraph: the paths joining effector and pins to the root. Everything else —
     // fingers during an arm drag, the face — rides along rigidly.

@@ -60,6 +60,9 @@ struct Scenario {
     /// it belongs to (Armature::setIkGrabOnSegment) — the cursor path starts at that point and
     /// every grab metric reads it.
     float                 grabShare = -1.0f;
+    /// The measured drag is SCOPED (Armature's IkScope::Chain — the app's Ctrl+drag): the grabbed
+    /// chain alone moves. The preludes stay whole-body drags.
+    bool                  scoped = false;
     std::vector<PreludeDrag> before;            // drags made and released before the measured one
     /// The measured drag takes the grabbed joint back to where it sat BEFORE the preludes (the
     /// rest pose, pre-pose included): every non-zero waypoint offset is replaced by that one.
@@ -183,6 +186,12 @@ struct RunResult {
     double                   userPinRotMaxDeg = 0.0;  // worst world-rotation deviation
     // Everything, for ad-hoc checks: at drag start, at mouse-up (before the settle), after it.
     std::vector<glm::vec3>   startPos, dragEndPos, endPos;
+    /// Per bone at the end: a HAND's palm normal (world, unit; Armature::handPalmNormal), zero
+    /// elsewhere - where a hand laid on the body faces (the hand-lay phases).
+    std::vector<glm::vec3>   endPalm;
+    /// The body's CENTRE OF MASS (the rig's masses over the pose) at the measured drag's start
+    /// and at the end: where the weight stands over the feet (the weight shift onto a standing foot).
+    glm::vec3                comStart{0.0f}, comEnd{0.0f};
     std::vector<glm::vec3>   restPos; // before the preludes (Scenario::before): the standing figure
     double                   hipDropAtRelease = 0.0;   // hip descent at mouse-up (a crouch's depth)
     // FLOOR PENETRATION: the deepest any body joint went below (floor + its rig clearance) —

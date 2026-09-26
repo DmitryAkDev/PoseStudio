@@ -28,9 +28,9 @@ void Scene::finalizePose() {
     }
 }
 
-bool Scene::beginBoneIkDrag() {
+bool Scene::beginBoneIkDrag(IkScope scope) {
     Model* fig = figureModel();
-    return fig != nullptr && fig->beginIkDrag();
+    return fig != nullptr && fig->beginIkDrag(scope);
 }
 
 bool Scene::dragBoneIkTo(const glm::vec3& targetWorld) {

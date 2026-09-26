@@ -117,6 +117,7 @@ constexpr float kStepMinDistance = 0.06f;
 // feet, the stance spot centred on them) stepped a foot forward under its own knees while
 // still kneeling, and then back again as it stood.
 constexpr float kStepLowBody = 0.12f;
+constexpr float kShadowMaxRise = 0.10f; ///< A shadow support (a lifted contact kept in the polygon while the body would be unbalanced without it) EXPIRES once its joint has risen this far (m, figure-scaled): nothing leans on a knee 10cm in the air (see updateContacts).
 // THE INTENTS (updateIntent; every one figure-scaled by sizeScale, like every geometric
 // threshold of the rig — in raw metres until 2026-09-24, so a half-size character's gates were
 // twice as coarse as a full-size figure's):

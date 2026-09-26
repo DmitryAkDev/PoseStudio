@@ -59,7 +59,8 @@ void VulkanWindow::mousePressEvent(QMouseEvent* event) {
 
     // Left-press priority: (0) a joint -> select it + full-body-IK drag of it (the body follows:
     // feet pinned, auto-balanced) — THE posing gesture, no modifier; (1) Ctrl + a joint -> select
-    // it + FK-rotate that ONE joint this drag; (2) empty space -> orbit the camera — or, if
+    // it + a SCOPED IK drag of it (the grabbed chain alone moves: a limb up to the body, the head
+    // and neck, the spine over a still pelvis); (2) empty space -> orbit the camera — or, if
     // released without dragging, a CLICK that selects the model under the cursor / clears the
     // selection (see the release).
     if (event->button() == Qt::LeftButton && m_renderer) {
@@ -68,13 +69,9 @@ void VulkanWindow::mousePressEvent(QMouseEvent* event) {
         // A left press while a left-button gesture is still flagged means its release never
         // reached this window (a modal/shortcut swallowed the mouse-up — the m_activeDragButtons
         // event-leak class): close it out, or the 60 Hz timer runs forever and this press hijacks
-        // into IK-dragging the old joint, and a stale FK flag would route the coming orbit drag
-        // into rotating the selected joint.
+        // into IK-dragging the old joint.
         if (m_ik.dragging) {
             abortIkDrag();
-        }
-        if (m_posingBone) {
-            endFkDrag();
         }
         if (!beginJointGesture(event->position(),
                                event->modifiers().testFlag(Qt::ControlModifier))) {
@@ -110,8 +107,6 @@ void VulkanWindow::mouseReleaseEvent(QMouseEvent* event) {
                 // popping in one frame. The settled-pose hook + the undo commit run when it
                 // finishes (finishIkSettle).
                 beginIkRelease();
-            } else {
-                endFkDrag(); // FK edit settled: the settled-pose hook + an undo entry if changed
             }
             requestUpdate();
         } else if (m_leftClickCandidate && m_renderer) {
@@ -126,7 +121,6 @@ void VulkanWindow::mouseReleaseEvent(QMouseEvent* event) {
             }
         }
         m_leftClickCandidate = false;
-        m_posingBone = false;
         m_ik.dragging = false;
     }
     // Right-click (on release, the desktop convention) opens the object context menu. The right
@@ -214,12 +208,6 @@ void VulkanWindow::mouseMoveEvent(QMouseEvent* event) {
             // timer's — with a high-polling-rate mouse the damped-motion dynamics (all tuned
             // in per-tick units) ran several times faster than designed.
         }
-    } else if ((active & Qt::LeftButton) && m_posingBone) {
-        // Ctrl+drag, FK: rotate the selected joint alone — horizontal about its Y axis, vertical
-        // about X.
-        constexpr float kDegPerPixel = 0.4f;
-        scene().nudgeSelectedBone(glm::vec3(static_cast<float>(delta.y()) * kDegPerPixel,
-                                            static_cast<float>(delta.x()) * kDegPerPixel, 0.0f));
     } else if (active & Qt::LeftButton) {
         // Drag right -> orbit right; drag up -> tilt up. Negated to feel like grabbing the scene.
         camera.orbit(-static_cast<float>(delta.x()) * kOrbitRadiansPerPixel,
@@ -295,15 +283,11 @@ void VulkanWindow::keyReleaseEvent(QKeyEvent* event) {
 }
 
 void VulkanWindow::focusOutEvent(QFocusEvent* event) {
-    // The releases will never reach us: don't leave the wheel in rotate mode, don't leave a
-    // stale FK flag to route the next orbit drag into rotating the joint, and don't leave the
-    // button mask set (it would keep blocking the view hotkeys). A live IK drag is left to the
+    // The releases will never reach us: don't leave the wheel in rotate mode, and don't leave
+    // the button mask set (it would keep blocking the view hotkeys). A live IK drag is left to the
     // stale close-out at the next press: its timer keeps re-issuing the last target, which is
     // harmless, and the mouse-up may still arrive.
     endAxisRotate();
-    if (m_posingBone) {
-        endFkDrag();
-    }
     m_activeDragButtons = Qt::NoButton;
     m_leftClickCandidate = false;
     QWindow::focusOutEvent(event);
@@ -335,7 +319,7 @@ void VulkanWindow::keyPressEvent(QKeyEvent* event) {
     if (m_renderer && event->modifiers() == Qt::NoModifier &&
         (event->key() == Qt::Key_X || event->key() == Qt::Key_Y || event->key() == Qt::Key_Z)) {
         const int axis = event->key() == Qt::Key_X ? 0 : event->key() == Qt::Key_Y ? 1 : 2;
-        if (!event->isAutoRepeat() && !m_posingBone && m_axisRotateKey != axis &&
+        if (!event->isAutoRepeat() && m_axisRotateKey != axis &&
             scene().hasSelectedBone()) {
             closeSettlingEdits(); // ends a hold on another axis as its own undo step
             beginAxisRotate(axis);

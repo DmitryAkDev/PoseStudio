@@ -17,7 +17,7 @@ Distances assume a standard-size adult figure; a small character needs proportio
 
 - **Crouch**: drag the hips straight down. The knees bend, the heels lift when the ankles run out, and the arms hang. Drag them back up to stand.
 - **Half squat / hips back**: drag the hips down and back. The trunk hinges forward over the feet to keep the balance.
-- **Kneel**: drag the hips down and *forward* — the knees come down onto the floor once they are within a few centimetres of it, the feet tuck under with the toes on the floor, and the trunk stays upright. Push lower than the thighs allow and she stops; to get lower, drag the hips **back** so she sits onto her heels.
+- **Kneel**: drag the hips down and *forward* — the knees come down onto the floor once they are within a few centimetres of it, the feet lie flat on their tops behind her with the toes pointing back, and the trunk stays upright. Push lower than the thighs allow and she stops; to get lower, drag the hips **back** so she sits onto her heels.
 - **Sit on the floor**: drag the hips down and back until the seat reaches the floor. From there, dragging the chest back **lays her down** on her back, and dragging it forward again sits her up; dragging a foot slides a leg out.
 - **Sit on a chair**: drag the hips down (and back) to the seat's height, then **pin the hips** (`P`). Now she is held by the seat: lean the chest forward or back and the pelvis rocks like a seated person's, put a foot out, reach a hand. Balance and stepping stay off while the pin is set.
 - **Stand up again**: from a kneel or a sit, drag the hips — or the chest, or the head — back up. The body rises, the legs straighten, and the feet come flat.
@@ -28,7 +28,7 @@ Distances assume a standard-size adult figure; a small character needs proportio
 - **Kneel up from all fours**: drag the chest up and back over the hips. She comes up onto her knees with her arms hanging. From the kneel, the hips or the chest stand her up.
 - **Lie on her belly**: from all fours, drag the **hips forward and down**, a thigh's length and more ahead of the knees. The thighs go forward, the shins fold up behind, and she lies face down with the hands where they were. Turn the head afterwards with the `X`/`Y`/`Z` wheel.
 - **Get up off her belly**: drag the hips **up** — straight up, or up and back — and she comes up onto all fours. For a push-up's hand placement, first drag each hand forward onto the floor under the shoulders.
-- **Half kneel** (one knee up, the other down): kneel, then drag one **knee up and forward** to hip height. Past what the shin allows over the tucked foot, that foot lets go, swings under the knee and lands ahead, flat.
+- **Half kneel** (one knee up, the other down): kneel, then drag one **knee up and forward** to hip height. Past what the shin allows over the lying foot, that foot lets go, hangs from the rising shin, turns and lands ahead under the knee, flat.
 - **Lunge**: drag one foot back along the floor a stride and let go, then drag the hips down: the back knee comes toward the floor while the front knee bends over its foot.
 
 ## Walking and steps
@@ -45,6 +45,6 @@ Distances assume a standard-size adult figure; a small character needs proportio
 ## Fixing a pose
 
 - **A limb went somewhere odd**: select the joint and use **Reset Limb**, or `Ctrl+Z`.
-- **The feet came off the floor** (after Ctrl-drag rotations, or a loaded pose): press the **Ground** button.
+- **The feet came off the floor** (after wheel rotations, or a loaded pose): press the **Ground** button.
 - **Everything at once**: **Reset Pose**.
 - **Left and right ended unequal** on a symmetric pose: pose one side, then **Mirror Limb to Other Side**.

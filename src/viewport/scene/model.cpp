@@ -87,12 +87,16 @@ Model::Model(VulkanContext& context, const ModelData& data, VkDescriptorSetLayou
         // (the GPU buffers are device-local and unreadable). Reserved once, summed across meshes
         // (see GroundSampler::reserve).
         std::size_t totalVerts = 0;
+        std::size_t totalTris = 0;
         for (const MeshData& meshData : data.meshes) {
             if (!meshData.indices.empty()) {
                 totalVerts += meshData.vertices.size();
+                if (meshData.opacity >= 0.999f && !meshData.hasOpacityMask) {
+                    totalTris += meshData.indices.size() / 3; // (the pickable surface: Model::pickSurface)
+                }
             }
         }
-        m_ground.reserve(totalVerts);
+        m_ground.reserve(totalVerts, totalTris);
     }
     // The BODY MESH SAMPLE for the self-collision volumes (bodymesh.h): every skinned vertex's
     // bind position with the bone that weighs most on it, handed to the armature below.
@@ -107,7 +111,8 @@ Model::Model(VulkanContext& context, const ModelData& data, VkDescriptorSetLayou
         m_meshes.emplace_back(context, meshData, materialSetLayout, m_descriptorPool.get(),
                               fallbackDiffuse, fallbackNormal, uploads, batch, ranges);
         if (skinned) {
-            m_ground.add(meshData.vertices);
+            // (Opaque skin only is pickable: a click on the eye's clear shells is a click on the eye.)
+            m_ground.add(meshData.vertices, meshData.indices, meshData.opacity >= 0.999f && !meshData.hasOpacityMask);
             for (const Vertex& v : meshData.vertices) {
                 int best = 0;
                 for (int j = 1; j < 4; ++j) {
@@ -435,6 +440,10 @@ bool Model::intersectRay(const Ray& ray, float& tOut) const {
 
 bool Model::groundGap(float& lowestY) const {
     return m_ground.lowestY(m_armature, m_boundsMin, m_boundsMax, m_hasBounds, lowestY);
+}
+
+bool Model::pickSurface(const Ray& ray, float& tOut, glm::vec3& hitWorld, int& bone) const {
+    return m_ground.pickSurface(m_armature, ray, tOut, hitWorld, bone);
 }
 
 } // namespace pose

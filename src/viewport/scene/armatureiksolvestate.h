@@ -60,6 +60,8 @@ struct IkSolveScratch {
     std::vector<char>               pinNode;  ///< the pinned joints themselves
     std::vector<char>               homeLimb;  ///< a STANDING FOOT's limb: what goes home as the body rises
     std::vector<char>               girdle;  ///< under an elbow drag: the bones above the arm's socket (the collar)
+    int                             handCollar = -1;  ///< under a HAND drag: the girdle bone the arm's socket hangs from (the collar), and its ELEVATION channel (the unlocked channel about the fore axis), whose box is capped at kCollarElevationMaxDeg; -1 = none
+    int                             handCollarAxis = -1;
     // --- Set by ikFootDrag ---
     float                           legScale{};  ///< The rig's size scale (IkRig::sizeScale): every leg-drag length is figure-scaled by it.
     bool                            legDrag{};  ///< The grabbed joint is foot-class (low at BIND): a foot drag.
@@ -75,6 +77,9 @@ struct IkSolveScratch {
     std::vector<char>               kneeLegBone;  ///< the dragged knee's leg: its twist price comes back as the foot lets go (below)
     float                           plant{};  ///< 1 = the foot below the dragged knee holds; 0 = the leg hangs from it
     float                           kneeLift{};  ///< how far the knee's target is pulled UP off its planted foot (m)
+    bool                            lyingKneeFoot{};  ///< the dragged knee's foot was found LYING (a flat kneel's): it rides its shin and hangs clear of the floor (A KNEELING FOOT LIES FLAT)
+    float                           lyingFootPitchExcessDeg{};  ///< ... and how far that foot still points DOWN past level (deg): the hang's clearance fades with it
+    bool                            flatEasing{};  ///< a foot's flat share or references moved this tick (a roll onto its top, or back): the settle waits for it, as for an easing pin
     glm::vec3                       kneeGoal{};  ///< A dragged knee's goal after its projections (onto the thigh's reach, the lateral clamp, the raise).
     // --- Set by ikElbowDrag ---
     bool                            elbowDrag{};  ///< The grabbed joint is a fold joint that is not a knee: an elbow drag.
@@ -82,6 +87,8 @@ struct IkSolveScratch {
     int                             elbowHeldPin{};  ///< a pin below the elbow (a user pin, a hand on the floor)
     glm::vec3                       elbowGoal{};  ///< A dragged elbow's goal on the upper arm's reach about its socket.
     // --- Set by ikPostureModel ---
+    float                           weightLift{};  ///< THE WEIGHT LIFT this tick: a foot drag's 1 - slide, a knee drag's 1 - plant (the raw share, before the drag-start reference).
+    float                           contrapposto{};  ///< CONTRAPPOSTO's share (0-1): the pelvis rolls the free side down under the weight shift, the chest kept level.
     JointSolver::Problem            problem;  ///< THE PROBLEM handed to the solver: DoFs with their stiffness and references, then every row.
     bool                            trunkDrag{};  ///< A trunk-class joint's drag that is not the root's, a knee's, an elbow's or a foot's.
     std::vector<char>               inSpine;  ///< Per bone: a link of the spine chain (m_jsSpineChain), coupled channel by channel.
@@ -96,6 +103,7 @@ struct IkSolveScratch {
     std::vector<JointOrientationTask> palmRows;  ///< (... and their palms' pulls, added once the contact's fade is known)
     std::vector<JointPositionTask>  tipRows;  ///< (... and their fingertips' heights)
     std::vector<char>               footFreed;  ///< (see THE FEET COME UP: their floor rows return)
+    std::vector<char>               footLying;  ///< (A KNEELING FOOT LIES FLAT: the ankle's and mid-foot's floor rows read standing heights, and are off; the ball's and toes' stay)
     std::vector<std::tuple<int, float, float>> handCeilings;  ///< (a slack-armed hand, a loaded knee may not rise off the floor: node, height, weight share — a one-sided row, see the plane source)
     std::vector<std::tuple<std::size_t, int, float>> kneeCeilings;  ///< (a loaded knee may not rise either: pin, node, height — added to the ceilings below by its hold)
     std::vector<glm::vec3>          risePositions;  ///< (the pose as it stands: what a live contact has risen by)

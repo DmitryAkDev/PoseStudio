@@ -42,6 +42,7 @@ void Armature::ikPostureModel(IkSolveScratch& s) {
     const bool& rootTurns = s.rootTurns;
     bool& swayValid = s.swayValid;
     glm::vec3& swayEuler = s.swayEuler;
+    const float& contrapposto = s.contrapposto;
     std::vector<char>& cls = s.cls;
     std::vector<char>& twistPriced = s.twistPriced;
     std::vector<char>& landedArm = s.landedArm;
@@ -49,6 +50,8 @@ void Armature::ikPostureModel(IkSolveScratch& s) {
     std::vector<char>& pinNode = s.pinNode;
     std::vector<char>& homeLimb = s.homeLimb;
     std::vector<char>& girdle = s.girdle;
+    const int handCollar = s.handCollar;         // (the dragged arm's collar and its ELEVATION channel: capped at kCollarElevationMaxDeg)
+    const int handCollarAxis = s.handCollarAxis;
     const float& legScale = s.legScale;
     bool& legDrag = s.legDrag;
     const glm::vec3*& goalPoint = s.goalPoint;
@@ -105,6 +108,71 @@ void Armature::ikPostureModel(IkSolveScratch& s) {
             }
         }
     }
+    // THE WEIGHT LIFT this tick (a foot drag's 1 - slide, a knee drag's 1 - plant), measured from the
+    // lift the drag BEGAN with: THE WEIGHT SHIFT (the root's home, below) moves the hips by it, and
+    // CONTRAPPOSTO here rolls the pelvis by it.
+    {
+        s.weightLift = 0.0f;
+        if (legDrag && goalPoint != nullptr) {
+            s.weightLift = 1.0f - slide;
+        } else if (kneeDrag && s.kneeFootPin >= 0) {
+            s.weightLift = 1.0f - plant;
+        }
+        if (m_jsWeightLiftStart < 0.0f) {
+            m_jsWeightLiftStart = s.weightLift;
+        }
+        const float room = 1.0f - m_jsWeightLiftStart;
+        m_jsWeightLift = room > 1.0e-3f ? glm::clamp((s.weightLift - m_jsWeightLiftStart) / room, 0.0f, 1.0f) : 0.0f;
+    }
+    // CONTRAPPOSTO (2026-09-25; IK_JS_NO_CONTRAPPOSTO, IK_JS_CONTRAPPOSTO): standing on one leg — a
+    // foot lifted off a two-footed stance, the weight shifted over the other — the pelvis ROLLS the
+    // free side down by kContrappostoDeg at the full lift, the standing hip hiking, and the CHEST is
+    // kept level (the hip sway's row: kSwayChestLevelWeight), so the spine curves back between them
+    // — the S of a relaxed one-leg stance. Since the weight shift a knee raise stood balanced over
+    // its foot with a dead-level pelvis and a trunk stiff as a post. The roll is a REFERENCE on the
+    // root's rotation (the sway's fields: swayEuler, swayChest; the pelvis drag's price over the
+    // share), built like the sway's on top of the rotation the drag began with, so a foot brought
+    // back down levels her again; and the spine chain stays among the unknowns for the rest of the
+    // drag once the tilt has engaged, to bring the chest home (the sway's lesson: taken out the
+    // moment nothing pulled on it, its joints froze a few tenths of a degree short).
+    // (IN THE SOLVE FROM THE DRAG'S FIRST TICK — the roll's reference simply 0 until the foot lifts,
+    // the pelvis frozen at its price floor: nothing appears or disappears. Entering with the lift,
+    // the spine chain met a balance need the shrinking support had already built up and leaned the
+    // trunk through it in one tick — 62mm at the brow as the knee left the floor, 131 as it came
+    // back down and the chain left again.)
+    static const bool kNoContrapposto = std::getenv("IK_JS_NO_CONTRAPPOSTO") != nullptr; // A/B probe
+    static const double kTiltDeg = envOr("IK_JS_CONTRAPPOSTO", kContrappostoDeg);
+    s.contrapposto = 0.0f;
+    if (!kNoContrapposto && !rootTurns && glm::dot(m_jsWeightShift, m_jsWeightShift) > 0.0f &&
+        !rig.suspended() && static_cast<std::size_t>(root) < m_jsStartRot.size() && kTiltDeg > 0.0) {
+        const glm::vec3 lateral(std::cos(m_jsRootHeading), 0.0f, -std::sin(m_jsRootHeading));
+        const glm::vec3 fore(std::sin(m_jsRootHeading), 0.0f, std::cos(m_jsRootHeading));
+        // (The standing foot's side along the figure's lateral axis: the shift points at it. A
+        // positive turn about the fore axis raises the +lateral side, so the standing side comes
+        // UP and the free side goes down.)
+        const float side = glm::dot(glm::vec2(lateral.x, lateral.z), m_jsWeightShift) >= 0.0f ? 1.0f : -1.0f;
+        const float theta = glm::radians(static_cast<float>(kTiltDeg)) * m_jsWeightLift * side;
+        const Bone& rb = m_bones[static_cast<std::size_t>(root)];
+        const glm::mat3 roll(glm::mat4_cast(glm::angleAxis(theta, fore)));
+        const glm::mat3 parentRot = rb.parent >= 0 ? glm::mat3(m_poseGlobal[static_cast<std::size_t>(rb.parent)]) : glm::mat3(1.0f);
+        const glm::mat3 local = glm::mat3(rb.invOrient) * glm::transpose(parentRot) * roll * m_jsStartRot[static_cast<std::size_t>(root)] * glm::mat3(rb.orient);
+        swayEuler = eulerFromMatrix(local, rb.rotationOrder);
+        for (int a = 0; a < 3; ++a) {
+            while (swayEuler[a] - m_ikStartEuler[static_cast<std::size_t>(root)][a] > 180.0f) {
+                swayEuler[a] -= 360.0f;
+            }
+            while (swayEuler[a] - m_ikStartEuler[static_cast<std::size_t>(root)][a] < -180.0f) {
+                swayEuler[a] += 360.0f;
+            }
+        }
+        swayValid = true;
+        s.contrapposto = std::max(m_jsWeightLift, kContrappostoFloor); // (the price's share: frozen at the floor until the lift)
+        dofBone[static_cast<std::size_t>(root)] = 1;
+        s.swayChest = m_jsSpineChain.size() > 1 ? m_jsSpineChain.back() : -1;
+        for (std::size_t k = 1; k < m_jsSpineChain.size(); ++k) {
+            dofBone[static_cast<std::size_t>(m_jsSpineChain[k])] = 1;
+        }
+    }
     // A drag IN the figure's sagittal plane keeps the spine in it (kSagittalLock): its twist and
     // side-bend channels cost that many times as much while the trunk joint's travel has no
     // sideways share to speak of. A chest dragged straight forward out of a crouch, past what the
@@ -114,6 +182,7 @@ void Armature::ikPostureModel(IkSolveScratch& s) {
     // hips to rise.
     s.inSpine.assign(n, 0);
     std::vector<char>& inSpine = s.inSpine;
+    const std::vector<char>& active = s.active;
     for (std::size_t k = 1; k < m_jsSpineChain.size(); ++k) {
         inSpine[static_cast<std::size_t>(m_jsSpineChain[k])] = 1;
     }
@@ -269,6 +338,15 @@ void Armature::ikPostureModel(IkSolveScratch& s) {
             if (bone.rotLimited[a] && range < kLockedRangeDeg) {
                 continue;
             }
+            // (CONTRAPPOSTO's spine: the SIDE-BEND channels alone — the ones the S-curve is made of,
+            // about the fore axis. The chain is among the unknowns only for the pelvis's roll to be
+            // taken up; with its flexion and twist in too, the balance row had the whole trunk as a
+            // lever under a knee drag, and as the foot came back down and the support regrew it
+            // pitched the trunk 9 degrees in one tick — 131mm at the brow, 91 at a shoulder.)
+            if (contrapposto > 1.0e-3f && inSpine[b] && !active[b] &&
+                std::abs(glm::dot(glm::vec3(bone.orient[a]), glm::vec3(0.0f, 0.0f, 1.0f))) < 0.7f) {
+                continue;
+            }
             const double rangeDeg =
                 bone.rotLimited[a] ? std::max(static_cast<double>(range), kMinRangeDeg) : kFreeRangeDeg;
             const double rangeRad = rangeDeg * 3.14159265358979323846 / 180.0;
@@ -304,14 +382,33 @@ void Armature::ikPostureModel(IkSolveScratch& s) {
             if (!kNoPelvisBonePrice && effector == root && rig.isPelvisBone(static_cast<int>(b)) && kneelTilt > 1.0) {
                 s = std::max(s, kRootRot * kneelTilt);
             }
-            if (static_cast<int>(b) == root && !rootTurns) {
-                // (The bow's hinge alone: the pelvis's PITCH, and nothing else of its rotation.)
-                if (std::abs(glm::vec3(bone.orient[a]).x) < 0.9f) {
+            if (static_cast<int>(b) == root && !rootTurns && contrapposto > 1.0e-3f &&
+                std::abs(glm::vec3(bone.orient[a]).z) >= 0.9f) {
+                // CONTRAPPOSTO: the pelvis's ROLL alone — the channel about the fore axis — at the
+                // pelvis drag's squared price over the tilt's share, following its reference
+                // (swayEuler). Nothing else of the root's rotation: let through at the sway's
+                // prices (pitch cheap, as under a pelvis drag) the balance row pitched the pelvis
+                // 12 degrees back under a knee raise and every lifted-foot phase popped 100-190mm.
+                static const double kSquare = envOr("IK_JS_ROOTSQUARE", kRootSquareness);
+                s = kRootRot * kSquare / static_cast<double>(contrapposto);
+            } else if (static_cast<int>(b) == root && !rootTurns) {
+                // (The bow's hinge alone: the pelvis's PITCH, and nothing else of its rotation — and
+                // only while a hinge is ON: the root is marked an unknown by CONTRAPPOSTO too, whose
+                // roll the branch above prices, and its pitch must then stay out — priced here at
+                // kHinge over a hinge share of ZERO it went infinitely stiff, and every lifted-foot
+                // drag stood still.)
+                if (std::abs(glm::vec3(bone.orient[a]).x) < 0.9f || m_jsTrunkHinge <= 1.0e-3f) {
                     continue;
                 }
                 static const double kStanding = envOr("IK_JS_TRUNKHINGE", kTrunkHingeStiffness);
                 static const double kKneeling = envOr("IK_JS_KNEELFOLD", kKneelFoldStiffness);
-                const double        kHinge = m_jsKneelStart ? kKneeling : kStanding;
+                // (A hand's REACH DOWN holds its pitch to a folding REFERENCE at kReachHingeStiffness —
+                // firm enough that the reference decides the fold, soft enough that the cursor can
+                // bend it. Priced at the bow's 20 with the spine cheapened to follow, the price alone
+                // decided: a hand to the knee arched her BACKWARD 9-23 degrees, and a hand to the
+                // floor folded the trunk 130, the head hanging at the knees.)
+                static const double kReach = envOr("IK_JS_REACHHINGE", kReachHingeStiffness);
+                const double        kHinge = m_jsKneelStart ? kKneeling : (m_jsReachHinge > 1.0e-3f && !trunkDrag ? kReach : kStanding);
                 s = kHinge / static_cast<double>(m_jsTrunkHinge);
             } else if (static_cast<int>(b) == root) {
                 s = effector == root ? kRootRot * kneelTilt : kRootRot / static_cast<double>(rising);
@@ -403,6 +500,17 @@ void Armature::ikPostureModel(IkSolveScratch& s) {
                 // (THE SEAT ROLLS, above: the pitch channel's reference goes with the target.)
                 dof.reference += static_cast<float>(seatRollDeg) * (glm::vec3(bone.orient[a]).x < 0.0f ? -1.0f : 1.0f);
             }
+            if (static_cast<int>(b) == root && m_jsReachHinge > 1.0e-3f && !trunkDrag &&
+                std::abs(glm::vec3(bone.orient[a]).x) >= 0.9f) {
+                // REACHING DOWN (ikTrunkPolicy): the pelvis's pitch REFERENCE folds forward with the
+                // hand's downward travel — kReachFoldPerMetre degrees a metre, kReachFoldMaxDeg at
+                // most, by the reach's share. A price can only prefer less travel; what a person does
+                // reaching down is given here, and the squat, the knees and the balance find the rest.
+                static const double kPerMetre = envOr("IK_JS_REACHFOLD", kReachFoldPerMetre);
+                static const double kMaxDeg = envOr("IK_JS_REACHFOLDMAX", kReachFoldMaxDeg);
+                const float fold = static_cast<float>(std::min(kMaxDeg, kPerMetre * static_cast<double>(m_jsReachTravel))) * m_jsReachHinge;
+                dof.reference += fold * (glm::vec3(bone.orient[a]).x < 0.0f ? -1.0f : 1.0f);
+            }
             // RISING, the planted legs and the bone they hang from go HOME too: their posture
             // reference turns from the pose the drag began in to the rest stance, and the legs
             // (all but free otherwise) get a little stiffness to make it count. What a standing
@@ -425,10 +533,44 @@ void Armature::ikPostureModel(IkSolveScratch& s) {
                     dof.stiffness += kRiseHome * static_cast<double>(risen);
                 }
             }
+            // A KNEELING FOOT LIES FLAT (the pin rows set m_jsFootFlat / m_jsFootFlatRef, one tick
+            // before): the ankle's pitch channel is REFERRED to full plantar flexion over the
+            // foot's share, at kKneelFlatStiffness — the top of the foot comes down onto the floor,
+            // toes back, and the floor's rows stop it there. (A price can only prefer less travel;
+            // what a kneeling foot does is given.)
+            if (b < m_jsFootFlat.size() && m_jsFootFlat[b] > 0.0f && b < m_jsFootFlatAxis.size() && m_jsFootFlatAxis[b] >= 0 &&
+                b < m_jsFootFlatRefValid.size() && m_jsFootFlatRefValid[b]) {
+                static const double kFlatStiffness = envOr("IK_JS_KNEELFLAT", kKneelFlatStiffness);
+                const float share = m_jsFootFlat[b];
+                dof.reference = dof.reference + (m_jsFootFlatRef[b][a] - dof.reference) * share;
+                dof.stiffness += kFlatStiffness * static_cast<double>(share);
+            }
+            if (b < m_jsToeFlatShare.size() && m_jsToeFlatShare[b] > 0.0f && b < m_jsToeFlatValid.size() && m_jsToeFlatValid[b]) {
+                static const double kFlatStiffness = envOr("IK_JS_KNEELFLAT", kKneelFlatStiffness);
+                const float share = m_jsToeFlatShare[b];
+                dof.reference = dof.reference + (m_jsToeFlatRef[b][a] - dof.reference) * share; // (the toes and mid-foot lie straight)
+                dof.stiffness += kFlatStiffness * static_cast<double>(share);
+            }
             // A FOLD channel (a knee, an elbow: a wide range to one side of straight, a few
             // degrees of hyperextension to the other): IK never takes it further past straight
-            // than the pose already is (JointSolverDof::foldSign has the why).
-            if (bone.rotLimited[a] && range >= kFoldRangeDeg && bone.rotMin[a] < 0.0f &&
+            // than the pose already is (JointSolverDof::foldSign has the why). A fold joint is a
+            // HINGE: its other channel, the twist excepted, is narrow (kFoldHingeOtherDeg) — a
+            // knee's side channel spans 10 degrees, an elbow's is locked. The range test alone
+            // took the two oldest generations' THIGH for one: their abduction channel spans
+            // -85..15, and 15 is within a fifth of 85, so a standing thigh could never adduct
+            // past straight under IK — asked to put the pelvis over its foot it TWISTED 12
+            // degrees instead, and the foot pivoted a centimetre on its ball (found by the
+            // weight shift, 2026-09-25; the six other generations author 20-26 degrees there).
+            static const bool kFoldByRangeAlone = std::getenv("IK_JS_FOLD_RANGE_ONLY") != nullptr; // A/B probe
+            bool hinge = true;
+            for (int o = 0; o < 3 && hinge && !kFoldByRangeAlone; ++o) {
+                if (o == a || m_jsTwistAxis[b] == o) {
+                    continue;
+                }
+                const float otherRange = bone.rotLimited[o] ? bone.rotMax[o] - bone.rotMin[o] : 360.0f;
+                hinge = otherRange <= kFoldHingeOtherDeg;
+            }
+            if (hinge && bone.rotLimited[a] && range >= kFoldRangeDeg && bone.rotMin[a] < 0.0f &&
                 bone.rotMax[a] > 0.0f) {
                 const float narrow = std::min(-bone.rotMin[a], bone.rotMax[a]);
                 const float wide = std::max(-bone.rotMin[a], bone.rotMax[a]);
@@ -440,6 +582,24 @@ void Armature::ikPostureModel(IkSolveScratch& s) {
                     } else {
                         dof.maxDeg = std::max(m_boneEuler[b][a], 0.0f);
                     }
+                }
+            }
+            // THE COLLAR ELEVATES kCollarElevationMaxDeg AT MOST under a hand drag (2026-09-25): its
+            // elevation channel's box is narrowed to +-that about the bind — never tighter than where
+            // the collar already stands, the fold bound's idiom. The rigs author 55 degrees, a
+            // clavicle rises about 30; past it the shrug was a socket hauled onto the neck. (Its
+            // twist and swing stay at the plain price: they are what carry an arm smoothly from one
+            // basin to the next — priced dear, a hand raised beside the head flipped 136mm.)
+            // (A standing body's: hanging by the hand, the shoulder girdle is stretched to whatever the
+            // rig allows — with the box the two oldest generations' rigid hang rested 81-87mm short of
+            // the cursor, 52-66 before.)
+            if (static_cast<int>(b) == handCollar && handCollarAxis >= 0 && !rig.suspended()) {
+                static const double kCollarMax = envOr("IK_JS_COLLARMAX", kCollarElevationMaxDeg);
+                static const double kCollarOther = envOr("IK_JS_COLLAROTHERMAX", kCollarOtherMaxDeg);
+                const double cap = a == handCollarAxis ? kCollarMax : kCollarOther; // (its swing and twist: what a clavicle does)
+                if (cap > 0.0) {
+                    dof.minDeg = std::max(dof.minDeg, std::min(static_cast<double>(m_boneEuler[b][a]), -cap));
+                    dof.maxDeg = std::min(dof.maxDeg, std::max(static_cast<double>(m_boneEuler[b][a]), cap));
                 }
             }
             problem.dofs.push_back(dof);
@@ -509,7 +669,49 @@ void Armature::ikPostureModel(IkSolveScratch& s) {
     rootHome.z += m_jsUnfoldShift.y;
     rootHome.y += seatRollLift; // (THE SEAT ROLLS: the hip joint's resting height at the rolled pitch)
     rootHome += m_jsKneelSeatShift; // (THE HIPS COME UP TO THE SEAT, over the knees, under a kneel-up: dragIkTick)
-    for (int a = 0; a < 3; ++a) {
+    rootHome.y += m_jsTiptoe;       // (THE TIPTOE: a hand pulled up beyond its reach lifts the heels — dragIkTick; each heel's target rises with it in ikPinRows)
+    // THE WEIGHT SHIFT: a foot lifted off a two-footed stance takes the hips over the STANDING
+    // foot — by the LIFT (a foot drag's 1 - slide, a knee drag's 1 - plant: functions of the
+    // target), measured from the lift the drag BEGAN with (a foot already in the air shifts
+    // nothing: the drag-start pose is the contract), toward where the centre of mass as the drag
+    // found it would stand over the standing foot's footprint (m_jsWeightShift, a constant of the
+    // drag: beginIkDrag). A price can only prefer less travel, and balance never asks back the
+    // imbalance a drag begins with — measured with the lifted foot OUT of the support, a knee
+    // raise began 10cm "out" and stayed there: she stood on one leg with her weight beside the
+    // standing foot, the leg hanging plumb from its socket and the pelvis a hand's width to the
+    // lifted side, a stance that would topple (every knee raise, kick, step-up and foot lifted
+    // behind in the galleries). A person shifts her weight onto the standing foot BEFORE the
+    // other leaves the floor; here the two go together, and a raise brought back down brings the
+    // hips back with it.
+    static const bool kNoWeightShift = std::getenv("IK_JS_NO_WEIGHT_SHIFT") != nullptr; // A/B probe
+    static const double kShiftShare = envOr("IK_JS_WEIGHTSHIFT", kWeightShiftShare);
+    {
+        const float lift = s.weightLift; // (m_jsWeightLift with it: computed at the top of this stage, where CONTRAPPOSTO reads it too)
+        // (Approached at the PINS' pace, kPinEaseStep: the foot lets go over 7-9cm of the target's
+        // lift, and the home went 24cm with it on the base rig — three and a half times the
+        // cursor's speed, a body sliding sideways in a dozen ticks under a quick lift. The pose it
+        // ends in is the same; the settle waits for the home to arrive, as it does for a pin.)
+        const glm::vec2 want = (!kNoWeightShift && !rig.suspended())
+                                   ? static_cast<float>(kShiftShare) * m_jsWeightLift * m_jsWeightShift
+                                   : glm::vec2(0.0f);
+        const glm::vec2 gap = want - m_jsWeightEased;
+        const float gapLen = glm::length(gap);
+        const float step = kPinEaseStep * legScale;
+        m_jsWeightEasing = gapLen > step;
+        m_jsWeightEased = m_jsWeightEasing ? m_jsWeightEased + gap * (step / gapLen) : want;
+        rootHome.x += m_jsWeightEased.x;
+        rootHome.z += m_jsWeightEased.y;
+        static const bool kWeightTrace = std::getenv("IK_JS_WEIGHT_TRACE") != nullptr;
+        if (kWeightTrace && (m_jsWeightLift > 0.0f || m_jsWeightLiftStart > 0.0f || gapLen > 0.0f)) {
+            std::fprintf(stderr, "[weight] shift(%.4f %.4f) lift %.3f start %.3f applied %.3f eased(%.4f %.4f) slide %.3f plant %.3f\n",
+                         m_jsWeightShift.x, m_jsWeightShift.y, lift, m_jsWeightLiftStart, m_jsWeightLift,
+                         m_jsWeightEased.x, m_jsWeightEased.y, slide, plant);
+        }
+    }
+    // (A SCOPED drag of anything but the pelvis has no root translation among its unknowns: the
+    // chain alone moves — IkScope::Chain, ikChooseUnknowns.)
+    const bool rootFrozen = m_ikScope == IkScope::Chain && effector != root;
+    for (int a = 0; a < 3 && !rootFrozen; ++a) {
         JointSolverDof dof;
         dof.bone = root;
         dof.axis = 3 + a;
@@ -534,11 +736,22 @@ void Armature::ikPostureModel(IkSolveScratch& s) {
         // pull took them, back and down on the oldest generation, 78mm short.)
         static const bool kKneelUpYields = std::getenv("IK_JS_KNEEL_UP_YIELD") != nullptr; // A/B probe: the rejected yield
         const double kneelUpYield = (kKneelUpYields && m_jsKneelStart && trunkDrag) ? static_cast<double>(m_jsKneelUpright) : 0.0;
-        const double vertical = kRootY * std::pow(kRootYield / kRootY, std::max(static_cast<double>(m_jsRootYield), kneelYield)) *
+        // (Under a HAND pushed down the vertical yield is kReachSquatShare of the push-down's: the
+        // knee is the body's cheapest joint, and at a chest push's yield a hand brought to the knee
+        // was a squat with nothing folding — the hinge (REACHING DOWN, ikTrunkPolicy) must be able
+        // to compete. The rise's yield stays whole: a hand raised out of a crouch stands her up.)
+        static const double kReachSquat = envOr("IK_JS_REACHSQUAT", kReachSquatShare);
+        const double rootYieldUsed = m_jsReachHinge > 1.0e-3f
+                                         ? std::max(static_cast<double>(m_jsRootRise), static_cast<double>(m_jsReachDown) * kReachSquat)
+                                         : static_cast<double>(m_jsRootYield);
+        const double vertical = kRootY * std::pow(kRootYield / kRootY, std::max(rootYieldUsed, kneelYield)) *
                                 std::pow(std::min(1.0, kCounterY / kRootY), static_cast<double>(m_jsTrunkCounter));
         static const double kCounter = envOr("IK_JS_TRUNKCOUNTER", kTrunkCounterStiffness);
         const double horizontal = kRootS * std::pow(kRootYield / kRootS, std::max({static_cast<double>(m_jsRootRise), kneelYield, kneelUpYield})) *
-                                  std::pow(std::min(1.0, kCounter / kRootS), static_cast<double>(m_jsTrunkCounter));
+                                  std::pow(std::min(1.0, kCounter / kRootS), static_cast<double>(m_jsTrunkCounter)) *
+                                  // (... and under a hand's REACH DOWN the hips go BACK as the trunk folds forward:
+                                  // the counter's price, by the reach's share — its horizontal half alone.)
+                                  std::pow(std::min(1.0, kCounter / kRootS), static_cast<double>(m_jsReachHinge));
         dof.stiffness = (effector == root || rig.suspended()) ? 1.0 : (a == 1 ? vertical : horizontal);
         if (slide > 0.0f && !rig.suspended()) {
             static const double kLegRoot = envOr("IK_JS_LEGROOT", kLegDragRootStiffness);
@@ -637,7 +850,13 @@ void Armature::ikSpineCoupling(IkSolveScratch& s) {
         // 1 degree a joint (a plank).
         static const double kStandingRange = envOr("IK_JS_TRUNKHINGERANGE", kTrunkHingeRangeDeg);
         static const double kKneelingRange = envOr("IK_JS_KNEELFOLDRANGE", kKneelFoldRangeDeg);
-        const double        kHingeRange = m_jsKneelStart ? kKneelingRange : kStandingRange;
+        // (... and a hand's REACH DOWN folds from the HIPS first: its coupling range is
+        // kReachHingeRangeDeg — the spine curls half as much per degree of pelvis pitch as under a
+        // bow, whose split was set for a chest taken down by hand. At the bow's 90 a hand taken to
+        // the floor folded the trunk 130 degrees, the head hanging at the knees.)
+        static const double kReachRange = envOr("IK_JS_REACHHINGERANGE", kReachHingeRangeDeg);
+        const double        kHingeRange = m_jsKneelStart ? kKneelingRange
+                                          : (m_jsReachHinge > 1.0e-3f && !s.trunkDrag ? kReachRange : kStandingRange);
         if (m_jsTrunkHinge > 1.0e-3f && effector != root && kHingeRange > 0.0 && m_jsSpineChain.size() > 1) {
             const std::size_t first = static_cast<std::size_t>(m_jsSpineChain[1]);
             const std::size_t rootAt = static_cast<std::size_t>(root);
@@ -667,6 +886,56 @@ void Armature::ikSpineCoupling(IkSolveScratch& s) {
                                 3.14159265358979323846 / 180.0;
                     task.refB = static_cast<double>(m_ikStartEuler[first][as]) * 3.14159265358979323846 / 180.0;
                     task.weight = kCoupling * static_cast<double>(m_jsTrunkHinge);
+                    problem.couplings.push_back(task);
+                }
+            }
+        }
+        // THE KNEES BEND ALIKE under a hand's REACH DOWN (kReachKneeCoupling): the two standing
+        // legs' fold channels are held, softly, to the same share of their range from where the
+        // press found them. A deep one-handed reach left one knee straight and the other bent
+        // 20-30 degrees on most rigs — a straight knee is a bound the fold retry hops about, and
+        // nothing said the legs should agree — a staggered stance for a reach made square on.
+        static const double kKneeCoupling = envOr("IK_JS_REACHKNEECOUPLING", kReachKneeCoupling);
+        if (m_jsReachHinge > 1.0e-3f && kKneeCoupling > 0.0) {
+            int    kneeBone[2] = {-1, -1};
+            int    kneeAxis[2] = {0, 0};
+            double kneeRange[2] = {0.0, 0.0};
+            int    found = 0;
+            for (std::size_t p = 0; p < rig.pins().size(); ++p) {
+                const int node = rig.pins()[p].node;
+                if (node < 0 || rig.pinIsLive(p) || m_ikBindPos[static_cast<std::size_t>(node)].y >= 0.20f * rig.sizeScale()) {
+                    continue; // a standing FOOT's leg only
+                }
+                bool got = false;
+                for (int cur = node; cur >= 0 && cur != root && !got; cur = m_bones[static_cast<std::size_t>(cur)].parent) {
+                    const Bone& kb = m_bones[static_cast<std::size_t>(cur)];
+                    for (int a = 0; a < 3 && !got; ++a) {
+                        const float range = kb.rotMax[a] - kb.rotMin[a];
+                        if (kb.rotLimited[a] && range >= kFoldRangeDeg && kb.rotMin[a] < 0.0f && kb.rotMax[a] > 0.0f &&
+                            std::min(-kb.rotMin[a], kb.rotMax[a]) <= kFoldNarrowFraction * std::max(-kb.rotMin[a], kb.rotMax[a])) {
+                            if (found < 2) {
+                                kneeBone[found] = cur;
+                                kneeAxis[found] = a;
+                                kneeRange[found] = static_cast<double>(range);
+                            }
+                            ++found;
+                            got = true;
+                        }
+                    }
+                }
+            }
+            if (found == 2 && kneeBone[0] != kneeBone[1]) {
+                const int dA = dofAt[static_cast<std::size_t>(kneeBone[0]) * 3 + static_cast<std::size_t>(kneeAxis[0])];
+                const int dB = dofAt[static_cast<std::size_t>(kneeBone[1]) * 3 + static_cast<std::size_t>(kneeAxis[1])];
+                if (dA >= 0 && dB >= 0) {
+                    JointCouplingTask task;
+                    task.dofA = dA;
+                    task.dofB = dB;
+                    task.scaleA = 180.0 / (kneeRange[0] * 3.14159265358979323846);
+                    task.scaleB = 180.0 / (kneeRange[1] * 3.14159265358979323846);
+                    task.refA = static_cast<double>(m_ikStartEuler[static_cast<std::size_t>(kneeBone[0])][kneeAxis[0]]) * 3.14159265358979323846 / 180.0;
+                    task.refB = static_cast<double>(m_ikStartEuler[static_cast<std::size_t>(kneeBone[1])][kneeAxis[1]]) * 3.14159265358979323846 / 180.0;
+                    task.weight = kKneeCoupling * static_cast<double>(m_jsReachHinge);
                     problem.couplings.push_back(task);
                 }
             }

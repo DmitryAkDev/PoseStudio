@@ -1,0 +1,56 @@
+# PICKING IS WHAT THE CURSOR IS ON (2026-09-26): a click is cast against the posed skin, the first
+# surface wins, and a part hidden behind another is never selected through it. `click <bone>` clicks
+# at the bone's joint's own pixel; `selected.<bone>` reads whether that bone (or its rigid segment)
+# ended up selected.
+#
+# In `view right` the camera stands at +X. She faces +Z, so her LEFT side is the near one: clicks at
+# the RIGHT shoulder's, hand's, thigh's and knee's pixels land on the left arm, the torso or the left
+# leg, and must not select the hidden parts.
+view right
+click rShldr
+expect selected.rShldr == 0
+click rHand
+expect selected.rHand == 0
+click rThigh
+expect selected.rThigh == 0
+click rShin
+expect selected.rShin == 0
+# ... and what IS in front is selected: the left arm, the left leg.
+click lShldr
+expect selected.lShldr == 1
+click lHand
+expect selected.lHand == 1
+click lShin
+expect selected.lShin == 1
+# A click on the side of the head is the head's skin (a face bone, promoted to the head by a drag),
+# never an arm.
+click head
+expect selected.lShldr == 0
+expect selected.rShldr == 0
+
+# From the front a click on the chest is the chest — never the collar or shoulder joints inside and
+# behind it — a knee is its knee, a hand its hand, and a click right on the hip joint's pixel is the
+# HIP: the skin there is the pelvis bone's (the root has none of its own), and the snap takes the
+# joint of the hit bone's PARENT when it stands under the cursor, not the pelvis joint 10px away.
+view front
+click chest_2
+expect selected.lCollar == 0
+expect selected.rCollar == 0
+expect selected.lShldr == 0
+expect selected.rShldr == 0
+expect selected.hip == 0
+click lShin
+expect selected.lShin == 1
+click lHand
+expect selected.lHand == 1
+click hip
+expect selected.hip == 1
+# From the back the same pixel is the sacrum, the pelvis bone's skin again: the hip.
+view back
+click hip
+expect selected.hip == 1
+# From the side her hanging hand covers the hip: the honest pick is the hand's finger there, and the
+# hip is NOT selected through it (the galleries' `press hip` falls back to the name and says so).
+view right
+click hip
+expect selected.hip == 0

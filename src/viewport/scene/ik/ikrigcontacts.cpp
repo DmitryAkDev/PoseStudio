@@ -189,6 +189,12 @@ float IkRig::contactHeight(int node, const std::vector<glm::vec3>& positions) co
     return h - m_groundOffsetY;
 }
 
+bool IkRig::riseUnloaded(int node) const {
+    static const bool kTautOnly = std::getenv("IK_LIFT_TAUT_ONLY") != nullptr; // A/B probe: the junction's reach alone
+    return !kTautOnly && node >= 0 && static_cast<std::size_t>(node) < m_riseUnloaded.size() &&
+           m_riseUnloaded[static_cast<std::size_t>(node)] != 0;
+}
+
 float IkRig::liveContactStretch(std::size_t pin, const std::vector<glm::vec3>& positions) const {
     constexpr float kStretchChainShare = 0.6f; // a joint answers for the limb's stretch only with this much of it below
     if (pin >= m_pins.size() || pin >= m_liveSpan.size() || m_liveSpan[pin] <= 1.0e-4f) {
@@ -251,6 +257,10 @@ void IkRig::addLivePin(int node, const glm::vec3& target,
         }
         m_liveSpan.push_back(glm::length(span));
     }
+    m_pinFootprint.push_back(footprintOf(node, target, positions));
+}
+
+std::vector<glm::vec2> IkRig::footprintOf(int node, const glm::vec3& target, const std::vector<glm::vec3>& positions) const {
     std::vector<glm::vec2> footprint{glm::vec2(0.0f)};
     for (const int d : m_ridingDescendants[static_cast<std::size_t>(node)]) {
         const std::size_t j = static_cast<std::size_t>(d);
@@ -259,7 +269,7 @@ void IkRig::addLivePin(int node, const glm::vec3& target,
             footprint.emplace_back(positions[j].x - target.x, positions[j].z - target.z);
         }
     }
-    m_pinFootprint.push_back(std::move(footprint));
+    return footprint;
 }
 
 bool IkRig::isLimbTip(int node) const {
@@ -573,6 +583,15 @@ bool IkRig::kneeOver(int joint, int pinned) const {
     return false;
 }
 
+void IkRig::reseatPin(std::size_t pin, float x, float z) {
+    if (pin >= m_pins.size() || (pin < m_pinUser.size() && m_pinUser[pin])) {
+        return;
+    }
+    m_pins[pin].target.x = x;
+    m_pins[pin].target.z = z;
+    rebuildSupportHull(-1);
+}
+
 void IkRig::reseatLivePin(std::size_t pin, float x, float z) {
     if (pin >= m_pins.size() || pin >= m_pinLive.size() || !m_pinLive[pin]) {
         return;
@@ -609,8 +628,8 @@ void IkRig::boundLivePins(const std::vector<glm::vec3>& positions) {
         }
         // (By the LEG the effector belongs to, not effectorIsTrunk: a shin's subtree — shin,
         // foot, toes — is over 5% of the body, so a dragged knee reads as a trunk grab there.)
-        if (!kKneesSlide && isLegJointAboveFoot(pin.node) && m_effector >= 0 && m_effector != m_graph.root() &&
-            legOf(m_effector) >= 0 && legOf(m_effector) != legOf(pin.node)) {
+        if (!kKneesSlide && isLegJointAboveFoot(pin.node) && !pinIsShadow(p) && m_effector >= 0 && m_effector != m_graph.root() &&
+            legOf(m_effector) >= 0 && legOf(m_effector) != legOf(pin.node)) { // (not a SHADOW: a lifted knee is not nailed in the air)
             pin.hard = true;
             continue;
         }
@@ -774,8 +793,8 @@ bool IkRig::updateContacts(const std::vector<glm::vec3>& pose) {
         }
         const int   node = m_pins[p].node;
         const float reach = glm::length(solved[static_cast<std::size_t>(limbJunction(node))] - m_pins[p].target);
-        lifting[p] = !descending && reach > kLiveContactTaut * m_liveSpan[p] && liveContactRise(p, solved) > kLiveContactLift * scale &&
-                     m_liveErrTicks[p] + 1 >= kLiveContactReleaseTicks;
+        lifting[p] = !descending && (reach > kLiveContactTaut * m_liveSpan[p] || riseUnloaded(node)) &&
+                     liveContactRise(p, solved) > kLiveContactLift * scale && m_liveErrTicks[p] + 1 >= kLiveContactReleaseTicks;
     }
     for (std::size_t p = 0; p < m_pins.size();) {
         if (!m_pinLive[p]) {
@@ -804,9 +823,17 @@ bool IkRig::updateContacts(const std::vector<glm::vec3>& pose) {
         // body has left the limb's reach altogether, whatever the limb's own straightness: a
         // hand that lands from a hanging arm is dead straight too, and on liveContactStretch —
         // 1 for a straight limb — the male rig's landing hands lifted off as they landed.)
+        // (... OR a hand the solve's RISE has UNLOADED (setRiseUnloadedContacts; 2026-09-26): the solve
+        // lets a hand's hold go with the body's rise when its arm has no length to give by EITHER
+        // measure — the arm's own stretch or this reach — and a straight arm on a collar shrugged
+        // forward reads taut by the stretch (0.98) and slack by the reach (0.81), so its hand lay
+        // weightless on the floor, then rode the rising chest 17cm into the air with its pin
+        // standing — neither the solve's nor the hang's — until the torso's volume rows swung the
+        // free arm 144mm in one tick (a heavy newest-generation character getting up off her
+        // belly). Unloaded, it is taut for the lift-off's purposes; a landing hand is never one.)
         const int   junction = limbJunction(node);
         const float reach = glm::length(solved[static_cast<std::size_t>(junction)] - pin.target);
-        const bool  taut = p < m_liveSpan.size() && reach > kLiveContactTaut * m_liveSpan[p];
+        const bool  taut = (p < m_liveSpan.size() && reach > kLiveContactTaut * m_liveSpan[p]) || riseUnloaded(node);
         if (taut && !descending && liveContactRise(p, solved) > kLiveContactLift * scale) {
             if (++m_liveErrTicks[p] >= kLiveContactReleaseTicks) {
                 // In the air. Is the body still LEANING on it? Removed the tick it lifts, a
@@ -820,8 +847,20 @@ bool IkRig::updateContacts(const std::vector<glm::vec3>& pose) {
                 // mass stands inside the support without it; a rising knee comes over its own
                 // foot, so the support narrows as she stands and the shadow goes unnoticed.
                 // Not under a pelvis drag (the solve has no balance row there).
+                // (... and a shadow EXPIRES once its joint is kShadowMaxRise off the floor: nothing
+                // leans on a knee 10cm in the air. Kept while the body would be unbalanced without
+                // it, the knees of a figure pulled up by the chest out of a FLAT kneel — her feet a
+                // foot's length further back than a tucked kneel's, her weight 27cm ahead of them —
+                // stayed supports half a metre up: the balance need read zero, no step ever came,
+                // and she stood leaning on straight legs on tiptoe. IK_SHADOW_NO_EXPIRY.)
+                // (The whole PIN goes with the expiry, not its footprint alone: kept as a shadow of
+                // nothing while the body leaned, a lifted knee still counted as a knee on the floor to
+                // the solve's kneeling-foot rules — since guarded by pinIsShadow — and a figure rising
+                // by the chest off a kneel jumped 97-105mm where she jumps 52 with the pin gone.)
                 static const bool kNoShadow = std::getenv("IK_NO_SHADOW_SUPPORT") != nullptr; // A/B probe
-                if (!kNoShadow && m_effector != m_pelvis) {
+                static const bool kNoExpiry = std::getenv("IK_SHADOW_NO_EXPIRY") != nullptr;  // A/B probe
+                const bool expired = !kNoExpiry && liveContactRise(p, solved) > kShadowMaxRise * scale;
+                if (!kNoShadow && !expired && m_effector != m_pelvis) {
                     std::vector<glm::vec2> without;
                     for (std::size_t q = 0; q < m_pins.size(); ++q) {
                         static const bool kLiftOneByOne = std::getenv("IK_LIFT_ONE_BY_ONE") != nullptr; // A/B probe
@@ -847,6 +886,12 @@ bool IkRig::updateContacts(const std::vector<glm::vec3>& pose) {
                         continue;
                     }
                 }
+                // (An expired shadow's pin goes at ONCE. Two gentler expiries were tried and taken
+                // out the same day, each measured on the eight rigs: the footprint alone withdrawn
+                // with the pin left standing, and the footprint drawn in toward the support without
+                // it at a centimetre a tick with the pin going once it had arrived — both left the
+                // base rig's and the male's kneel-up by the chest jumping 97-105mm where the plain
+                // removal jumps 52, and neither moved the third generation's 175.)
                 if (kTrace) {
                     std::fprintf(stderr, "[ikrig] CONTACT lift-off node=%d dy=%.4f reach=%.3f span=%.3f\n",
                                  node, at.y - pin.target.y, reach, m_liveSpan[p]);

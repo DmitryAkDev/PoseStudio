@@ -1,0 +1,90 @@
+# SCOPED IK — Ctrl + drag (2026-09-26): the grabbed chain alone follows the cursor. A hand pulled
+# forward moves its arm and nothing else; the head bends the neck; the chest bends the spine over a
+# still pelvis; the hips take the legs with them and the trunk rides; a knee swings over its planted
+# foot. The numbers a user would see are what did NOT move: the hips, the feet, the chest, the other
+# hand — 0.0mm, since a bone none of the solve's unknowns move does not move at all.
+#
+# In `view right` the camera looks from +X: screen-left is her front.
+
+# A hand pulled forward and up: the arm alone (the collar included), the hand on the cursor.
+view right
+cpress lHand
+dragv -0.25 0.15 60 30
+report scoped_hand
+expect grab < 5
+expect hips < 0.5
+expect moved.chest_2 < 0.5
+expect moved.lFoot < 0.5
+expect moved.rHand < 0.5
+expect steps < 1
+shot 60_scoped_hand_side
+release
+reset
+
+# The same hand pulled far beyond the arm's reach: the arm points at the cursor, she stands still.
+view right
+cpress lHand
+dragv -0.30 0.90 60 30
+report scoped_hand_far
+expect hips < 0.5
+expect moved.chest_2 < 0.5
+expect moved.lFoot < 0.5
+expect steps < 1
+shot 60b_scoped_hand_far_side
+release
+reset
+
+# The head pulled forward: the neck alone bends; the chest and everything below stay.
+view right
+cpress head
+dragv -0.15 0 60 30
+report scoped_head
+expect head > 30
+expect hips < 0.5
+expect moved.chest_2 < 0.5
+expect steps < 1
+shot 61_scoped_head_side
+release
+reset
+
+# The upper chest pulled forward and a little down: the spine bends from the pelvis; the pelvis
+# and the legs stay, the arms and head ride.
+view right
+cpress chest_2
+dragv -0.20 -0.05 60 30
+report scoped_chest
+expect moved.chest_2 > 80
+expect hips < 0.5
+expect moved.lFoot < 0.5
+expect steps < 1
+shot 62_scoped_chest_side
+release
+reset
+
+# The hips taken down: the pelvis and the legs alone; the feet stay planted, the trunk rides.
+view front
+cpress hip
+dragv 0 -0.15 60 30
+report scoped_hips
+expect grab < 5
+expect moved.lFoot < 15
+expect moved.rFoot < 15
+expect moved.chest_2 > 100
+expect steps < 1
+shot 63_scoped_hips_front
+release
+reset
+
+# A knee swung out to the side: the leg alone, over its planted foot. (Front view: she faces the
+# camera, so screen-right is her left.)
+view front
+cpress lShin
+dragv 0.12 0 60 30
+report scoped_knee
+expect hips < 0.5
+expect moved.chest_2 < 0.5
+expect movedxz.lFoot < 5
+expect steps < 1
+shot 64_scoped_knee_front
+release
+reset

@@ -66,6 +66,11 @@ constexpr float kArmHangMinLength = 0.12f; // socket to fold joint: an upper arm
 constexpr float kArmHangDamping = 3.0e-5f;   // on the hang step's normal matrix (per-degree columns)
 constexpr float kArmHangFloorMargin = 0.02f; // while the seat rolls, an idle arm keeps this far over its floor clearances
 constexpr float kWristRelaxStepDeg = 4.0f;   // a lifted hand's wrist eases toward neutral this fast (per channel, per tick)
+constexpr float kFingerRelaxShare = 0.25f;    // an idle hand's fingers curl to this share of each joint's flexion range ...
+constexpr float kFingerRelaxStepDeg = 3.0f;   // ... this fast (per channel, per tick) ...
+constexpr float kFingerRelaxMinRangeDeg = 30.0f; // ... on the joints that span at least this (the carpals do not)
+constexpr float kFingerUnposedDeg = 0.5f;     // a hand whose finger channels all lie within this of the bind at the press is UNPOSED
+constexpr float kFingerOpenHeight = 0.15f;    // a hand this close to the floor (its lowest part, figure-scaled) OPENS before it lands
 constexpr float kArmHangSettle = 0.0015f;    // the stop lets a hanging arm settle this much deeper into a volume than the press had it
 constexpr float kArmHangOutMost = 0.21f;     // a blocked hang asks for the same hang turned OUT, up to this (radians: 12 degrees) ...
 constexpr int   kArmHangOutBisections = 8;   // ... found by bisection to this many halvings (0.05 degrees) ...
@@ -141,6 +146,16 @@ std::vector<glm::vec3> Armature::balancePositions() const {
     for (const int bone : m_jsHeadFree) {
         if (!kHeadSeen) {
             mark(bone);
+        }
+    }
+    // (... and to the FINGERS the relax has turned — IDLE HANDS RELAX: every post-step-turned bone
+    // below a wrist. Their mass is a token, but a token is not nothing to a threshold: the relaxing
+    // fingers' hair of centre-of-mass shift tipped a knife-edge step start on one character, and a
+    // walking bow let go of four ticks into its hold had no step in flight. IK_FINGERS_WEIGHED.)
+    static const bool kFingersWeighed = std::getenv("IK_FINGERS_WEIGHED") != nullptr; // A/B probe
+    for (std::size_t b = 0; !kFingersWeighed && b < n && b < m_jsPostStepTurned.size() && b < m_jsWristOf.size(); ++b) {
+        if (m_jsPostStepTurned[b] && m_jsWristOf[b] >= 0 && m_jsWristOf[b] != static_cast<int>(b)) {
+            mark(static_cast<int>(b));
         }
     }
     if (!any) {
@@ -359,6 +374,116 @@ bool Armature::hangIdleArms() {
             if (h < m_jsPostStepEuler.size()) {
                 m_jsPostStepEuler[h] = m_boneEuler[h];
                 m_jsPostStepTurned[h] = 1;
+            }
+            changed = true;
+        }
+    }
+    // IDLE HANDS RELAX (2026-09-25; IK_ARM_HANG_NO_FINGER_RELAX): the fingers of an arm that HANGS
+    // — nothing has hold of it, its hand is not on the floor — and whose hand is UNPOSED (every
+    // finger joint's widest channel within kFingerUnposedDeg of the bind at the press: the flat,
+    // spread hand every figure imports with) curl to a relaxed hand — each finger joint's widest
+    // channel to kFingerRelaxShare of its flexion side, kFingerRelaxStepDeg a tick, within the
+    // limits. A POSED hand — fingers the user turned, or a hand an earlier drag relaxed — is left
+    // as it is; Reset Pose flattens it, and the next drag of anything relaxes it again. The
+    // mannequin hands were the most visible thing left in every gallery shot once the arms hung
+    // and the head stayed up: a person's idle hand is never flat with the fingers spread.
+    // ... and A HAND COMING DOWN ON THE FLOOR OPENS again: a relaxed hand within kFingerOpenHeight
+    // of the floor, or on it — a live contact, the dragged hand's fingertip hold — flattens at the
+    // same pace (a hand put down on the floor opens onto its palm; landed on curled fingers, the
+    // oldest generation's all-fours stood its wrists 113mm up where flat palms stand 90). It opens
+    // as it NEARS the floor: opened only once its fingertip was held there, the fingers moved under
+    // the hold and the third generation's prone popped 157mm. Only hands that are OURS — unposed at
+    // the press, or at the relaxed hand an earlier drag left them with — are touched either way.
+    static const bool kNoFingerRelax = std::getenv("IK_ARM_HANG_NO_FINGER_RELAX") != nullptr; // A/B probe
+    for (std::size_t w = 0; !kNoFingerRelax && w < m_jsWristOf.size(); ++w) {
+        if (m_jsWristOf[w] != static_cast<int>(w)) {
+            continue; // a wrist only
+        }
+        const HangArm* hang = nullptr;
+        for (const HangArm& arm : m_jsHangArms) {
+            if (arm.hand == static_cast<int>(w)) {
+                hang = &arm;
+            }
+        }
+        bool onFloor = w < m_jsHandTipValid.size() && m_jsHandTipValid[w];
+        {
+            const std::vector<IkEffector>& pins = rig.pins();
+            for (std::size_t p = 0; p < pins.size() && !onFloor; ++p) {
+                onFloor = rig.pinIsLive(p) && !rig.pinIsShadow(p) && pins[p].node >= 0 &&
+                          m_jsWristOf.size() > static_cast<std::size_t>(pins[p].node) &&
+                          m_jsWristOf[static_cast<std::size_t>(pins[p].node)] == static_cast<int>(w);
+            }
+        }
+        const bool hanging = hang != nullptr && !hang->landed && !hangArmHeld(*hang) && handLifted(*hang);
+        bool nearFloor = false;
+        {
+            // (The hand's lowest part over the floor: the wrist and every joint below it, each against
+            // its own floor clearance, in world height — as the hang's own floor stop reads it.)
+            float            lowest = 1.0e9f;
+            std::vector<int> below{static_cast<int>(w)};
+            while (!below.empty()) {
+                const int b = below.back();
+                below.pop_back();
+                lowest = std::min(lowest, m_poseGlobal[static_cast<std::size_t>(b)][3].y + m_transform[3][1] - rig.floorClearance(b));
+                below.insert(below.end(), m_children[static_cast<std::size_t>(b)].begin(), m_children[static_cast<std::size_t>(b)].end());
+            }
+            nearFloor = lowest < kFingerOpenHeight * rig.sizeScale();
+        }
+        const bool opens = onFloor || nearFloor;
+        if (!opens && !hanging) {
+            continue;
+        }
+        // The fingers: every descendant of the hand with a channel that spans kFingerRelaxMinRangeDeg,
+        // each with its widest channel (the bend) and the sign of that channel's wide side (flexion).
+        struct FingerJoint {
+            std::size_t bone;
+            int         axis;
+            float       relaxed;
+        };
+        std::vector<FingerJoint> joints;
+        std::vector<int>         stack(m_children[w].begin(), m_children[w].end());
+        bool ours = true;
+        while (!stack.empty()) {
+            const int b = stack.back();
+            stack.pop_back();
+            const std::size_t bi = static_cast<std::size_t>(b);
+            stack.insert(stack.end(), m_children[bi].begin(), m_children[bi].end());
+            const Bone& fb = m_bones[bi];
+            int   widest = -1;
+            float widestRange = 0.0f;
+            for (int a = 0; a < 3; ++a) {
+                const float range = fb.rotLimited[a] ? fb.rotMax[a] - fb.rotMin[a] : 0.0f;
+                if (range > widestRange) {
+                    widestRange = range;
+                    widest = a;
+                }
+            }
+            if (widest < 0 || widestRange < kFingerRelaxMinRangeDeg) {
+                continue; // a carpal, a locked joint
+            }
+            const float wide = fb.rotMax[widest] > -fb.rotMin[widest] ? fb.rotMax[widest] : fb.rotMin[widest];
+            const float relaxed = wide * kFingerRelaxShare;
+            joints.push_back({bi, widest, relaxed});
+            const float atPress = bi < m_ikStartEuler.size() ? m_ikStartEuler[bi][widest] : 1.0e9f;
+            ours = ours && (std::abs(atPress) < kFingerUnposedDeg || std::abs(atPress - relaxed) < 3.0f * kFingerUnposedDeg);
+        }
+        if (!ours) {
+            continue;
+        }
+        std::sort(joints.begin(), joints.end(), [](const FingerJoint& x, const FingerJoint& y) { return x.bone < y.bone; }); // parents first
+        for (const FingerJoint& j : joints) {
+            const Bone& fb = m_bones[j.bone];
+            float&      value = m_boneEuler[j.bone][j.axis];
+            const float target = opens ? 0.0f : j.relaxed;
+            const float step = glm::clamp(target - value, -kFingerRelaxStepDeg, kFingerRelaxStepDeg);
+            if (std::abs(step) <= 1.0e-3f) {
+                continue;
+            }
+            value = glm::clamp(value + step, fb.rotMin[j.axis], fb.rotMax[j.axis]);
+            applyBoneEuler(static_cast<int>(j.bone));
+            if (j.bone < m_jsPostStepEuler.size()) {
+                m_jsPostStepEuler[j.bone] = m_boneEuler[j.bone];
+                m_jsPostStepTurned[j.bone] = 1;
             }
             changed = true;
         }
@@ -785,7 +910,10 @@ glm::vec3 rotationVectorOf(const glm::mat3& rotation) {
 }
 
 /// The rotation that gives a tilted base most of its tilt back (see THE HEAD STAYS UP).
-glm::mat3 rightingOf(const glm::mat3& base, float giveDeg) {
+/// @p fadeOff (0-1) withholds the deep-tilt fade by that share: a STANDING figure reaching down
+/// keeps looking at the floor ahead of her however far she folds (REACHING DOWN) — the fade is
+/// for a body on all fours or lying down, whose neck is not held up against the trunk.
+glm::mat3 rightingOf(const glm::mat3& base, float giveDeg, float fadeOff = 0.0f) {
     const glm::vec3 up(0.0f, 1.0f, 0.0f);
     const glm::vec3 axisNow = glm::normalize(base * up);
     const float     tilt = std::acos(glm::clamp(axisNow.y, -1.0f, 1.0f));
@@ -797,9 +925,8 @@ glm::mat3 rightingOf(const glm::mat3& base, float giveDeg) {
     about /= length;
     const float give = glm::radians(giveDeg);
     static const bool kNoFade = std::getenv("IK_HEAD_RIGHT_NO_FADE") != nullptr; // A/B probe
-    const float back = give * std::tanh(tilt / give) *
-                       (kNoFade ? 1.0f
-                                : 1.0f - glm::smoothstep(glm::radians(kHeadRightFadeFromDeg), glm::radians(kHeadRightFadeGoneDeg), tilt));
+    const float fade = 1.0f - glm::smoothstep(glm::radians(kHeadRightFadeFromDeg), glm::radians(kHeadRightFadeGoneDeg), tilt);
+    const float back = give * std::tanh(tilt / give) * (kNoFade ? 1.0f : glm::mix(fade, 1.0f, glm::clamp(fadeOff, 0.0f, 1.0f)));
     return glm::mat3(glm::rotate(glm::mat4(1.0f), -back, about));
 }
 
@@ -899,7 +1026,7 @@ bool Armature::rightIdleHead() {
                                                                : m_ikStartEuler[static_cast<std::size_t>(b)];
         rides = rides * glm::mat3(bone.orient) * glm::mat3(eulerMatrix(e, bone.rotationOrder)) * glm::mat3(bone.invOrient);
     }
-    const glm::mat3 target = rightingOf(baseNow, kGiveDeg) * baseNow * m_jsHeadIntrinsic * rides;
+    const glm::mat3 target = rightingOf(baseNow, kGiveDeg, m_jsReachHinge) * baseNow * m_jsHeadIntrinsic * rides;
 
     // The chain's channels, and the head's rotation as a function of them.
     struct Channel {

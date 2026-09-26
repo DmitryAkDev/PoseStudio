@@ -32,9 +32,6 @@ void VulkanWindow::closeOpenPoseEdits() {
     if (m_ik.dragging) {
         abortIkDrag(); // a stale drag (or a delete mid-gesture): no settle, the entry is kept
     }
-    if (m_posingBone) {
-        endFkDrag();
-    }
 }
 
 void VulkanWindow::commitPoseUndo() {

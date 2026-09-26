@@ -26,6 +26,8 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <vector>
@@ -368,42 +370,191 @@ int Scene::selectBoneByName(const std::string& name) {
 }
 
 int Scene::selectBoneAt(float px, float py, float vpW, float vpH, const Camera& camera) {
-    // Every figure's joints compete (pickBone): the nearest of ANY figure wins, and its figure
-    // becomes the active one (the posing target). Without this a second figure in the scene could
-    // never be posed — every call went to the first skeleton. On a miss return -1 (so the caller
-    // orbits / click-selects) but keep the current selection — the figure can be orbited while a
-    // joint is selected.
-    const BonePick pick = pickBone(m_models, px, py, vpW, vpH, camera);
-    if (pick.bone < 0) {
-        return -1;
+    // A CLICK PICKS WHAT THE CURSOR IS ON (2026-09-26): the click is cast against every figure's
+    // posed SKIN (Model::pickSurface) and the FIRST surface along the ray wins — its bone the joint
+    // that weighs most on the skin at the hit, its point the grab point (Armature::setIkGrabPoint).
+    // Until then the pick was a 2D one alone — every joint and bone body projected to the screen,
+    // the nearest within 32px taken (pickBone) — and it saw THROUGH the body: a click on the chest
+    // found the shoulder or the arm behind it as often as the chest (the user: "no body part
+    // should ever get selected by clicking through another body part"). A joint of the hit bone's
+    // OWN rigid segment (Armature::segmentJoints) that projects within kJointSnapPx of the click
+    // is still snapped to — a click on the knee grabs the knee, not a point of the shin's skin
+    // beside it — and cannot be hidden, being the segment the cursor is on. The 2D pick remains
+    // for a click that MISSES the skin (just outside the silhouette), and only when nothing stands
+    // between the camera and the point it picked (a second cast toward that point; a bone's own
+    // flesh, kFallbackFleshDepth deep, is not "something").
+    // Every figure competes: the nearest surface (or, in the fallback, the nearest joint) of ANY
+    // figure wins, and its figure becomes the active one (the posing target). On a miss return -1
+    // (so the caller orbits / click-selects) but keep the current selection — the figure can be
+    // orbited while a joint is selected.
+    constexpr float kJointSnapPx = 14.0f;          // (pickBone's: right on a joint origin)
+    constexpr float kFallbackFleshDepth = 0.10f;   // metres: a picked joint sits inside its own flesh
+    const Ray ray = camera.screenPointToRay(px, py, vpW, vpH);
+    const glm::mat4 viewProj = camera.viewProjection();
+    const auto screenOf = [&](const glm::vec3& world, glm::vec2& out) {
+        const glm::vec4 clip = viewProj * glm::vec4(world, 1.0f);
+        if (clip.w <= 1.0e-4f) {
+            return false;
+        }
+        const glm::vec3 ndc = glm::vec3(clip) / clip.w;
+        out = glm::vec2((ndc.x * 0.5f + 0.5f) * vpW, (ndc.y * 0.5f + 0.5f) * vpH);
+        return true;
+    };
+    int       pickedModel = -1;
+    int       pickedBone = -1;
+    glm::vec3 grab(0.0f);
+    static const bool kPick2DEnv = std::getenv("POSESTUDIO_PICK_2D") != nullptr; // A/B probe: the 2D pick alone, as before 2026-09-26
+    const bool kPick2D = kPick2DEnv || m_pick2D;
+    {
+        float hitT = std::numeric_limits<float>::max();
+        for (std::size_t m = 0; m < m_models.size() && !kPick2D; ++m) {
+            const Model* fig = m_models[m].get();
+            float     t = 0.0f;
+            glm::vec3 point(0.0f);
+            int       bone = -1;
+            if (fig->hasSkeleton() && fig->pickSurface(ray, t, point, bone) && t < hitT) {
+                hitT = t;
+                pickedModel = static_cast<int>(m);
+                pickedBone = bone;
+                grab = point;
+            }
+        }
     }
-    if (pick.model != activeFigureIndex()) {
+    if (pickedBone >= 0) {
+        // The joint snap: a joint of the hit bone's OWN body that projects within kJointSnapPx of
+        // the click — the near and far joints of its rigid segment (or its own joint, for a leaf),
+        // the joints its CHILDREN hang from (where its flesh ends) and its PARENT's joint. The
+        // parent matters for the root: it has no skin of its own (the pelvic flesh is the pelvis
+        // bone's), so a click right on the hip's pixel lands on the pelvis bone, and with the hit
+        // bone's own joint the only candidate it took the pelvis joint 10px away over the hip at
+        // 0px — the drag's first tick then asked the hips 2cm back, to put the pelvis joint where
+        // the hip's pixel is, which on all fours popped a foot 165mm (2026-09-26). The CHILDREN's
+        // joints must lie no deeper along the ray than the hit bone's own joint (plus
+        // kSnapDepthSlack): a trunk bone's children come in lateral PAIRS — the two collars, the
+        // two thigh sockets — and from the side the far twin projects onto the near one's pixel.
+        // The parent's joint is not depth-checked: it is where the hit bone hangs from, inside the
+        // body the cursor is on however deep — the chest joint sits on the spine, 10cm behind the
+        // breast's skin, and a click at the chest joint's pixel that lands on a pectoral must
+        // still take the chest (depth-checked, it kept the pectoral, and the Home view's chest
+        // drag changed) — and the hit bone's own joints are trusted as they are, being the
+        // segment the cursor is on. The nearest to the click wins; two at the same pixel go to
+        // the nearer to the camera. POSESTUDIO_PICK_TRACE prints every candidate.
+        static const bool kSnapTrace = std::getenv("POSESTUDIO_PICK_TRACE") != nullptr;
+        constexpr float kSnapDepthSlack = 0.03f; // metres
+        const Model&    fig = *m_models[static_cast<std::size_t>(pickedModel)];
+        const Armature& arm = fig.armature();
+        const int       hitBone = pickedBone;
+        struct Candidate {
+            int  joint;
+            bool depthChecked;
+        };
+        std::vector<Candidate> candidates;
+        const auto             offer = [&](int joint, bool depthChecked) { // (once each: a pectoral's segment near
+            for (const Candidate& c : candidates) {                          // joint and its parent are both the chest)
+                if (c.joint == joint) {
+                    return;
+                }
+            }
+            candidates.push_back({joint, depthChecked});
+        };
+        int nearJoint = -1;
+        int farJoint = -1;
+        if (arm.segmentJoints(hitBone, nearJoint, farJoint)) {
+            offer(nearJoint, false);
+            offer(farJoint, false);
+        } else {
+            offer(hitBone, false);
+        }
+        if (const int parent = arm.boneParent(static_cast<std::size_t>(hitBone)); parent >= 0) {
+            offer(parent, false);
+        }
+        for (std::size_t c = 0; c < arm.boneCount(); ++c) {
+            if (arm.boneParent(c) == hitBone) {
+                offer(static_cast<int>(c), true);
+            }
+        }
+        const auto depthOf = [&](int j) { return glm::dot(fig.boneWorldPosition(static_cast<std::size_t>(j)) - ray.origin, ray.direction); };
+        const float     ownDepth = depthOf(hitBone);
+        const glm::vec2 click(px, py);
+        float           bestPx = kJointSnapPx;
+        float           bestDepth = std::numeric_limits<float>::max();
+        bool            snapped = false;
+        for (const Candidate& c : candidates) {
+            glm::vec2 at(0.0f);
+            if (c.joint < 0 || static_cast<std::size_t>(c.joint) >= fig.boneCount() ||
+                !screenOf(fig.boneWorldPosition(static_cast<std::size_t>(c.joint)), at)) {
+                continue;
+            }
+            const float dPx = glm::length(at - click);
+            if (dPx > kJointSnapPx) {
+                continue;
+            }
+            const float depth = depthOf(c.joint);
+            const bool  tooDeep = c.depthChecked && depth > ownDepth + kSnapDepthSlack; // the far twin, behind the body the cursor is on
+            const bool  nearer = !tooDeep && (!snapped || dPx < bestPx - 0.5f || (dPx <= bestPx + 0.5f && depth < bestDepth));
+            if (kSnapTrace) {
+                std::fprintf(stderr, "[pick] hit %s: snap candidate %s (%d): %.1f px, depth %+.3f m against the hit bone's joint%s%s\n",
+                             arm.boneName(static_cast<std::size_t>(hitBone)).c_str(), arm.boneName(static_cast<std::size_t>(c.joint)).c_str(),
+                             c.joint, dPx, depth - ownDepth,
+                             tooDeep ? " (too deep)" : "", nearer ? " -> taken" : "");
+            }
+            if (nearer) {
+                snapped = true;
+                bestPx = dPx;
+                bestDepth = depth;
+                pickedBone = c.joint;
+                grab = fig.boneWorldPosition(static_cast<std::size_t>(c.joint));
+            }
+        }
+    } else {
+        const BonePick pick = pickBone(m_models, px, py, vpW, vpH, camera);
+        if (pick.bone < 0) {
+            return -1;
+        }
+        const Model& fig = *m_models[static_cast<std::size_t>(pick.model)];
+        // The picked point: the joint itself for a pick of the joint, the clicked point of the
+        // body otherwise (the point of the picked segment nearest the cursor's ray; the pick's own
+        // parameter is a screen-space one, good enough when the ray runs along the bone).
+        grab = fig.boneWorldPosition(static_cast<std::size_t>(pick.bone));
+        if (pick.child >= 0 && pick.child < static_cast<int>(fig.boneCount())) {
+            const glm::vec3& far = fig.boneWorldPosition(static_cast<std::size_t>(pick.child));
+            float onRay = 0.0f;
+            float onBone = pick.along;
+            const glm::vec3 reach = ray.origin + ray.direction * (2.0f * glm::length(far - ray.origin) + 1.0f);
+            if (glm::length(far - grab) > 1.0e-5f) {
+                closestSegmentPoints(ray.origin, reach, grab, far, onRay, onBone);
+            }
+            grab = glm::mix(grab, far, glm::clamp(onBone, 0.0f, 1.0f));
+        }
+        // ... and nothing may stand between the camera and it: cast toward the point through every
+        // figure, and a surface met more than the point's own flesh short of it hides it.
+        const glm::vec3 toPoint = grab - ray.origin;
+        const float     dist = glm::length(toPoint);
+        if (dist > 1.0e-4f && !kPick2D) {
+            const Ray toward{ray.origin, toPoint / dist};
+            for (const std::unique_ptr<Model>& other : m_models) {
+                float     t = 0.0f;
+                glm::vec3 point(0.0f);
+                int       bone = -1;
+                if (other->hasSkeleton() && other->pickSurface(toward, t, point, bone) && t < dist - kFallbackFleshDepth) {
+                    return -1; // hidden behind another part: not what the cursor is on
+                }
+            }
+        }
+        pickedModel = pick.model;
+        pickedBone = pick.bone;
+    }
+    if (pickedModel != activeFigureIndex()) {
         // Switching figures: the previous one's selection goes away.
         if (Model* previous = figureModel()) {
             previous->setSelectedBone(-1);
         }
     }
-    setActiveFigure(pick.model);
-    Model& figure = *m_models[static_cast<std::size_t>(pick.model)];
-    figure.setSelectedBone(pick.bone);
-    // The IK GRAB POINT: where on the bone the user took hold (Armature::setIkGrabPoint) — the
-    // joint itself for a pick of the joint, the clicked point of the body otherwise (the point
-    // of the picked segment nearest the cursor's ray; the pick's own parameter is a screen-space
-    // one, good enough when the ray runs along the bone).
-    glm::vec3 grab = figure.boneWorldPosition(static_cast<std::size_t>(pick.bone));
-    if (pick.child >= 0 && pick.child < static_cast<int>(figure.boneCount())) {
-        const glm::vec3& far = figure.boneWorldPosition(static_cast<std::size_t>(pick.child));
-        const Ray ray = camera.screenPointToRay(px, py, vpW, vpH);
-        float onRay = 0.0f;
-        float onBone = pick.along;
-        const glm::vec3 reach = ray.origin + ray.direction * (2.0f * glm::length(far - ray.origin) + 1.0f);
-        if (glm::length(far - grab) > 1.0e-5f) {
-            closestSegmentPoints(ray.origin, reach, grab, far, onRay, onBone);
-        }
-        grab = glm::mix(grab, far, glm::clamp(onBone, 0.0f, 1.0f));
-    }
-    figure.setIkGrabPoint(pick.bone, grab);
-    return pick.bone;
+    setActiveFigure(pickedModel);
+    Model& figure = *m_models[static_cast<std::size_t>(pickedModel)];
+    figure.setSelectedBone(pickedBone);
+    figure.setIkGrabPoint(pickedBone, grab);
+    return pickedBone;
 }
 
 } // namespace pose

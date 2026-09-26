@@ -191,6 +191,7 @@ public:
         m_imbalanceTicks = 0; // a mid-confirm step trigger dies with the drag (stepPending())
         m_stepPin = -1;       // steppingPin() stays callable after the drag: no stale index
         m_suspended = false;
+        m_scoped = false;
     }
     bool dragActive() const { return m_effector >= 0; }
 
@@ -288,9 +289,28 @@ public:
     /// themselves in an earlier drag — no supports of hers, and props if they are held. Set by
     /// the Armature before beginDrag.
     void setIncidentalContacts(std::vector<char> nodes) { m_incidentalContact = std::move(nodes); }
+    /// Per bone, this tick: a HAND contact whose hold the solve's RISE has faded out entirely because
+    /// its arm has no length to give (Armature::m_jsContactRiseUnloaded). Such a contact is TAUT for
+    /// the lift-off's purposes (updateContacts; IK_LIFT_TAUT_ONLY): the solve reads an arm's stretch
+    /// as well as the junction's reach, the lift-off only the reach, and between the two a straight
+    /// arm on a shrugged collar left its hand weightless on the floor and then in the air with its
+    /// pin standing. Set by the Armature before each updateContacts().
+    void setRiseUnloadedContacts(std::vector<char> nodes) { m_riseUnloaded = std::move(nodes); }
+    /// True for a node setRiseUnloadedContacts() marked this tick.
+    bool riseUnloaded(int node) const;
+    /// A SCOPED drag (Armature's IkScope::Chain — the app's Ctrl+drag): the rig reads no intent,
+    /// tests no suspension and begins no step; the chain alone answers the cursor. Set by the
+    /// Armature right after beginDrag(), cleared by endDrag().
+    void setScoped(bool scoped) { m_scoped = scoped; }
+    bool scoped() const { return m_scoped; }
     /// Moves live contact @p pin's place on the floor to (x, z) — a knee still COMING DOWN is
     /// planted where it lands, not where it hovered when the rig first saw it (Armature::dragIkTick).
     void reseatLivePin(std::size_t pin, float x, float z);
+    /// Moves ANY contact pin's target in the floor's plane (a user pin never) and rebuilds the
+    /// support polygon: a foot rolled back to standing off a flat kneel stands a foot's length
+    /// behind where its ankle lay, and the rig's pin — the balance polygon, the steps — must stand
+    /// with it (see A KNEELING FOOT LIES FLAT).
+    void reseatPin(std::size_t pin, float x, float z);
     /// True for a joint whose floor clearance is read off a NEIGHBOUR's flesh (fleshPoints()).
     bool fleshBorrowed(int node) const {
         return node >= 0 && static_cast<std::size_t>(node) < m_fleshBorrowed.size() && m_fleshBorrowed[static_cast<std::size_t>(node)];
@@ -384,6 +404,7 @@ private:
     std::vector<std::vector<glm::vec3>> m_fleshPoints;
     std::vector<char>                   m_fleshBorrowed; ///< Per bone: its flesh points are a neighbour's (see fleshPoints()).
     std::vector<char>                   m_incidentalContact; ///< Per bone: see setIncidentalContacts().
+    std::vector<char>                   m_riseUnloaded;      ///< Per bone: see setRiseUnloadedContacts().
     std::vector<char>                   m_fleshRows;         ///< Per bone: see fleshPoints().
     /// True for a drag of a figure SEATED ON THE FLOOR by a joint of her upper body (set where the
     /// pose's contacts are seeded): her arms are no supports in it (seedPoseContacts).
@@ -406,6 +427,7 @@ private:
     int                     m_grabbed = -1;  ///< The joint beginDrag() was given, before any promotion.
     bool                    m_girdleGrab = false; ///< See girdleGrab().
     int                     m_seatPin = -1;       ///< See seatPin().
+    bool                    m_scoped = false;     ///< See setScoped().
     int                     m_headNode = -1;      ///< See headNode().
     mutable int             m_pelvisBoneNode = -2; ///< See isPelvisBone(): -2 = not looked for yet, -1 = none.
     int                     m_neckBase = -1;      ///< See neckBase().
@@ -641,6 +663,9 @@ private:
     /// Adds a LIVE contact pin at @p node held at @p target (see updateContacts) with its
     /// footprint from the riding parts near the floor; the caller rebuilds the derived state.
     void addLivePin(int node, const glm::vec3& target, const std::vector<glm::vec3>& positions);
+    /// A contact's FOOTPRINT: the joint itself and its riding descendants that stand within
+    /// kLiveFootprintBand of the floor, as offsets from the pin's target in the floor's plane.
+    std::vector<glm::vec2> footprintOf(int node, const glm::vec3& target, const std::vector<glm::vec3>& positions) const;
     /// The floor contacts the POSE made — a kneeling knee, a hand on the floor: any real-mass
     /// joint that is not foot-class and sits on the floor in @p positions — become LIVE pins, as
     /// if the drag had brought them down itself (plantContacts calls this; see there).

@@ -76,28 +76,27 @@ bool VulkanWindow::issueIkTarget() {
     return scene().dragBoneIkTo(m_ik.filter.update(m_ik.lastTarget));
 }
 
-bool VulkanWindow::beginJointGesture(const QPointF& localPos, bool fkModifier) {
+bool VulkanWindow::beginJointGesture(const QPointF& localPos, bool scoped) {
     if (boneAt(localPos) < 0) {
         return false;
     }
-    if (!fkModifier) {
-        // FBIK: drag the grabbed joint through a camera-parallel plane anchored at its current
-        // position; the whole body follows.
-        beginIkDrag();
-    } else {
-        m_posingBone = true; // Ctrl: FK — rotate just this joint by the mouse deltas
-    }
+    // IK: drag the grabbed point through a camera-parallel plane anchored at it — the whole body
+    // following (a plain press), or with Ctrl the grabbed CHAIN alone (a limb up to the body, the
+    // head and neck to the chest, the spine over a still pelvis, the hips with only their legs),
+    // nothing else moving. (Until 2026-09-26 Ctrl+drag was the single-joint FK rotate; turning
+    // one joint is the X/Y/Z wheel's job.)
+    beginIkDrag(scoped);
     if (dragInFlight()) {
         m_preEditPose = scene().capturePose(); // snapshot for undo (committed on release)
     }
     return true;
 }
 
-bool VulkanWindow::beginIkDrag() {
-    m_posingBone = false;
+bool VulkanWindow::beginIkDrag(bool scoped) {
     // (The plane passes through the point of the bone the user took hold of — the joint itself
     // for a click on the joint — and the targets are where that point should go.)
-    m_ik.dragging = scene().beginBoneIkDrag() && scene().ikGrabPointWorld(m_ik.planePoint);
+    m_ik.dragging = scene().beginBoneIkDrag(scoped ? IkScope::Chain : IkScope::Body) &&
+                    scene().ikGrabPointWorld(m_ik.planePoint);
     if (m_ik.dragging) {
         m_ik.hasTarget = false;
         m_ik.poseChanged = false;
@@ -135,17 +134,6 @@ void VulkanWindow::abortIkDrag() {
         m_ik.poseChanged = false;
         scene().finalizePose();
         commitPoseUndo();
-    }
-}
-
-void VulkanWindow::endFkDrag() {
-    if (!m_posingBone) {
-        return;
-    }
-    m_posingBone = false;
-    if (m_renderer) {
-        scene().finalizePose(); // the settled-pose hook (correctives already follow per frame)
-        commitPoseUndo();       // an undo entry if the pose changed
     }
 }
 

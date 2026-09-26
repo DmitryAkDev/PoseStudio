@@ -44,10 +44,18 @@ The scripts:
 | `gallery_floor.txt` | Floor poses from several drags each: toward all fours, a kneel sat back on the heels, a sit reclined by the chest, a sit with a leg stretched out, a sit LAID DOWN on her back and sat up again — with the SKIN's height over the floor, the pelvis's pitch and the worst single-tick move asserted, and the sat-up pose shot from the FRONT as well: a drag in the sagittal plane must leave her symmetric (the pelvis bone's twist and side bend are asserted), and legs folded to one side do not show from the side. |
 | `session_poses.txt` | Whole poses built from several drags in a row (a walk, a sit with a hand to the knee, a high reach, picking something up), shot from a three-quarter view. |
 | `check_returns.txt` | Numbers only: out-and-home in one drag, a bow undone in a second drag, a walking drag let go of mid-step, a posed head. |
+| `gallery_hands.txt` | Hands laid on the body: a hand on the hip, both hands on the hips, on the heart, on top of the head, on the belly, behind the back, seated on the knee, and a hand laid and taken away — with `palm.<bone>` asserted. |
+| `gallery_scoped.txt` | Ctrl + drag, the SCOPED drag: a hand, a foot, a knee, the head and the chest each moved with only their own chain, the rest of the body asserted still (`movedxz.<bone>`, `moved.<bone>`). |
+| `check_picking.txt` | Numbers only: what a click selects (`selected.<bone>`) — hidden parts are never selected through the part in front, a click on a joint's own pixel takes that joint (the hip's, though its skin is the pelvis bone's). |
 
 Useful beside it: `QT_LOGGING_TO_CONSOLE=1` (the `[ikscript]` lines reach a redirected stderr),
 `POSESTUDIO_NO_PING=1`, `POSESTUDIO_NO_UPDATE_CHECK=1`, and any `IK_…` probe for an A/B
-(`run.sh` passes extra `NAME=value` arguments through as environment).
+(`run.sh` passes extra `NAME=value` arguments through as environment). For a pop only a scripted
+click makes: `POSESTUDIO_IK_SCRIPT_TICKS=1` prints the worst joint's move every tick with the grab
+and the cursor, `POSESTUDIO_IK_SCRIPT_EULERS="lThigh,lShin"` those bones' channels every tick,
+`POSESTUDIO_PICK_TRACE=1` what the click's surface cast counted and hit, and `IK_DRAG_STATE_TRACE=1`
+the pins planted at each press and, per tick, the cursor, the grab offset and the target the rig
+was handed (`[drag-map]`).
 `montage.py` needs Python with Pillow.
 
 ## Commands
@@ -64,10 +72,12 @@ along the bone's limb segment — the flesh, where a user clicks — instead of 
 | `frame` | Frame the selection. |
 | `shade <row>` | Shade mode, a row of the picker. |
 | `pose <file>` / `reset` / `undo` / `ground` | Load a pose file, Reset Pose, Undo, the Ground button. |
-| `fk <bone> <dx°> <dy°> <dz°>` | Turn a joint, as Ctrl+drag or the X/Y/Z wheel would (through the FK collision stop). |
-| `pin <bone>[@share]` / `unpinall` | Click there and press P; drop every pin. |
+| `fk <bone> <dx°> <dy°> <dz°>` | Turn a joint, as the X/Y/Z wheel would (through the FK collision stop). |
+| `pin <bone>[@share]` / `unpinall` | Click there and press P; drop every pin. Like `press`, when the pick lands on another part of the body (the hanging hand covers the hip from the side) the named bone is pinned instead, and the log says `pinned by name instead`. |
 | `click <bone>[@share]` | The real pick at that pixel; prints what it found. |
+| `pick2d on\|off` | The A/B: the 2D pick alone, as before 2026-09-26 (every joint and bone body projected to the screen, the nearest within 32px taken, no occlusion check) — a hidden part CAN be selected through another. `POSESTUDIO_PICK_2D=1` does the same for a whole run. |
 | `press <bone>[@share]` | The real press: the pick at the bone's pixel, then the press path (an IK drag begins). The pick is honest — what it finds is what is under that pixel — and on another body that can be another limb (a broad character's hanging arm covers her chest from the side, one hand covers the other). When the rig would then drag a different joint than the one named, the bone is grabbed by name at the same point instead, and the log says `the pick found <other> there`. A small bone OF the named one (a pectoral for the chest) is what a user's click finds too, and stands. |
+| `cpress <bone>[@share]` | The Ctrl press: the same pick and press path, beginning a SCOPED drag — the grabbed chain alone moves (a limb up to the body, the head and neck to the chest, the spine over a still pelvis, the hips with only their legs). |
 | `drag <dxPx> <dyPx> <moveTicks> <holdTicks>` | Move the cursor in screen pixels (+y down), then hold. |
 | `dragv <right m> <up m> <moveTicks> <holdTicks>` | The same, given in metres along the view's right/up axes at the grab's depth. |
 | `dragw <dx> <dy> <dz> <moveTicks> <holdTicks>` | Move the cursor's *world* target (the harness's gestures, for parity). |
@@ -91,8 +101,10 @@ along the bone's limb segment — the flesh, where a user clicks — instead of 
 | `meshlow` | The lowest point of the posed SKIN over the floor, mm (negative = flesh through the floor — invisible to every joint reading). |
 | `gaze`, `headroll` | The head's look direction over the horizon and its sideways tilt, degrees. |
 | `tilt.<bone>` | A bone's tilt from upright, degrees. |
-| `y.<bone>`, `moved.<bone>` | A joint's height, and its travel since the last press, mm. |
+| `y.<bone>`, `moved.<bone>`, `movedxz.<bone>` | A joint's height, its travel since the last press, and that travel along the floor alone (a planted foot's place, a heel lift aside), mm. |
+| `selected.<bone>` | 1 if the selected joint is that bone or a bone of its rigid segment (what a `click` picked), else 0. |
 | `euler.<bone>.<x\|y\|z>` | A posed channel, degrees. |
+| `palm.<bone>.<x\|y\|z>` | A hand's palm normal, that world component (+1/-1): where a hand laid on the body faces. The figures face +z, their right side is -x. |
 
 Expectations are regression guards set from what the app does today, with margin — not
 specifications. A gesture given in screen metres is only as exact as its guess at the figure's

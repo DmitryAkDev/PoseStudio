@@ -51,6 +51,14 @@ void IkRig::updateIntent(const glm::vec3& target, const std::vector<glm::vec3>& 
     if (!dragActive() || positions.size() != m_parents.size()) {
         return;
     }
+    if (m_scoped) {
+        // A SCOPED drag (setScoped): no intent — nothing yields, nothing rises — and no
+        // suspension; the chain alone answers the cursor. The live pins keep their bounds.
+        m_lastDownIntent = false;
+        m_lastUpIntent = false;
+        boundLivePins(positions);
+        return;
+    }
     if (m_effector == m_graph.root()) {
         // DOWN: the hips below where the drag found them — and NOT ON THEIR WAY BACK UP. "Below
         // the start" alone is down for as long as a drag that went down lasts, and a knee that
@@ -181,7 +189,33 @@ void IkRig::updateStepPolicy(const glm::vec3& target, const std::vector<glm::vec
     if (m_seatPin >= 0) {
         return; // (a SEATED body — its pelvis pinned — goes nowhere: no step answers anything)
     }
-    // A LOW body takes no new step (see kStepLowBody).
+    if (m_scoped) {
+        return; // (a SCOPED drag: the chain alone moves, and takes no step)
+    }
+    // HEALING ends when it is done: the flag (plantContacts: a hovering figure's pins snapped
+    // down to the floor) was set once and blocked every step of the drag. It stands only while a
+    // planted foot's joint is still ABOVE its target — a hover being pulled down; a foot lying on
+    // its top behind a planted knee sits BELOW its standing target and is no hover (2026-09-26: a
+    // chest pulled up out of a flat kneel could never step under its leaning body).
+    static const bool kHealingSticks = std::getenv("IK_HEALING_STICKS") != nullptr; // A/B probe: the flag for the whole drag, as before
+    if (m_healing && !kHealingSticks) {
+        bool still = false;
+        for (std::size_t p = 0; p < m_pins.size() && !still; ++p) {
+            const int node = m_pins[p].node;
+            if (node < 0 || (p < m_pinLive.size() && m_pinLive[p]) || (p < m_pinUser.size() && m_pinUser[p])) {
+                continue;
+            }
+            still = positions[static_cast<std::size_t>(node)].y - m_pins[p].target.y > 0.01f * m_sizeScale;
+        }
+        m_healing = still;
+    }
+    // A LOW body takes no new step (see kStepLowBody): a kneel, a crouch. (A taut-leg exception — a
+    // pelvis low because a planted leg is straight and LEANING may step — was tried for a day,
+    // 2026-09-26, for a chest pulled up out of a flat kneel that stood on straight legs on tiptoe
+    // 27cm ahead of her feet: it made two generations step three and four times through a sit-up
+    // and the newest through a kneel-up off all fours, and once the kneel's feet rolled back onto
+    // their toes under a knee that lifts with the roll, every rig's kneel getting-up stepped
+    // without it. The shadow's expiry — kShadowMaxRise — is what lets that step come.)
     const float standingY = m_bindPos[static_cast<std::size_t>(m_pelvis)].y + m_groundOffsetY;
     const float lowY = standingY - kStepLowBody * m_sizeScale;
     const bool lowBody = positions[static_cast<std::size_t>(m_pelvis)].y < lowY;
@@ -218,6 +252,12 @@ void IkRig::updateStepPolicy(const glm::vec3& target, const std::vector<glm::vec
         const glm::vec3& rootPos = positions[static_cast<std::size_t>(m_pelvis)];
         anchor = glm::vec2(rootPos.x, rootPos.z) + residXZ;
         anchorPtr = &anchor;
+    }
+    static const bool kStepGateTrace = std::getenv("IK_STEP_TRACE") != nullptr;
+    if (kStepGateTrace) {
+        std::fprintf(stderr, "[step-gate] up=%d healing=%d low=%d pelvisY=%.3f lowY=%.3f", m_lastUpIntent ? 1 : 0, m_healing ? 1 : 0, lowBody ? 1 : 0,
+                     positions[static_cast<std::size_t>(m_pelvis)].y, lowY);
+        std::fputc(10, stderr);
     }
     updateStepping(positions, !m_lastUpIntent && !m_healing && !lowBody, anchorPtr);
 }

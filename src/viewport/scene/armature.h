@@ -63,6 +63,17 @@ struct ArmatureBone {
  */
 struct IkSolveScratch; // the per-tick solve's shared stage state (armatureiksolvestate.h)
 
+/// WHAT an IK drag may move (Armature::beginIkDrag). Body: the whole figure — the plain drag, with
+/// the feet planted, balance, steps and every policy of the FBIK section. Chain: the grabbed CHAIN
+/// alone — Ctrl+drag (2026-09-26): the bones from the grabbed joint up to, not including, where its
+/// limb joins the body (IkRig::limbJunction, the mass-based one: an arm to the chest with its
+/// collar, a leg to the pelvis, the head and neck to the chest, a spine joint's chain down to the
+/// pelvis, a collar by itself) plus what hangs below the grab (a planted foot under a dragged knee),
+/// and nothing else: no root translation or rotation, no balance, no step, no lift-off, no arm hang
+/// or head righting. A pelvis grab moves the pelvis and only what keeps the planted contacts planted
+/// (the legs; a planted hand's arm). The limits, the floor and the body volumes hold as ever.
+enum class IkScope { Body, Chain };
+
 class Armature {
 public:
     Armature();
@@ -131,6 +142,11 @@ public:
     const glm::vec3& boneTranslation(std::size_t i) const { return m_boneTranslation[i]; }
     /// Bone @p i's posed model-space transform (poseGlobal) as of the last pose update.
     const glm::mat4& poseGlobal(std::size_t i) const { return m_poseGlobal[i]; }
+    /// A HAND's palm normal as posed (world, unit), or zero for a bone that is not a wrist (see
+    /// ensureHandMaps): the bind's DOWN across the fingers' line — palms face down in a T-pose,
+    /// down and in in an A-pose — carried by the hand's rotation. Where a laid hand faces: the
+    /// harness's hand-lay gates and the in-app scripts' `palm.<bone>.<axis>` read it.
+    glm::vec3 handPalmNormal(int wrist) const;
     /// Bone @p i's inverse bind transform (the skin transform is poseGlobal · inverseBind).
     const glm::mat4& inverseBind(std::size_t i) const { return m_bones[i].inverseBind; }
     /// The skinning DUAL QUATERNIONS — per joint two vec4s: real = rotation as (x,y,z,w), dual =
@@ -228,8 +244,11 @@ public:
     /// Begins an FBIK drag of the SELECTED joint: detects which joints are planted on the ground,
     /// pins them (feet for a standing figure — never the hip), and builds the balance support
     /// polygon. Builds the IK rig from the skeleton on first use. Returns false without a
-    /// skeleton or selection.
-    bool beginIkDrag();
+    /// skeleton or selection. @p scope: the whole body (the plain drag), or the grabbed chain
+    /// alone (Ctrl+drag) — see IkScope.
+    bool beginIkDrag(IkScope scope = IkScope::Body);
+    /// The scope of the drag in flight (IkScope::Body between drags).
+    IkScope ikScope() const { return m_ikScope; }
     /// One FBIK drag tick: the whole body is SOLVED, to convergence, so the selected joint sits
     /// on @p targetWorld with every pin, the floor, the body volumes and balance honoured, directly
     /// in the pose's own unknowns (the Euler channels inside their authored limits + the root's
@@ -249,6 +268,10 @@ public:
     /// bones: a thigh from socket to knee), or the same bone. The scripted in-app test asks it:
     /// a pick that lands on a thigh's twist bone HAS found the thigh.
     bool sameRigidSegment(int a, int b) const;
+    /// The rigid segment @p bone is a piece of — its NEAR joint (a twist bone's non-twist parent)
+    /// and its FAR joint (the next real joint down the main chain): the joints a click on that
+    /// body may snap to (Scene::selectBoneAt). False for a leaf with no segment.
+    bool segmentJoints(int bone, int& nearJoint, int& farJoint) const { return rigidSegment(bone, nearJoint, farJoint); }
     /// The solve's DAMPING level (0 = none ... 3 = strong; process-wide, initial value
     /// IK_JS_DAMPING or kIkDampingDefault = slight): a converged solve is instantaneous, which
     /// reads as a touch too snappy, so (1) the POSTURE eases toward its solution over a few ticks
@@ -282,6 +305,11 @@ public:
     /// The rig's CONTACT pins (ground-detected, not user pins) while an IK drag is active — for
     /// the overlay's "which feet are planted" markers. Empty outside a drag.
     std::vector<int> activeContactPins() const;
+    /// True for a joint whose floor clearance stands down because its foot LIES on its top behind a
+    /// planted knee (the ankle and the mid-foot: their clearances are the standing foot's bind
+    /// heights, and a lying ankle sits at the shin's radius) — the harness's penetration measure
+    /// reads it, as the solve's floor rows do. See A KNEELING FOOT LIES FLAT.
+    bool footLyingExempt(int node) const;
 
 private:
     // One runtime skeleton joint. localBind is its rest transform relative to its parent;
@@ -507,6 +535,38 @@ private:
     /// The ankle's offset from the ball as the drag found the foot (see the heel row in solveIk).
     std::vector<glm::vec3>        m_jsHeelOffset;
     std::vector<char>             m_jsBallTargetValid;
+    /// A KNEELING FOOT LIES FLAT (kKneelFlat* in the tuning header): per foot pin node, the eased
+    /// share of "this foot lies on its top behind a planted knee" (persists across drags: a kneel
+    /// let go of is still a kneel), the ankle's pitch channel that turns it and the eased plantar
+    /// reference for it, the lying foot's ball and heel offsets (the standing model's twins), the
+    /// knee it kneels on, and the drag-local flags (seen this drag, was flat this drag, flat at
+    /// the press).
+    std::vector<float>            m_jsFootFlat;
+    std::vector<int>              m_jsFootFlatAxis;   ///< -2 = not looked for yet; -1 = none
+    std::vector<float>            m_jsFootFlatLimit;  ///< the plantar limit of that channel (deg)
+    std::vector<float>            m_jsFootFlatTuck;   ///< ... and its other limit: the tucked foot's (the unroll's goal)
+    std::vector<glm::vec3>        m_jsFootFlatRef;    ///< the eased lying references of all three channels: the pitch's toward its plantar limit, the others' toward 0 (in line with the shin)
+    std::vector<char>             m_jsFootFlatRefValid;
+    std::vector<glm::vec3>        m_jsFlatBallOffset;
+    std::vector<glm::vec3>        m_jsFlatHeelOffset;
+    std::vector<int>              m_jsFootKnee;
+    std::vector<float>            m_jsFlatLyingY;     ///< the lying ankle's height: the knee's planted height (the shin's radius)
+    std::vector<float>            m_jsFlatRollStartY; ///< the ankle's height when the roll began (kept through its first half: the foot rolls in the air)
+    std::vector<float>            m_jsFlatRollStartRef; ///< ... and the pitch channel's value then (the roll's progress is measured from it)
+    /// ... and the TOES' and mid-foot's lying references (per bone of the ankle-to-ball chain below
+    /// the foot bone): straight, eased from where they stand at the same pace, at the flat
+    /// stiffness over the foot's share — so the foot rolls as one lever and lies straight.
+    std::vector<glm::vec3>        m_jsToeFlatRef;
+    std::vector<char>             m_jsToeFlatValid;
+    std::vector<float>            m_jsToeFlatShare;
+    std::vector<char>             m_jsFootFlatSeen;
+    std::vector<char>             m_jsFootWasFlat;
+    std::vector<char>             m_jsFootFlatAtStart;
+    std::vector<float>            m_jsFootUnrollProgress; ///< how far a lying foot has rolled back onto its toes (0 lying, 1 handed over or not a lying foot): the knee's ceiling above it
+    std::vector<char>             m_jsKneeHeldDown;       ///< per bone, this tick: a knee held down by its ceiling (kneeBelowHips) — its lying foot stays lying
+    std::vector<char>             m_jsKneeHeldDownPrev;   ///< ... and last tick's (the feet's rows come before the knees' in the pin loop)
+    std::vector<char>             m_jsFootUnrolled;   ///< the foot rolled back to standing this drag: its posture references are the standing ones from then
+    std::vector<float>            m_jsFlatRiseBase;   ///< the rise's progress at that handover: the heel's and the soles' turn to standing is measured from it
     /// The balance requirement's RAMP (JointSolver::Problem::balanceSlack): how far outside
     /// the support polygon the centre of mass may still sit. Set to the current distance
     /// whenever the support changes (the drag's start, a foot lifted, a contact planted) and
@@ -517,6 +577,15 @@ private:
     std::vector<glm::vec2>        m_jsGrowFrom;           ///< The polygon a grown support is growing out of,
     float                         m_jsGrown = 0.0f;       ///< ... and how far it has grown, metres.
     float                         m_jsBalanceBase = -1.0f; ///< The drag-start imbalance: never asked back.
+    /// THE WEIGHT SHIFT (ikPostureModel): a foot lifted off a two-footed stance takes the hips over
+    /// the STANDING foot. From the centre of mass as the drag found it to the standing foot's
+    /// footprint centre (model xz); zero when the drag did not begin on exactly two planted feet
+    /// with one of them liftable by the drag (beginIkDrag).
+    glm::vec2                     m_jsWeightShift{0.0f};
+    float                         m_jsWeightLiftStart = -1.0f; ///< The lift share the drag BEGAN with (-1: not read yet): a foot already in the air shifts nothing.
+    float                         m_jsWeightLift = 0.0f;       ///< The shift's share applied this tick (0-1): the traces, the harness.
+    glm::vec2                     m_jsWeightEased{0.0f};       ///< The shift the root's home carries this tick, approached at the pins' pace (kPinEaseStep).
+    bool                          m_jsWeightEasing = false;    ///< ... and still on its way (the settle waits for it, as for a pin).
     glm::vec3                     m_jsHold{0.0f};         ///< The released joint's hold (settle).
     /// The damped follower's state (see ikDamping): the target the solve is given and
     /// its velocity per second; seeded at the first tick of a drag from the raw target.
@@ -541,14 +610,14 @@ private:
     /// A HAND ON THE FLOOR holds its place at its FINGERTIP (solveIk): per bone, a hand's longest
     /// rider by bind distance (-1: not a hand; found once per rig), where that tip is held, and
     /// whether it is being held.
-    std::vector<int>              m_jsHandTip;    ///< per WRIST (see m_jsWristOf)
+    mutable std::vector<int>      m_jsHandTip;    ///< per WRIST (see m_jsWristOf; mutable: found lazily, read by the const handPalmNormal)
     /// Per bone: the WRIST of the hand it is a part of (the wrist itself included), -1 elsewhere.
     /// Found by structure (ensureHandMaps): below an elbow, down the main children past the
     /// forearm's twist bones, the first bone with two free channels. The generations cut a hand
     /// differently - on some the CARPALS are real joints and the fingers ride them, and a hand
     /// lands on those: whichever joint of it touches, it is ONE hand, held once.
-    std::vector<int>              m_jsWristOf;
-    void                          ensureHandMaps();
+    mutable std::vector<int>      m_jsWristOf;
+    void                          ensureHandMaps() const;
     std::vector<glm::vec3>        m_jsHandTipTarget;
     std::vector<char>             m_jsHandTipValid;
     std::vector<glm::vec3>        m_jsHandHeading; ///< ... and the way its fingers point along the floor, as it landed
@@ -565,6 +634,13 @@ private:
     /// hang's (hangArmHeld), not a rider's: unloaded under a kneel-up the hands rode the rising
     /// trunk forward-down and lay on the floor ahead of her, arms straight, until the pins went.
     std::vector<char>             m_jsContactUnloaded;
+    /// Per node, this tick: a HAND contact the body's RISE has unloaded because its arm has no length
+    /// to give (ikPinRows: !armSlack under m_jsRootRise / m_jsContactRise at 1). Handed to the rig
+    /// (IkRig::setRiseUnloadedContacts), which lets such a hand lift off like a taut one — the solve
+    /// reads the arm's own stretch as well as the junction's reach, the rig's lift-off only the reach,
+    /// and a straight arm on a shrugged collar fell between the two: weightless on the floor, then
+    /// 17cm in the air with its pin standing, and swung 144mm in a tick by the torso's volume rows.
+    std::vector<char>             m_jsContactRiseUnloaded;
     /// Per bone: a hard live contact (a knee over its planted foot) that is still COMING DOWN — it
     /// is re-seated where it lands (dragIkTick).
     std::vector<char>             m_jsContactLanding;
@@ -574,6 +650,12 @@ private:
     /// off the floor instead of landing on it (hangIdleArms).
     bool                          m_jsSeatRolls = false;
     float                         m_jsRootYield = 0.0f;
+    /// REACHING DOWN (ikTrunkPolicy): how far, and how vertically, a dragged HAND's target has gone
+    /// below where the drag began (the push-down's yieldFor, 0-1) — the hinge share of a hand
+    /// pushed down, and what scales the hips' vertical yield under it (kReachSquatShare).
+    float                         m_jsReachDown = 0.0f;
+    float                         m_jsReachHinge = 0.0f; ///< ... applied: a hand drag from a standing start, not suspended, no seat.
+    float                         m_jsReachTravel = 0.0f; ///< ... and the hand's downward travel itself (m), which sizes the fold.
     /// The target's DOWNWARD travel since the drag began, as a share (kHandCeilingDownFrom..Full):
     /// a body coming down stands the slack hands' ceilings down (solveIk).
     float                         m_jsTargetDown = 0.0f;
@@ -591,6 +673,16 @@ private:
     float                         m_jsKneelHold = 0.0f;    ///< a kneel-start TRUNK drag's hold of the knees DOWN (a ceiling): 1 while the trunk can give what is asked, or for the whole drag when it began folded (dragIkTick)
     glm::vec3                     m_jsKneelSeatShift = glm::vec3(0.0f); ///< a kneel-up's hips' home over where the drag found them: to the kneeling seat over the planted knees, by the target's uprightness (dragIkTick)
     float                         m_jsKneelUpright = 0.0f; ///< ... and the uprightness that shift is by (0-1): the horizontal price yields to it
+    /// THE TIPTOE (dragIkTick, ikPostureModel, ikPinRows): a hand pulled UP beyond the arm's reach
+    /// lifts the heels — the body rises onto the balls of the feet, up to what kTiptoeDeg of
+    /// plantar flexion about the ball gives, before the lift-off takes her off the floor.
+    bool                          m_jsTiptoeDrag = false;  ///< The drag can (beginIkDrag): a limb's joint dragged from a stance of exactly two planted feet — no live contact, no user pin, not on her knees or her seat, not suspended.
+    IkScope                       m_ikScope = IkScope::Body; ///< The drag in flight's scope (beginIkDrag); Body between drags.
+    float                         m_jsTiptoeRoom = -1.0f;  ///< The heel lift the ankles give (model m): -1 until the balls are known (the first solve finds them), 0 = none.
+    float                         m_jsTiptoeD = 0.0f;      ///< The feet at bind: the ankle's horizontal distance behind the ball and its height over it (means over the standing feet).
+    float                         m_jsTiptoeH0 = 0.0f;
+    float                         m_jsTiptoe = 0.0f;       ///< This tick's heel lift (model m): the root's home rises by it, each heel's target with it. A function of the target.
+    float                         m_jsTiptoeTheta = 0.0f;  ///< ... and the pitch about the ball that gives it (rad).
     float                         m_jsKneelYield = 0.0f;   ///< a kneel-start drag's push DOWN, by its downward travel alone (no share gate): both pelvis prices yield to it under a trunk drag
     float                         m_jsLowestTargetY = 0.0f;
     /// How far along the rise is (0-1): the height regained over the height the legs had left.
@@ -633,6 +725,28 @@ private:
     glm::mat3                     m_jsEffectorStartRot{1.0f};
     glm::vec3                     m_jsEffectorStartPos{0.0f};
     float                         m_jsHandSlideEase = 0.0f;   ///< A dragged hand's palm-flat hold, eased in from the rotation the drag found it at (solveIk).
+    /// A dragged hand LAID ON THE BODY (ikCursorRows): its palm's hold against the body volume its
+    /// target rests on, eased from the rotation the hand had when the target came within the
+    /// lay's band (re-captured whenever it leaves and returns).
+    glm::mat3                     m_jsHandLayFrom{1.0f};
+    float                         m_jsHandLayEase = 0.0f;
+    bool                          m_jsHandLayValid = false;
+    /// ... and which SIDE of the hand lies on it: +1 the palm, -1 its BACK — whichever needed the
+    /// least turn where the target entered the band (a hand behind the back rests on its back: the
+    /// forearm cannot supinate that far, and palm-in it flexed the wrist to its limit to comply).
+    float                         m_jsHandLaySide = 1.0f;
+    /// The drag target BEFORE the drag clamp pushed it out of the body volumes (model space; dragIkTo):
+    /// a cursor inside the body is the lay's surest sign that the hand is on it, however far the
+    /// clamp holds the wrist off (the riders' clearance keeps a fingers-first hand a hand's length out).
+    glm::vec3                     m_jsRawTarget{0.0f};
+    bool                          m_jsRawTargetValid = false;
+    /// A sliding foot's SOLE hold, eased from the rotation the slide FOUND the foot at (the tick
+    /// the target came within the slide's band) toward its flat target at kSoleTurnStepDeg a tick
+    /// (ikCursorRows); a foot carried on a taut leg rides its shin 50 degrees from flat, and the
+    /// hold, coming in over the foot's weak posture, flipped it in two ticks (85mm at a toe).
+    glm::mat3                     m_jsSoleEaseFrom{1.0f};
+    float                         m_jsSoleEase = 1.0f;
+    bool                          m_jsSoleEaseValid = false;
     /// The height the legs had left to give when the drag began (model metres): the solve
     /// root's standing height over the floor less its height then. ~0 standing, the crouch's
     /// depth crouched, negative hovering.

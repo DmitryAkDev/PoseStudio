@@ -1,6 +1,9 @@
 /**
  * @file bonepicker.h
- * @brief Screen-space joint picking across every figure in the scene.
+ * @brief Screen-space joint picking across every figure in the scene — THE FALLBACK since
+ *        2026-09-26: Scene::selectBoneAt casts the click against the posed skin first
+ *        (Model::pickSurface) and comes here only when the ray misses every figure's surface, a
+ *        click just outside the silhouette, and then checks that nothing hides what this found.
  *
  * A click on the viewport is resolved to (figure, bone) here, by projecting each figure's joints
  * with the camera and hit-testing the click against joint ORIGINS and bone BODIES (the segment

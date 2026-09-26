@@ -317,10 +317,6 @@ private:
     // this rather than QMouseEvent::buttons() so a modal dialog (e.g. the Import file picker)
     // can't leak a button-held move to us as it closes and snap the camera.
     Qt::MouseButtons m_activeDragButtons = Qt::NoButton;
-    // True when the current CTRL+left-drag began on a figure joint: it FK-rotates that one joint
-    // (horizontal = its Y channel, vertical = X) instead of orbiting the camera. Set on press
-    // (near a joint, Ctrl held), cleared on release (endFkDrag).
-    bool m_posingBone = false;
     // A left press that hit no joint — the orbit gesture — may still turn out to be a CLICK:
     // released within the platform's drag distance of the press, it selects the model under the
     // cursor (box-level pick) or, on empty space, clears the selection. The selected model is
@@ -362,13 +358,16 @@ private:
     /// solving per mouse event made the damped dynamics mouse-polling-rate-dependent.
     bool issueIkTarget();
     /// A left press on the joint under @p localPos: selects it and begins the gesture — a plain
-    /// press the full-body-IK drag, @p fkModifier (Ctrl) the single-joint FK rotate — and
-    /// snapshots the pose for undo. Returns false when no joint is under the cursor (the press
-    /// is then the orbit/click gesture).
-    bool beginJointGesture(const QPointF& localPos, bool fkModifier);
-    /// Begins the FBIK drag of the selected joint (the drag plane anchored at its position) and
-    /// starts the tick. Returns false without a figure/selection.
-    bool beginIkDrag();
+    /// press the full-body-IK drag, @p scoped (Ctrl) the SCOPED drag of the grabbed chain alone
+    /// (IkScope::Chain: a limb up to the body, the head and neck to the chest, the spine over a
+    /// still pelvis, the hips with only their legs — nothing else moving) — and snapshots the pose
+    /// for undo. Returns false when no joint is under the cursor (the press is then the
+    /// orbit/click gesture).
+    bool beginJointGesture(const QPointF& localPos, bool scoped);
+    /// Begins the IK drag of the selected joint (the drag plane anchored at its grab point) and
+    /// starts the tick — the whole body's, or @p scoped the grabbed chain's alone. Returns false
+    /// without a figure/selection.
+    bool beginIkDrag(bool scoped = false);
     /// Mouse-up of an IK drag that moved the pose: hands off to the ANIMATED settle — the timer
     /// keeps ticking, each tick relaxing the body onto its pins (finishIkSettle then commits).
     void beginIkRelease();
@@ -376,8 +375,6 @@ private:
     /// release never reached this window, a delete mid-gesture. Commits the undo entry if the
     /// drag did move the pose.
     void abortIkDrag();
-    /// Ends a Ctrl FK drag: the settled-pose hook runs and the undo entry is committed.
-    void endFkDrag();
     /// Completes the post-release IK settle NOW (ends the drag, runs the settled-pose hook,
     /// commits the undo entry). Called by the timer when the animated settle lands, and by any
     /// interaction that must not overlap it (a new press, undo/redo) to cut it short cleanly.
@@ -468,7 +465,7 @@ private:
     /// every other pose edit — undo/redo, utilities, pins, a pose load, the view/delete keys —
     /// is REFUSED until its release. An IK drag in particular solves against pins captured at
     /// drag start, and re-posing underneath it would leave the solve fighting a stale stance.
-    bool dragInFlight() const { return m_ik.dragging || m_posingBone; }
+    bool dragInFlight() const { return m_ik.dragging; }
     /// Any pose edit in flight: a held drag, the animated release settle, or an X/Y/Z wheel hold.
     /// The self-completing ones can be closed early by closeOpenPoseEdits().
     bool poseEditInFlight() const {

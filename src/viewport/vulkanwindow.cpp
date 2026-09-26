@@ -184,7 +184,6 @@ void VulkanWindow::releaseVulkan() {
     m_ik.dragging = false;
     m_ik.hasTarget = false;
     m_ik.poseChanged = false;
-    m_posingBone = false;
     m_leftClickCandidate = false;
     m_activeDragButtons = Qt::NoButton;
     if (m_axisRotateKey >= 0) {

@@ -449,6 +449,7 @@ bool Armature::dragIkTick(const glm::vec3& rawTarget) {
                        std::min(-bone.rotMin[a], bone.rotMax[a]) <= kFoldNarrowFraction * std::max(-bone.rotMin[a], bone.rotMax[a]);
             }
         }
+        float limbBeyondUp = 0.0f; // (what the limb cannot give UPWARD: THE TIPTOE reads it below)
         if (!kLimbRises && limb) {
             if (m_jsLimbSocket < 0) {
                 const int junction = rig.limbJunction(effector);
@@ -465,8 +466,11 @@ bool Armature::dragIkTick(const glm::vec3& rawTarget) {
             const glm::vec3 out = target - m_jsStartPos[static_cast<std::size_t>(m_jsLimbSocket)];
             const float far = glm::length(out);
             const float beyond = std::max(0.0f, far - kLimbReachShare * m_jsLimbReach);
-            rose = std::min(rose, far > 1.0e-4f ? beyond * std::max(0.0f, out.y) / far : 0.0f);
-            roseAgain = std::min(roseAgain, far > 1.0e-4f ? beyond * std::max(0.0f, out.y) / far : 0.0f);
+            const float beyondUp = far > 1.0e-4f ? beyond * std::max(0.0f, out.y) / far : 0.0f;
+            rose = std::min(rose, beyondUp);
+            roseAgain = std::min(roseAgain, beyondUp);
+            // (THE TIPTOE reads the target beyond the limb's FULL length: kTiptoeReachShare.)
+            limbBeyondUp = far > 1.0e-4f ? std::max(0.0f, far - kTiptoeReachShare * m_jsLimbReach) * std::max(0.0f, out.y) / far : 0.0f;
         }
         // ... and a trunk joint of a figure SITTING OR LYING ON THE FLOOR is, to her seat, what a
         // hand is to its shoulder: taken up, the trunk first comes up ABOUT the seat — she sits up,
@@ -518,8 +522,9 @@ bool Armature::dragIkTick(const glm::vec3& rawTarget) {
             const glm::vec3 out = target - seat;
             const float     far = glm::length(out);
             const float     beyond = std::max(0.0f, far - kLimbReachShare * glm::length(m_jsStartTarget - seat));
-            rose = std::min(rose, far > 1.0e-4f ? beyond * std::max(0.0f, out.y) / far : 0.0f);
-            roseAgain = std::min(roseAgain, far > 1.0e-4f ? beyond * std::max(0.0f, out.y) / far : 0.0f);
+            const float     beyondUp = far > 1.0e-4f ? beyond * std::max(0.0f, out.y) / far : 0.0f; // (the UPWARD share of the excess)
+            rose = std::min(rose, beyondUp);
+            roseAgain = std::min(roseAgain, beyondUp);
             const glm::vec3 trunk = m_jsStartTarget - seat;
             const float     tilt = glm::length(trunk) > 1.0e-4f ? std::acos(glm::clamp(trunk.y / glm::length(trunk), -1.0f, 1.0f)) : 0.0f;
             const float     kneelUp = glm::smoothstep(glm::radians(25.0f), glm::radians(45.0f), tilt);
@@ -530,9 +535,15 @@ bool Armature::dragIkTick(const glm::vec3& rawTarget) {
             // DOWN, and with the rise off the solve's cheap way to a chest asked 40cm up off all
             // fours was to straighten the legs off the toes — the knees 4.5cm in the air under a
             // trunk still leaning. Held while the trunk can give what is asked (the target within
-            // its reach about the seat, let go of over the 5cm beyond), and for the whole drag
-            // when the trunk began folded: that drag kneels her up, the next stands her.
-            m_jsKneelHold = 1.0f - glm::smoothstep(0.0f, 0.05f * scale, beyond) * (1.0f - kneelUp);
+            // its reach about the seat, let go of over the 5cm beyond — the UPWARD excess only,
+            // since 2026-09-25: a chest taken forward and down past a kneeling trunk's reach is a
+            // body going onto its hands and on toward the floor, whose knees stay where they are;
+            // let go of on ANY excess, a toon character's shorter trunk ran out 13cm before the
+            // gallery's chest drag did, the knees came 11cm off the floor and she stood in a plank
+            // on her hands and toes — a pose no kneeler is pulled into — and the chest lifted off
+            // it afterwards threw a finger 42cm in a tick), and for the whole drag when the trunk
+            // began folded: that drag kneels her up, the next stands her.
+            m_jsKneelHold = 1.0f - glm::smoothstep(0.0f, 0.05f * scale, beyondUp) * (1.0f - kneelUp);
             // ... and THE HIPS COME UP TO THE SEAT as the trunk comes up (m_jsKneelSeatLift, the
             // root's home in solveIk; 2026-09-23): on all fours the hips sit 9-11cm BELOW the
             // kneeling seat height (the thighs lean), and with the rise nil — the kneeling chest
@@ -583,6 +594,10 @@ bool Armature::dragIkTick(const glm::vec3& rawTarget) {
             rose = 0.0f; // (THE SEAT, see solveIk: a pinned pelvis goes nowhere, and nothing turns home)
             roseAgain = 0.0f;
         }
+        if (m_ikScope == IkScope::Chain) {
+            rose = 0.0f; // (a SCOPED drag: the chain alone moves; nothing rises, nothing turns home)
+            roseAgain = 0.0f;
+        }
         m_jsRootRise = glm::smoothstep(kRootYieldDownFrom * scale, kRootYieldDownFull * scale, rose) * room;
         m_jsContactRise = glm::smoothstep(kRootYieldDownFrom * scale, kRootYieldDownFull * scale, roseAgain);
         // (ON HER KNEES a push DOWN is a push down whatever else it does: the share gate is a
@@ -591,6 +606,8 @@ bool Armature::dragIkTick(const glm::vec3& rawTarget) {
         // goes as far forward as down.)
         m_jsKneelYield = m_jsKneelStart ? glm::smoothstep(kRootYieldDownFrom * scale, kRootYieldDownFull * scale, std::max(0.0f, -moved.y)) : 0.0f;
         m_jsRootYield = std::max(yieldFor(std::max(0.0f, -moved.y)), m_jsRootRise);
+        m_jsReachDown = yieldFor(std::max(0.0f, -moved.y)); // (REACHING DOWN, ikTrunkPolicy: the push-down alone, without the rise)
+        m_jsReachTravel = std::max(0.0f, -moved.y);
         // A BODY COMING DOWN (the target below where the drag began, by its DOWNWARD travel
         // alone: kHandCeilingDownFrom..Full) stands the slack hands' CEILINGS down — see the
         // live-contact block in solveIk. A function of the target.
@@ -605,6 +622,78 @@ bool Armature::dragIkTick(const glm::vec3& rawTarget) {
         // them, which is backward, away from the planted feet: the whole pose locked.
         const float regained = rose / std::max(m_jsRootRiseRoom, 0.05f * scale);
         m_jsRiseProgress = room * glm::smoothstep(0.0f, 1.0f, glm::clamp(regained, 0.0f, 1.0f));
+        // THE TIPTOE (2026-09-25; kTiptoeDeg): a hand pulled UP beyond the arm's reach lifts the
+        // HEELS — the body rises onto the balls of the feet, as a person reaching a high shelf
+        // does, before the lift-off (IkRig::updateIntent, 15cm beyond reach for a quarter of a
+        // second) takes her off the floor. Between the arm going straight and the lift-off
+        // nothing gave: the soft heel rows (2 x 2000/m^2) and the root's vertical price (1000)
+        // against the cursor's bounded pull are 15mm of heel, and a hand pulled 10cm beyond
+        // reach rested 97mm short with the feet flat. A price only prefers less travel; the
+        // root's HOME rises (ikPostureModel) and each heel's target with it (ikPinRows) — by
+        // what the limb cannot give upward (limbBeyondUp, the limb rise's own measure), less
+        // the height the legs had left to give (a crouched start stands up first), up to the
+        // heel lift kTiptoeDeg of plantar flexion about the ball gives, read off the feet's own
+        // geometry at bind once the solve has found the balls (the first tick's rows). A
+        // function of the target: the hand brought back within reach puts the heels down.
+        // Only a drag from a two-footed stance (m_jsTiptoeDrag), never a foot's, never while
+        // suspended.
+        static const bool kNoTiptoe = std::getenv("IK_JS_NO_TIPTOE") != nullptr; // A/B probe
+        static const double kTiptoePitch = envOr("IK_JS_TIPTOE_DEG", kTiptoeDeg);
+        m_jsTiptoe = 0.0f;
+        m_jsTiptoeTheta = 0.0f;
+        const bool footEffector = static_cast<std::size_t>(effector) < m_ikBindPos.size() &&
+                                  m_ikBindPos[static_cast<std::size_t>(effector)].y < 0.20f * scale;
+        if (!kNoTiptoe && m_jsTiptoeDrag && limb && !footEffector && !rig.suspended() && limbBeyondUp > 0.0f) {
+            const float pitch = glm::radians(static_cast<float>(kTiptoePitch));
+            const auto liftAt = [&](float t) { return m_jsTiptoeD * std::sin(t) + m_jsTiptoeH0 * (std::cos(t) - 1.0f); };
+            if (m_jsTiptoeRoom < 0.0f) {
+                float d = 0.0f, h0 = 0.0f;
+                int   feet = 0;
+                bool  pending = false;
+                for (const IkEffector& pin : rig.pins()) {
+                    if (pin.node < 0 || static_cast<std::size_t>(pin.node) >= m_jsBall.size()) {
+                        continue;
+                    }
+                    const int ball = m_jsBall[static_cast<std::size_t>(pin.node)];
+                    if (ball == -2) {
+                        pending = true; // (not looked for yet: the first solve's rows find them)
+                        break;
+                    }
+                    if (ball < 0) {
+                        continue;
+                    }
+                    const glm::vec3 off = m_ikBindPos[static_cast<std::size_t>(pin.node)] - m_ikBindPos[static_cast<std::size_t>(ball)];
+                    d += glm::length(glm::vec2(off.x, off.z));
+                    h0 += off.y;
+                    ++feet;
+                }
+                if (!pending) {
+                    if (feet > 0) {
+                        m_jsTiptoeD = d / static_cast<float>(feet);
+                        m_jsTiptoeH0 = h0 / static_cast<float>(feet);
+                        m_jsTiptoeRoom = std::max(0.0f, liftAt(pitch));
+                    } else {
+                        m_jsTiptoeRoom = 0.0f; // (no ball found under either foot: rigid ankle pins, no heel to lift)
+                    }
+                }
+            }
+            if (m_jsTiptoeRoom > 0.0f) {
+                const float want = glm::clamp(limbBeyondUp - std::max(0.0f, m_jsRootRiseRoom), 0.0f, m_jsTiptoeRoom);
+                float lo = 0.0f, hi = pitch; // (the lift is monotonic in the pitch over [0, kTiptoeDeg])
+                for (int i = 0; i < 24; ++i) {
+                    const float mid = 0.5f * (lo + hi);
+                    (liftAt(mid) < want ? lo : hi) = mid;
+                }
+                m_jsTiptoeTheta = 0.5f * (lo + hi);
+                m_jsTiptoe = want;
+            }
+            static const bool kTiptoeTrace = std::getenv("IK_JS_TIPTOE_TRACE") != nullptr;
+            if (kTiptoeTrace) {
+                std::fprintf(stderr, "[tiptoe] beyondUp %.4f legRoom %.4f room %.4f (d %.4f h0 %.4f) lift %.4f pitch %.1f\n",
+                             limbBeyondUp, m_jsRootRiseRoom, m_jsTiptoeRoom, m_jsTiptoeD, m_jsTiptoeH0, m_jsTiptoe,
+                             glm::degrees(m_jsTiptoeTheta));
+            }
+        }
     }
     std::vector<glm::vec3> positions(n);
     for (std::size_t i = 0; i < n; ++i) {
@@ -648,8 +737,10 @@ bool Armature::dragIkTick(const glm::vec3& rawTarget) {
     }
     m_jsSolveGoal = goal;
     bool moved = solveIk(&goal, nullptr);
-    moved = hangIdleArms() || moved;  // (see IDLE ARMS HANG above: before the contacts read the pose)
-    moved = rightIdleHead() || moved; // (see THE HEAD STAYS UP)
+    if (m_ikScope != IkScope::Chain) { // (a SCOPED drag moves the chain alone: no arm hangs, no head is righted)
+        moved = hangIdleArms() || moved;  // (see IDLE ARMS HANG above: before the contacts read the pose)
+        moved = rightIdleHead() || moved; // (see THE HEAD STAYS UP)
+    }
 
     // LIVE CONTACT RE-DETECTION and landings (see IkRig::updateContacts), on the solved pose.
     for (std::size_t i = 0; i < n; ++i) {
@@ -676,6 +767,7 @@ bool Armature::dragIkTick(const glm::vec3& rawTarget) {
     for (std::size_t a = 0; a < m_jsHangArms.size(); ++a) {
         heldBefore[a] = hangArmHeld(m_jsHangArms[a]) ? 1 : 0;
     }
+    rig.setRiseUnloadedContacts(m_jsContactRiseUnloaded); // (a hand the rise unloaded lifts off like a taut one)
     if (rig.updateContacts(positions) && rig.takeLanded()) {
         captureFlatHold(true);
     }

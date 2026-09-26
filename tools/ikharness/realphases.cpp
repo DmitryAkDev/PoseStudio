@@ -8,6 +8,7 @@
 #include "realphases.h"
 
 #include "armature.h"
+#include "balancecontroller.h"
 #include "ikrig.h"
 #include "report.h"
 #include "simulator.h"
@@ -15,6 +16,8 @@
 #include <glm/glm.hpp>
 
 #include <algorithm>
+#include <array>
+#include <functional>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -24,6 +27,33 @@
 using namespace pose;
 
 namespace ikharness {
+
+/// THE WEIGHT over a standing foot: how far the centre of mass stands OUTSIDE that foot's footprint
+/// — the hull of the ankle and every joint below it, in the floor plane, at the end of a run (mm;
+/// 0 inside). A body on one leg stands over its foot (the weight shift in Armature::ikPostureModel);
+/// the ankle alone is no measure of it, since a raised knee carries the weight forward over the
+/// toes, still inside. 0 without the ankle.
+static double comOutsideFootMm(const RunResult& r, int ankle, const std::vector<ArmatureBone>& bones) {
+    if (ankle < 0 || static_cast<std::size_t>(ankle) >= r.endPos.size() || bones.size() != r.endPos.size()) {
+        return 0.0;
+    }
+    std::vector<glm::vec2> points;
+    for (std::size_t i = 0; i < bones.size(); ++i) {
+        bool under = static_cast<int>(i) == ankle;
+        for (int cur = bones[i].parent; cur >= 0 && !under; cur = bones[static_cast<std::size_t>(cur)].parent) {
+            under = cur == ankle;
+        }
+        if (under) {
+            points.emplace_back(r.endPos[i].x, r.endPos[i].z);
+        }
+    }
+    const std::vector<glm::vec2> hull = BalanceController::supportPolygon(points);
+    if (hull.empty()) {
+        return 0.0;
+    }
+    const glm::vec2 at(r.comEnd.x, r.comEnd.z);
+    return static_cast<double>(glm::length(BalanceController::closestBalancedPoint(hull, at, 0.0f) - at)) * 1000.0;
+}
 
 namespace {
 
@@ -171,7 +201,10 @@ void realPhases(Report& report, const std::vector<ArmatureBone>& bones) {
                      // (The WORST lag over the hold: its first tick carries the damped follower's
                      // one-tick trail behind the 1.2 m/s flick — 1.4-6.1mm across the rigs; 9.2 on
                      // one generation since the other, idle arm hangs through the flick.)
-                     gateMax("hold-3 flick resting miss (mm)", r.phases[5].lagMax * 1000.0, 11.0),
+                     // (20 since the hand lay: the third generation's third hold lands the cursor 3.4cm INSIDE the
+                          // belly, the hand lies flat on it, and a flat hand's wrist rests its own thickness from a cursor
+                          // inside the body - 17mm, 5 edge-on. The follower's trail this gate is for reads 8 on the base rig.)
+                          gateMax("hold-3 flick resting miss (mm)", r.phases[5].lagMax * 1000.0, 20.0),
                      // 70: an elbow re-orienting its fold plane at the extraction's 12°/tick
                      // twist cap swings ~6cm in a tick on the oldest rigs (no twist bones).
                      gateMax("worst single-tick jump (mm)", std::max({r.phases[0].maxJump, r.phases[2].maxJump, r.phases[4].maxJump}) * 1000.0, 70.0),
@@ -367,6 +400,438 @@ void realPhases(Report& report, const std::vector<ArmatureBone>& bones) {
                       gateMax("feet drift (mm)", r.contactDriftMax * 1000.0, 10.0),
                       gateMax("suspended", r.suspended ? 1.0 : 0.0, 0.0),
                       info("hand-to-cursor at rest (mm)", r.restingMiss * 1000.0)}, r);
+    }
+
+    // --- A hand pulled up BEYOND the arm's reach lifts the HEELS: the body rises onto the balls
+    // of the feet before the lift-off takes her off the floor (THE TIPTOE, 2026-09-25). +100cm
+    // straight up is about 9cm beyond the base rig's reach: 15mm of heel and a hand 97mm short
+    // before, the feet flat under a straight arm.
+    if (report.wants("tiptoe")) {
+        // The pull is sized by the ARM, on the rest pose the phases run from: the shoulder's height
+        // over the hand plus the straight arm's length — the hand straight up over the shoulder —
+        // plus 30% of the arm beyond it (15cm: the trunk's stretch and the shoulder's shrug give
+        // 5-9cm of reach past the bones, and the tiptoe itself 6). A fixed +100cm was 9cm beyond
+        // the base rig's reach but WITHIN the three T-pose generations' (their pre-posed hand
+        // starts lower and their arms are longer: 0.05mm short, flat-footed), and the +112cm they
+        // need lifts the newest generation off the floor; at 15% of the arm they rose 18-30mm,
+        // the target barely past the bones.
+        float reachUp = 1.00f;
+        {
+            Armature probe;
+            probe.build(bones);
+            for (const auto& [bone, euler] : restPose) {
+                probe.setBoneRotation(bone, euler);
+            }
+            const int hand = resolveBone(probe, "lHand");
+            const int shoulder = resolveBone(probe, "lShldr");
+            if (hand >= 0 && shoulder >= 0) {
+                const glm::vec3 h = probe.boneWorldPosition(static_cast<std::size_t>(hand));
+                const glm::vec3 s = probe.boneWorldPosition(static_cast<std::size_t>(shoulder));
+                const float arm = glm::length(h - s);
+                reachUp = (s.y - h.y) + arm * 1.30f;
+            }
+        }
+        {
+            Scenario sc;
+            sc.grab = "lHand";
+            sc.path = pullPath(glm::vec3(0.0f, reachUp, 0.0f), 60, 90);
+            sc.idleJoints = kIdleForHandDrag;
+            const RunResult r = run(sc);
+            phaseLegs("[real] tiptoe (lHand straight up to the arm's reach and 30% beyond, held)",
+                         {gateMin("heel lift max (mm)", r.contactRiseMax * 1000.0, 35.0),
+                          gateMin("hip rise (m)", r.hipDispY, 0.030),
+                          gateMax("suspended", r.suspended ? 1.0 : 0.0, 0.0),
+                          gateMax("steps", static_cast<double>(r.stepsTaken), 0.0),
+                          gateMax("worst single-tick joint move (mm)", (r.phases.empty() ? 0.0 : r.phases[0].maxJump) * 1000.0, 60.0),
+                          gateMax("floor penetration, any joint (mm)", r.penetrationMax * 1000.0, 5.0),
+                          info("hand-to-cursor at rest (mm)", r.restingMiss * 1000.0),
+                          info("head displacement (mm)", r.headDisp * 1000.0),
+                          info("the pull (m)", reachUp)}, r);
+        }
+        {
+            // ... and the hand brought back within reach puts the heels down: a function of the
+            // target, so the return is exact.
+            Scenario sc;
+            sc.grab = "lHand";
+            const glm::vec3 up(0.0f, reachUp, 0.0f);
+            const glm::vec3 back(0.0f, 0.60f, 0.0f);
+            sc.path = {{0, glm::vec3(0.0f), "start"}, {60, up, "tiptoe"}, {120, up, "hold-up"},
+                       {180, back, "lower"},          {240, back, "hold-down"}};
+            sc.idleJoints = kIdleForHandDrag;
+            const RunResult r = run(sc);
+            phaseLegs("[real] tiptoe, then the hand brought back within reach (lHand to the arm's reach and beyond, then +60cm)",
+                         {gateMax("feet vs their rest height at the end (mm)", std::abs(r.feetMinY - r.contactBindMinY) * 1000.0, 5.0),
+                          gateMax("hip off its start height at the end (mm)", std::abs(r.hipDispY) * 1000.0, 8.0),
+                          gateMax("hand-to-cursor at rest (mm)", r.restingMiss * 1000.0, 3.0),
+                          gateMax("suspended", r.suspended ? 1.0 : 0.0, 0.0),
+                          gateMax("steps", static_cast<double>(r.stepsTaken), 0.0),
+                          info("heel lift max (mm)", r.contactRiseMax * 1000.0)}, r);
+        }
+    }
+
+    // --- THE SHOULDER GIRDLE (2026-09-25): a hand dragged straight to the NAPE from the rest pose
+    // ran the shoulder to its extension limit and the collar to all three of its limits — the
+    // socket hauled onto the neck, the trunk leaning 14cm at the head. Priced like the trunk the
+    // collar stays where a collar goes; and under a hand raised overhead it still SHRUGS with the
+    // arm (the scapulohumeral rhythm), as it did at the plain prices.
+    // A HAND LAID ON THE BODY (2026-09-25): a dragged wrist whose target rests against a body volume
+    // lies on its PALM there (ikCursorRows' lay rows; the wrist's own channels are unknowns for it).
+    // Each phase brings the right hand to a body point and gates where the palm FACES at the end
+    // (RunResult::endPalm against the surface's inward direction: inward at the hip, backward at
+    // the chest, down on the crown of the head and on a knee) with the gesture's own guards: no
+    // step, the worst single-tick move through the drag and through the hold, the head where it
+    // was. Before the lay the hand rode the forearm at the rotation the drag found it - edge-on
+    // beside the hip (90 degrees off), across the face palm-down.
+    // --- SCOPED IK (2026-09-26; the app's Ctrl+drag, Armature's IkScope::Chain): the grabbed CHAIN
+    // alone answers the cursor — a limb up to where it joins the body, the head and neck to the
+    // chest, a spine joint's chain down to the pelvis, the pelvis with only its legs — and nothing
+    // else moves: no root, no balance, no step, no lift-off, no arm hang or head righting. The
+    // "moved" gates read 0.01mm: a bone none of the solve's unknowns move does not move at all.
+    if (report.wants("scoped")) {
+        Armature probe;
+        probe.build(bones);
+        const int hip = resolveBone(probe, "hip");
+        const int chest = resolveBone(probe, "chest_2");
+        const int head = resolveBone(probe, "head");
+        const int lFoot = resolveBone(probe, "lFoot");
+        const int rFoot = resolveBone(probe, "rFoot");
+        const int rHand = resolveBone(probe, "rHand");
+        const int lToe = resolveBone(probe, "lToe");
+        const auto moved = [&](const RunResult& r, int bone) {
+            return bone >= 0 ? static_cast<double>(glm::length(r.endPos[static_cast<std::size_t>(bone)] -
+                                                               r.startPos[static_cast<std::size_t>(bone)])) * 1000.0
+                             : 0.0;
+        };
+        const auto still = [&](const RunResult& r) { // (the body the chain hangs from: hips and feet)
+            return std::max({moved(r, hip), moved(r, lFoot), moved(r, rFoot)});
+        };
+        const auto movedAlongFloor = [&](const RunResult& r, int bone) { // (its place on the floor: x and z)
+            if (bone < 0) {
+                return 0.0;
+            }
+            const glm::vec3 d = r.endPos[static_cast<std::size_t>(bone)] - r.startPos[static_cast<std::size_t>(bone)];
+            return static_cast<double>(glm::length(glm::vec2(d.x, d.z))) * 1000.0;
+        };
+        const auto jump = [](const RunResult& r) { return r.phases.empty() ? 0.0 : r.phases[0].maxJump * 1000.0; };
+        const auto holdOsc = [](const RunResult& r) { return r.phases.size() > 1 ? r.phases[1].effOsc * 1000.0 : 0.0; };
+        {
+            // A hand pulled forward and up within the arm's reach: the arm alone, the hand on the
+            // cursor. (20cm forward: the A-pose hand hangs 37cm out from its socket, and 30cm forward
+            // put the target at the arm's full length, where the collar box and the shoulder's limits
+            // left it 15mm short — the plain drag leans the body for those; a scoped one rightly
+            // rests.)
+            Scenario sc;
+            sc.grab = "lHand";
+            sc.scoped = true;
+            sc.path = pullPath(glm::vec3(0.0f, 0.15f, 0.20f), 50, 40);
+            const RunResult r = run(sc);
+            phaseLegs("[real] scoped: a hand pulled 20cm forward and 15cm up — the arm alone",
+                      {gateMax("grab-to-cursor at rest (mm)", r.restingMiss * 1000.0, 3.0),
+                       gateMax("the hips and feet moved (mm)", still(r), 0.01),
+                       gateMax("the chest moved (mm)", moved(r, chest), 0.01),
+                       gateMax("the head moved (mm)", moved(r, head), 0.01),
+                       gateMax("the other hand moved (mm)", moved(r, rHand), 0.01),
+                       gateMax("steps", static_cast<double>(r.stepsTaken), 0.0),
+                       gateMax("worst single-tick jump (mm)", jump(r), 40.0),
+                       gateMax("hold oscillation (mm)", holdOsc(r), 1.0)}, r);
+        }
+        {
+            // A hand pulled a metre up, far beyond the arm's reach: the arm points at the cursor,
+            // the body stands where it stood — no lean, no tiptoe, no lift-off.
+            Scenario sc;
+            sc.grab = "lHand";
+            sc.scoped = true;
+            sc.path = pullPath(glm::vec3(0.0f, 1.0f, 0.0f), 60, 40);
+            const RunResult r = run(sc);
+            phaseLegs("[real] scoped: a hand pulled a metre up, beyond reach — the body stands still",
+                      {gateMax("the hips and feet moved (mm)", still(r), 0.01),
+                       gateMax("the chest moved (mm)", moved(r, chest), 0.01),
+                       gateMax("suspended", r.suspended ? 1.0 : 0.0, 0.0),
+                       gateMax("steps", static_cast<double>(r.stepsTaken), 0.0),
+                       gateMin("the hand rose (mm)", static_cast<double>(r.grabEnd.y - r.grabStart.y) * 1000.0, 300.0),
+                       gateMax("worst single-tick jump (mm)", jump(r), 60.0)}, r);
+        }
+        {
+            // The head pulled 15cm forward: the neck alone bends; the chest and everything below stay.
+            Scenario sc;
+            sc.grab = "head";
+            sc.scoped = true;
+            sc.path = pullPath(glm::vec3(0.0f, 0.0f, 0.15f), 50, 40);
+            const RunResult r = run(sc);
+            phaseLegs("[real] scoped: the head pulled 15cm forward — the neck alone",
+                      {gateMin("the head moved (mm)", moved(r, head), 30.0),
+                       gateMax("the chest moved (mm)", moved(r, chest), 0.01),
+                       gateMax("the hips and feet moved (mm)", still(r), 0.01),
+                       gateMax("steps", static_cast<double>(r.stepsTaken), 0.0),
+                       gateMax("worst single-tick jump (mm)", jump(r), 40.0)}, r);
+        }
+        {
+            // The upper chest pulled 20cm forward: the spine bends from the pelvis; the pelvis and
+            // the legs stay, the arms and head ride.
+            Scenario sc;
+            sc.grab = "chest_2";
+            sc.scoped = true;
+            sc.path = pullPath(glm::vec3(0.0f, 0.0f, 0.20f), 50, 40);
+            const RunResult r = run(sc);
+            phaseLegs("[real] scoped: the upper chest pulled 20cm forward — the spine from the pelvis",
+                      {gateMin("the chest moved (mm)", moved(r, chest), 80.0),
+                       gateMax("the hips and feet moved (mm)", still(r), 0.01),
+                       gateMax("steps", static_cast<double>(r.stepsTaken), 0.0),
+                       gateMax("worst single-tick jump (mm)", jump(r), 40.0),
+                       gateMax("hold oscillation (mm)", holdOsc(r), 1.0)}, r);
+        }
+        {
+            // The hips taken 10cm down: the pelvis and the legs alone; the feet stay planted (the
+            // heels may lift a little) and the trunk rides.
+            Scenario sc;
+            sc.grab = "hip";
+            sc.scoped = true;
+            sc.path = pullPath(glm::vec3(0.0f, -0.10f, 0.0f), 50, 40);
+            const RunResult r = run(sc);
+            phaseLegs("[real] scoped: the hips taken 10cm down — the legs alone, the feet planted",
+                      {gateMax("hip to the cursor at rest (mm)", r.restingMiss * 1000.0, 3.0),
+                       gateMax("the feet moved (mm)", std::max(moved(r, lFoot), moved(r, rFoot)), 15.0),
+                       gateMin("the chest came down with the hips (mm)", moved(r, chest), 80.0),
+                       gateMax("steps", static_cast<double>(r.stepsTaken), 0.0),
+                       gateMax("worst single-tick jump (mm)", jump(r), 40.0)}, r);
+        }
+        {
+            // A knee swung 12cm out: the leg alone, over its planted foot. The ankle keeps its PLACE
+            // on the floor (the knee drag's hard hold in the floor's plane); with the hips frozen the
+            // knee's arc is the foot's to give, so the heel lifts a little (2cm at the ankle) and the
+            // foot turns on it — the toes swing 6-7cm, as they do under the plain knee drag, whose
+            // sole heading is soft by design.
+            Scenario sc;
+            sc.grab = "lShin";
+            sc.scoped = true;
+            sc.path = pullPath(glm::vec3(0.12f, 0.0f, 0.0f), 50, 40);
+            const RunResult r = run(sc);
+            phaseLegs("[real] scoped: a knee swung 12cm out — the leg alone over its planted foot",
+                      {gateMax("the hips moved (mm)", moved(r, hip), 0.01),
+                       gateMax("the chest moved (mm)", moved(r, chest), 0.01),
+                       gateMax("the ankle's place on the floor (mm)", movedAlongFloor(r, lFoot), 5.0),
+                       info("the ankle's rise (mm; a heel lift)", moved(r, lFoot)),
+                       info("the toes (mm; the foot turning on its heel)", moved(r, lToe)),
+                       gateMin("the knee moved (mm)", static_cast<double>(glm::length(r.grabEnd - r.grabStart)) * 1000.0, 60.0),
+                       gateMax("steps", static_cast<double>(r.stepsTaken), 0.0),
+                       gateMax("worst single-tick jump (mm)", jump(r), 40.0)}, r);
+        }
+    }
+
+    if (report.wants("hand-lay")) {
+        Armature probe;
+        probe.build(bones);
+        for (const auto& [bone, euler] : restPose) {
+            probe.setBoneRotation(bone, euler);
+        }
+        const auto at = [&](const char* name) {
+            const int i = resolveBone(probe, name);
+            return i >= 0 ? probe.boneWorldPosition(static_cast<std::size_t>(i)) : glm::vec3(0.0f);
+        };
+        const int handP = resolveBone(probe, "rHand");
+        const int rThighP = resolveBone(probe, "rThigh");
+        const int lThighP = resolveBone(probe, "lThigh");
+        const int chestP = resolveBone(probe, "chest_2");
+        const int headP = resolveBone(probe, "head");
+        const int hipP = resolveBone(probe, "hip");
+        const int kneeP = resolveBone(probe, "rShin");
+        // The palm's angle off @p inward at the end (degrees; 0 = facing straight into the surface,
+        // 180 = facing away), or -1 without a palm to read.
+        const auto palmOff = [&](const RunResult& r, const glm::vec3& inward) {
+            if (handP < 0 || static_cast<std::size_t>(handP) >= r.endPalm.size()) {
+                return -1.0;
+            }
+            const glm::vec3 p = r.endPalm[static_cast<std::size_t>(handP)];
+            if (glm::length(p) < 0.5f || glm::length(inward) < 1.0e-6f) {
+                return -1.0;
+            }
+            return static_cast<double>(glm::degrees(std::acos(glm::clamp(glm::dot(p, glm::normalize(inward)), -1.0f, 1.0f))));
+        };
+        const auto jumpOf = [](const RunResult& r, std::size_t phase) {
+            return phase < r.phases.size() ? r.phases[phase].maxJump * 1000.0 : 0.0;
+        };
+        if (handP >= 0 && rThighP >= 0 && lThighP >= 0 && chestP >= 0 && headP >= 0 && hipP >= 0 && kneeP >= 0) {
+            const glm::vec3 h = at("rHand");
+            const glm::vec3 rThigh = at("rThigh");
+            const float     outward = rThigh.x < at("lThigh").x ? -1.0f : 1.0f; // the right side's sign of x
+            const glm::vec3 forward(0.0f, 0.0f, 1.0f);                           // the figures face +z
+            {
+                // 1. THE HIP - akimbo: a target INSIDE the pelvis, a little outboard of the thigh socket
+                // and above it - the drag clamp puts the wrist on the hip's surface, whatever the rig's
+                // width (12cm outboard of the socket missed the newest generation's pelvis by 9cm).
+                Scenario sc;
+                sc.grab = "rHand";
+                sc.path = pullPath(rThigh + glm::vec3(outward * 0.04f, 0.06f, 0.0f) - h, 50, 40);
+                sc.idleJoints = kIdleForHandDrag;
+                const RunResult r = run(sc);
+                phaseLegs("[real] hand laid on the hip: the palm faces the hip",
+                             {gateMax("palm off the hip's inward normal at the end (deg; edge-on it read 90)", palmOff(r, glm::vec3(-outward, 0.0f, 0.0f)), 35.0),
+                              gateMax("steps", static_cast<double>(r.stepsTaken), 0.0),
+                              gateMax("worst single-tick joint move, drag (mm)", jumpOf(r, 0), 40.0),
+                              gateMax("worst single-tick joint move, hold (mm)", jumpOf(r, 1), 25.0),
+                              gateMax("head displacement (mm)", r.headDisp * 1000.0, 30.0),
+                              // (The cursor sits inside the wrist's clearance of the hip: the clamp holds the hand off.)
+                              info("hand-to-cursor at rest (mm)", r.restingMiss * 1000.0)}, r);
+            }
+            {
+                // 2. THE CHEST - a hand on the heart: a hand's length in front of the upper chest,
+                // a little toward the other side.
+                Scenario sc;
+                sc.grab = "rHand";
+                sc.path = pullPath(at("chest_2") + glm::vec3(-outward * 0.05f, 0.02f, 0.12f) - h, 60, 40);
+                sc.idleJoints = kIdleForHandDrag;
+                const RunResult r = run(sc);
+                phaseLegs("[real] hand laid on the chest: the palm faces the chest",
+                             {gateMax("palm off the chest's inward normal at the end (deg)", palmOff(r, -forward), 35.0),
+                              gateMax("steps", static_cast<double>(r.stepsTaken), 0.0),
+                              // (The T-pose generations' hands travel half a metre to the chest and their arms
+                              // re-fold on the way: 19-26mm with the lay off, 45-58 as the palm turned on
+                              // arrival before the blended normal; the gate is the transient's guard.)
+                              gateMax("worst single-tick joint move, drag (mm)", jumpOf(r, 0), 60.0),
+                              gateMax("worst single-tick joint move, hold (mm)", jumpOf(r, 1), 25.0),
+                              // (The T-pose generations' and the newest rig's trunk leans 5-8cm at the head to
+                              // bring the hand across: 76mm on the newest with the lay off — the gesture's.)
+                              gateMax("head displacement (mm)", r.headDisp * 1000.0, 90.0),
+                              info("hand-to-cursor at rest (mm)", r.restingMiss * 1000.0)}, r);
+            }
+            {
+                // 3. ON TOP OF THE HEAD: a target inside the skull's crown - the clamp puts the wrist on
+                // the surface. With the wrist riding the forearm the palm was turned by the forearm's
+                // twist alone, pronated it to its limit and flipped basins IN THE HOLD (176mm in a tick).
+                Scenario sc;
+                sc.grab = "rHand";
+                sc.path = pullPath(at("head") + glm::vec3(0.0f, 0.14f, 0.0f) - h, 60, 40);
+                sc.idleJoints = kIdleForHandDrag;
+                const RunResult r = run(sc);
+                phaseLegs("[real] hand laid on top of the head: the palm faces down onto it",
+                             {gateMax("palm off straight down at the end (deg)", palmOff(r, glm::vec3(0.0f, -1.0f, 0.0f)), 35.0),
+                              gateMax("steps", static_cast<double>(r.stepsTaken), 0.0),
+                              // (The arm coming up over the head re-folds on the way on the male rig and the
+                              // oldest generation: 80-82mm with the lay off — the gesture's own.)
+                              gateMax("worst single-tick joint move, drag (mm)", jumpOf(r, 0), 100.0),
+                              // (8-29 on the eight rigs; 42 on a short-armed character of the sweep whose hand barely
+                              // reaches the crown of its head — the upper arm at 110, the collar at its caps, the palm
+                              // 41 degrees from flat, the rows hopping an arm with nothing left. A soft spot; the gate
+                              // still catches the class it was set for.)
+                              gateMax("worst single-tick joint move, hold (mm; it read 176)", jumpOf(r, 1), 45.0),
+                              info("head displacement (mm)", r.headDisp * 1000.0),
+                              info("hand-to-cursor at rest (mm)", r.restingMiss * 1000.0)}, r);
+            }
+            {
+                // 4. SEATED, HIPS PINNED: the hand brought down onto the knee. The chair-height sit of
+                // the seated phases, made and let go of, then the hips pinned; the knee and the hand
+                // are where THAT pose leaves them (read off a run of the sit alone).
+                const glm::vec3 hipR = at("hip");
+                const glm::vec3 kneeR = at("rShin");
+                const glm::vec3 sit(0.0f, -0.85f * (hipR.y - kneeR.y), -0.55f * glm::length(hipR - kneeR));
+                Scenario s0;
+                s0.grab = "hip";
+                s0.path = pullPath(sit, 90, 40);
+                const RunResult r0 = run(s0);
+                const glm::vec3 handSeated = static_cast<std::size_t>(handP) < r0.endPos.size() ? r0.endPos[static_cast<std::size_t>(handP)] : h;
+                const glm::vec3 kneeSeated = static_cast<std::size_t>(kneeP) < r0.endPos.size() ? r0.endPos[static_cast<std::size_t>(kneeP)] : kneeR;
+                Scenario sc;
+                sc.grab = "rHand";
+                sc.before.push_back({"hip", sit, 90, 40});
+                sc.userPins = {"hip"};
+                sc.pinsAfterBefore = true;
+                sc.path = pullPath(kneeSeated + glm::vec3(0.0f, 0.05f, 0.04f) - handSeated, 60, 40);
+                sc.idleJoints = kIdleForHandDrag;
+                const RunResult r = run(sc);
+                phaseLegs("[real] seated, hips pinned: a hand laid on the knee faces down onto it",
+                             {gateMax("palm off straight down at the end (deg; the knee's top slopes forward)", palmOff(r, glm::vec3(0.0f, -1.0f, 0.0f)), 45.0),
+                              gateMax("hand-to-cursor at rest (mm)", r.restingMiss * 1000.0, 5.0),
+                              gateMax("steps", static_cast<double>(r.stepsTaken), 0.0),
+                              gateMax("worst single-tick joint move, drag (mm)", jumpOf(r, 0), 60.0),
+                              gateMax("worst single-tick joint move, hold (mm)", jumpOf(r, 1), 30.0),
+                              // (The hand's target is beyond the hanging arm's reach: the trunk leans to it.)
+                              info("head displacement (mm)", r.headDisp * 1000.0)}, r);
+            }
+        }
+    }
+    if (report.wants("girdle")) {
+        Armature probe;
+        probe.build(bones);
+        for (const auto& [bone, euler] : restPose) {
+            probe.setBoneRotation(bone, euler);
+        }
+        const int handP = resolveBone(probe, "rHand");
+        const int headP = resolveBone(probe, "head");
+        const int collarP = resolveBone(probe, "rCollar");
+        // The collar's channel moves, largest first: the largest is its ELEVATION (free to the pull,
+        // capped at kCollarElevationMaxDeg), the other two its twist and swing (the trunk's price).
+        const auto collarMoves = [&](const RunResult& r) {
+            std::array<double, 3> moves{0.0, 0.0, 0.0};
+            if (collarP >= 0 && static_cast<std::size_t>(collarP) < r.endEuler.size()) {
+                for (int a = 0; a < 3; ++a) {
+                    moves[static_cast<std::size_t>(a)] = std::abs(static_cast<double>(
+                        r.endEuler[static_cast<std::size_t>(collarP)][a] - r.startEuler[static_cast<std::size_t>(collarP)][a]));
+                }
+            }
+            std::sort(moves.begin(), moves.end(), std::greater<double>());
+            return moves;
+        };
+        const auto collarMove = [&](const RunResult& r) { return collarMoves(r)[0]; };
+        if (handP >= 0 && headP >= 0) {
+            // The nape: a hand's breadth below the top of the head, a skull's depth behind its centre.
+            const glm::vec3 h = probe.boneWorldPosition(static_cast<std::size_t>(handP));
+            const glm::vec3 head = probe.boneWorldPosition(static_cast<std::size_t>(headP));
+            Scenario sc;
+            sc.grab = "rHand";
+            sc.path = pullPath(head + glm::vec3(0.0f, 0.02f, -0.10f) - h, 60, 40);
+            sc.idleJoints = kIdleForHandDrag;
+            const RunResult r = run(sc);
+            // (The straight path leads the arm into its EXTENSION basin — swung back to its limit,
+            // abducted to horizontal — where the nape is reached by a trunk leaning 20cm at the head:
+            // a SOFT SPOT, the lean being the designed answer to a hand out of reach. What the round
+            // fixed is the collar's part in it: twist 30, swing -17, elevation -55 — a socket hauled
+            // onto the neck. The head's displacement is informational for that reason.)
+            const std::array<double, 3> moves = collarMoves(r);
+            phaseLegs("[real] hand straight to the nape: the collar stays within what a clavicle does",
+                         {gateMax("collar elevation move (deg; it read 55, the cap is 30)", moves[0], 31.0), // (kCollarElevationMaxDeg + 1)
+                          gateMax("collar twist/swing move, larger (deg; it read 30 and 17, the cap is 15)", moves[1], 16.0), // (kCollarOtherMaxDeg + 1)
+                          gateMax("steps", static_cast<double>(r.stepsTaken), 0.0),
+                          // (The straight path's basin flips are the gesture's own — 41-368mm on the
+                          // eight rigs before the cap, in one direction or the other.)
+                          info("worst single-tick joint move (mm)", (r.phases.empty() ? 0.0 : r.phases[0].maxJump) * 1000.0),
+                          info("head displacement (mm; it read 146)", r.headDisp * 1000.0),
+                          info("hand-to-cursor at rest (mm)", r.restingMiss * 1000.0)}, r);
+        }
+        {
+            // A hand pulled straight up beyond the arm's reach (the tiptoe phase's pull: the
+            // shoulder's height over the hand plus 1.3 arm lengths — a fixed +80cm is within the
+            // three T-pose generations' reach and their collars need not move): the collar SHRUGS
+            // with the arm, and no further than the cap.
+            float reachUp = 1.00f;
+            const int shoulderP = resolveBone(probe, "rShldr");
+            if (handP >= 0 && shoulderP >= 0) {
+                const glm::vec3 h = probe.boneWorldPosition(static_cast<std::size_t>(handP));
+                const glm::vec3 sh = probe.boneWorldPosition(static_cast<std::size_t>(shoulderP));
+                reachUp = (sh.y - h.y) + glm::length(h - sh) * 1.30f;
+            }
+            Scenario sc;
+            sc.grab = "rHand";
+            sc.path = pullPath(glm::vec3(0.0f, reachUp, 0.0f), 60, 40);
+            sc.idleJoints = kIdleForHandDrag;
+            const RunResult r = run(sc);
+            // (A hand raised BESIDE the head, too — the rejected collar price flipped this one 136mm
+            // on the male rig, the rejected rhythm coupling 174 on the base.)
+            Scenario sb;
+            sb.grab = "rHand";
+            sb.path = pullPath(glm::vec3(0.22f, 0.52f, 0.0f), 60, 30);
+            sb.idleJoints = kIdleForHandDrag;
+            const RunResult rb = run(sb);
+            phaseLegs("[real] hand pulled straight up beyond reach: the collar shrugs with the arm, to the cap",
+                         {gateMin("collar channel move, worst (deg; the shrug)", collarMove(r), 10.0),
+                          gateMax("collar channel move, worst (deg; the cap)", collarMove(r), 31.0),
+                          gateMax("steps", static_cast<double>(r.stepsTaken), 0.0),
+                          gateMax("suspended", r.suspended ? 1.0 : 0.0, 0.0),
+                          gateMax("hand raised beside the head: worst single-tick joint move (mm; the collar price read 136)",
+                                  (rb.phases.empty() ? 0.0 : rb.phases[0].maxJump) * 1000.0, 60.0),
+                          gateMax("hand raised beside the head: hand-to-cursor at rest (mm)", rb.restingMiss * 1000.0, 5.0),
+                          info("hand-to-cursor at rest (mm)", r.restingMiss * 1000.0),
+                          info("head displacement (mm)", r.headDisp * 1000.0)}, r);
+        }
     }
 
     // --- A sustained pull far beyond reach LIFTS the figure: the feet leave the floor and the
@@ -688,7 +1153,7 @@ void realPhases(Report& report, const std::vector<ArmatureBone>& bones) {
         sc.path = pullPath(glm::vec3(0.0f, -kneelDrop, kneelForward), 90, 60);
         const RunResult r = run(sc);
         char name[128];
-        std::snprintf(name, sizeof(name), "[real] kneel: knees plant (hip -%.0fcm y +%.0fcm z, toes tucked)",
+        std::snprintf(name, sizeof(name), "[real] kneel: knees plant (hip -%.0fcm y +%.0fcm z, feet lying flat)",
                       kneelDrop * 100.0f, kneelForward * 100.0f);
         phaseLegs(name,
                      {gateMin("live contacts planted (max at once)", r.livePinsMax, 2.0),
@@ -707,8 +1172,12 @@ void realPhases(Report& report, const std::vector<ArmatureBone>& bones) {
                       // solve crept and broke out by turns, and through a kneel's still hold the
                       // pose jumped 10cm at a time and oscillated 3cm — behind gates that only
                       // read where the knees ended.
+                      // (25 since the feet lie flat, 2026-09-26: the foot rolls onto its top at 150
+                      // degrees a second once its knee has landed — 16-20mm a tick at a toe tip —
+                      // and on the rig whose knees land last it is still rolling in the hold. A roll
+                      // is not a pop; the gate is for the pops.)
                       gateMax("worst single-tick jump in the still hold (mm)",
-                              r.phases.size() > 1 ? r.phases[1].maxJump * 1000.0 : 0.0, 15.0),
+                              r.phases.size() > 1 ? r.phases[1].maxJump * 1000.0 : 0.0, 25.0),
                       gateMax("grabbed joint's oscillation in the still hold (mm)",
                               r.phases.size() > 1 ? r.phases[1].effOsc * 1000.0 : 0.0, 3.0),
                       gateMax("settle max step (mm)", r.settleMaxStep * 1000.0, 21.0)}, r);
@@ -751,7 +1220,7 @@ void realPhases(Report& report, const std::vector<ArmatureBone>& bones) {
                   {gateMin("live contacts planted (max at once)", r.livePinsMax, 2.0),
                    // (209mm on the main family: the hips thrown down and back as the knees landed.)
                    gateMax("worst single-tick jump (mm; it read 209)", r.phases.empty() ? 0.0 : r.phases[0].maxJump * 1000.0, 80.0),
-                   gateMax("worst single-tick jump in the still hold (mm)", r.phases.size() > 1 ? r.phases[1].maxJump * 1000.0 : 0.0, 15.0),
+                   gateMax("worst single-tick jump in the still hold (mm)", r.phases.size() > 1 ? r.phases[1].maxJump * 1000.0 : 0.0, 25.0), // (25: the roll onto the top, see the kneel phase)
                    // (27 + 25 degrees, the pelvis bone at its limit, before its tilt was dear on planted knees.)
                    gateMax("the pelvis's tilt, root and pelvis bone together (deg; it read 52)",
                            std::abs(pitchOf(hipBone) + pitchOf(pelvisBone)), 25.0),
@@ -951,7 +1420,11 @@ void realPhases(Report& report, const std::vector<ArmatureBone>& bones) {
                        gateMax("lift-off (every pin released)", r.suspended ? 1.0 : 0.0, 0.0),
                        gateMax("steps", static_cast<double>(r.stepsTaken), 0.0),
                        gateMax("worst single-tick jump (mm)", std::max(r.phases[0].maxJump, r.phases[1].maxJump) * 1000.0, 80.0),
-                       gateMax("hold-still worst jump (mm)", r.phases[1].maxJump * 1000.0, 25.0),
+                       // (30: the fingertips of arms HANGING at kArmHangStepDeg and wrists relaxing
+                       // at kWristRelaxStepDeg step 17-27mm a tick through the hold — 27 on the
+                       // oldest generation since its thighs adduct (the fold rule's hinge test,
+                       // 2026-09-25), 17-19 before. A pop would read 60 and more.)
+                       gateMax("hold-still worst jump (mm)", r.phases[1].maxJump * 1000.0, 30.0),
                        gateMax("floor penetration, any joint (mm)", r.penetrationMax * 1000.0, 25.0)}, r);
         }
     }
@@ -1298,8 +1771,13 @@ void realPhases(Report& report, const std::vector<ArmatureBone>& bones) {
                           // soft spot, read here as a fingertip's jump — gated by the hip only.
                           // (A rising body UNLOADS its floor contacts with the rise — Armature::solveIk: it
                           // read 16-162mm while a knee's hold went all at once; 18-73 now.)
-                          gateMax("worst single-tick jump (mm)", r.phases.empty() ? 0.0 : r.phases[0].maxJump * 1000.0, 85.0),
-                          gateMax("grab's lag behind the cursor, mean (mm)", r.phases.empty() ? 0.0 : r.phases[0].lagMean() * 1000.0, 15.0),
+                          // (100 and 25 since the feet lie flat in a kneel, 2026-09-26: getting up out of a
+                          // FLAT kneel rolls the feet back onto their toes first — the knee's ceiling lifts
+                          // with the roll, so the hips wait on it (a mean lag of 15-22mm where the tucked
+                          // kneel's read 3-8) — and the handed-over foot's rows come back over the share's
+                          // fade (60-97mm at a toe or shin in the tick they land). 85 and 15 before.)
+                          gateMax("worst single-tick jump (mm)", r.phases.empty() ? 0.0 : r.phases[0].maxJump * 1000.0, 100.0),
+                          gateMax("grab's lag behind the cursor, mean (mm)", r.phases.empty() ? 0.0 : r.phases[0].lagMean() * 1000.0, 25.0),
                           gateMax("settle max step (mm)", r.settleMaxStep * 1000.0, 21.0)}, r);
         }
     }
@@ -1859,9 +2337,25 @@ void realPhases(Report& report, const std::vector<ArmatureBone>& bones) {
         sc.path = pullPath(glm::vec3(0.0f, 0.15f, -0.10f), 40, 80);
         sc.idleJoints = {"head", "lHand", "rHand", "rFoot"};
         const RunResult r = run(sc);
+        Armature probeFl;
+        probeFl.build(bones);
+        const int rFootFl = resolveBone(probeFl, "rFoot");
+        const int lThighFl = resolveBone(probeFl, "lThigh");
+        const int rThighFl = resolveBone(probeFl, "rThigh");
+        const double freeHipLowerFl = (lThighFl >= 0 && rThighFl >= 0)
+                                          ? static_cast<double>(r.endPos[static_cast<std::size_t>(rThighFl)].y - r.endPos[static_cast<std::size_t>(lThighFl)].y) * 1000.0
+                                          : 0.0;
         phaseLegs("[real] foot lift (lFoot +15cm y, -10cm z)",
                      {gateMin("foot lift reached (m)", r.grabEnd.y - r.grabStart.y, 0.13),
+                      // (CONTRAPPOSTO, 2026-09-25: the lifted leg's socket ends lower than the standing one's.)
+                      gateMin("contrapposto: the free hip lower than the standing hip (mm)", freeHipLowerFl, 5.0),
                       gateMax("foot-to-cursor at rest (mm)", r.restingMiss * 1000.0, 15.0),
+                      // (THE WEIGHT SHIFT, 2026-09-25: a foot lifted off a two-footed stance takes
+                      // the hips over the standing foot. It read 200-240 before: she stood on one
+                      // leg with her weight between where the feet had been.)
+                      gateMax("the weight over the standing foot: centre of mass outside its footprint (mm)",
+                              comOutsideFootMm(r, rFootFl, bones), 25.0),
+                      info("hip displacement (mm)", r.hipDisp * 1000.0),
                       gateMax("foot moved through settle (mm)", r.holdDrift * 1000.0, 10.0),
                       gateMax("standing foot drift (mm)", r.contactDriftMax * 1000.0, 15.0)},
                   // 100: the lifted leg's knee must not shimmer (151 before the dragged-limb
@@ -1996,11 +2490,18 @@ void realPhases(Report& report, const std::vector<ArmatureBone>& bones) {
                           gateMax("floor penetration, any joint (mm)", r.penetrationMax * 1000.0, 5.0),
                           // (50: a STRAIGHT knee leaves straight in one 6-degree move — the
                           // solver's fold retry, 44mm at the knee — at the lift's first tick and
-                          // again as the hips come across and the reaching leg unlocks.)
-                          gateMax("worst single-tick jump (mm)", jump * 1000.0, 50.0),
+                          // again as the hips come across and the reaching leg unlocks. 70 since
+                          // the weight shift, 2026-09-25: the hips go over the standing foot as the
+                          // foot lifts and come back between the feet as it lands, and the sole of
+                          // a foot carried on a taut leg rolls flat over its descent at
+                          // kSoleTurnStepDeg — 46-61 at the toes across the rigs, 85 before the ease.)
+                          gateMax("worst single-tick jump (mm)", jump * 1000.0, 70.0),
                           gateMax("settle max step (mm)", r.settleMaxStep * 1000.0, 10.0)},
-                      // (The knee goes up and comes down: its "tremble" here is the path's.)
-                      r, LegGates{8.0, -1.0, -1.0, -1.0});
+                      // (The knee goes up and comes down: its "tremble" here is the path's. The
+                      // twist: 12 since the weight shift — the foot is carried 35cm one way while
+                      // the hips go 22cm the other, 57cm of abduction at 20cm of height, and the
+                      // leg reaches the last of it with 10 degrees of twist mid-flight; 3 before.)
+                      r, LegGates{12.0, -1.0, -1.0, -1.0});
         }
     }
 
@@ -2057,15 +2558,34 @@ void realPhases(Report& report, const std::vector<ArmatureBone>& bones) {
             sc.path = pullPath(glm::vec3(0.0f, 0.35f, 0.0f), 70, 60);
             const RunResult r = run(sc);
             double hang = 0.0;
+            double hangZ = 0.0;
             if (lFoot >= 0 && lShin >= 0) {
                 const glm::vec3 now = r.endPos[static_cast<std::size_t>(lFoot)] - r.endPos[static_cast<std::size_t>(lShin)];
                 const glm::vec3 was = r.startPos[static_cast<std::size_t>(lFoot)] - r.startPos[static_cast<std::size_t>(lShin)];
                 hang = static_cast<double>(glm::length(glm::vec2(now.x - was.x, now.z - was.z))) * 1000.0;
+                hangZ = static_cast<double>(std::abs(now.z - was.z)) * 1000.0;
             }
+            // CONTRAPPOSTO (2026-09-25): standing on one leg, the pelvis rolls the FREE side down —
+            // the lifted (left) leg's socket ends lower than the standing one's. Sign-free across
+            // the rigs (the root's roll channel is not).
+            const int lThighRd = indexOf("lThigh");
+            const int rThighRd = indexOf("rThigh");
+            const double freeHipLower = (lThighRd >= 0 && rThighRd >= 0)
+                                            ? static_cast<double>(r.endPos[static_cast<std::size_t>(rThighRd)].y - r.endPos[static_cast<std::size_t>(lThighRd)].y) * 1000.0
+                                            : 0.0;
             phaseLegs("[real] knee raise (lShin +35cm y, held)",
                          {gateMin("knee height gained (m)", r.grabEnd.y - r.grabStart.y, 0.32),
-                          gateMax("the ankle off its hang under the knee (mm, floor plane)", hang, 60.0),
-                          gateMax("hip displacement (mm)", r.hipDisp * 1000.0, 30.0),
+                          gateMin("contrapposto: the free hip lower than the standing hip (mm)", freeHipLower, 5.0),
+                          // (THE WEIGHT SHIFT, 2026-09-25: the hips come over the standing foot as
+                          // the other lifts — 22cm on this rig's wide A-pose — and the raised knee,
+                          // held at its cursor, stands that far outside its socket: a hanging shin
+                          // lies in the abducted thigh's plane, its foot toward the midline. Fore
+                          // and aft the ankle still hangs under the knee; sideways it reads ~150.)
+                          gateMax("the ankle off its hang under the knee, fore-aft (mm)", hangZ, 60.0),
+                          info("the ankle off its hang under the knee (mm, floor plane)", hang),
+                          gateMax("the weight over the standing foot: centre of mass outside its footprint (mm)",
+                                  comOutsideFootMm(r, rFoot, bones), 25.0),
+                          info("hip displacement (mm)", r.hipDisp * 1000.0),
                           gateMax("the other foot moved (mm)", moved(r, rFoot), 10.0),
                           gateMax("steps", static_cast<double>(r.stepsTaken), 0.0),
                           gateMax("lifted off the floor (0 = no)", r.suspended ? 1.0 : 0.0, 0.0),
@@ -2145,7 +2665,9 @@ void realPhases(Report& report, const std::vector<ArmatureBone>& bones) {
                           // socket, so swung outward it also rises — a cursor taken 8cm sideways
                           // is met 3-7cm out and 2-4cm up, and the body stays where it was.)
                           gateMin("elbow travel (m)", glm::length(r.grabEnd - r.grabStart), 0.04),
-                          gateMax("the hand left its place (mm)", moved(r, lHand), 40.0),
+                          // (36-38 on the two oldest generations before the hand lay: their prelude hand, brought before the hip,
+                          // now lies on the belly it was brought to, and the swivel carries a flat hand 45-55.)
+                          gateMax("the hand left its place (mm)", moved(r, lHand), 60.0),
                           gateMax("the shoulder socket moved (mm)", moved(r, lShldr), 25.0),
                           gateMax("steps", static_cast<double>(r.stepsTaken), 0.0),
                           gateMax("worst single-tick jump (mm)", r.phases.empty() ? 0.0 : r.phases[0].maxJump * 1000.0, 30.0),
@@ -2489,6 +3011,107 @@ void realPhases(Report& report, const std::vector<ArmatureBone>& bones) {
     // --- A foot the user LIFTED stays lifted. The contact band is 15cm deep and the ground healing
     // reaches 12, so a foot raised 5-10cm by one drag (a step being posed) was planted by the
     // NEXT drag of anything — a hand — and hauled back down to the floor.
+    // --- REACHING DOWN with a HAND (the reach hinge in Armature::ikTrunkPolicy, 2026-09-25): the
+    // trunk folds at the hips as the hand goes down — a bow over softened knees to the knee, the
+    // toe-touch's fold to the floor — where before the body was a squat with the trunk bolt
+    // upright and the gaze level: a hand's push down yielded the hips exactly as a chest's, and the
+    // pelvis never pitched. The fold is a REFERENCE (kReachFoldPerMetre of the hand's downward
+    // travel), so a hand brought back up brings her back up exactly.
+    if (report.wants("reach-down")) {
+        Armature probe;
+        probe.build(bones);
+        const int hipRd = resolveBone(probe, "hip");
+        const int headRd = resolveBone(probe, "head");
+        const int lShinRd = resolveBone(probe, "lShin");
+        const int rShinRd = resolveBone(probe, "rShin");
+        // The reaches are sized by the ARM (2026-09-25): the base rig's shoulder-to-hand length is
+        // 0.516m, and a character whose arm is 8% shorter reaches 8% less — with the targets fixed in
+        // centimetres three small characters' floor reach rested 7-25mm short once the collar was boxed
+        // to a clavicle's motion (its 55-degree hoist had bought them the last centimetres).
+        float armScale = 1.0f;
+        {
+            const int shoulderRd = resolveBone(probe, "rShldr");
+            const int handRd = resolveBone(probe, "rHand");
+            if (shoulderRd >= 0 && handRd >= 0) {
+                armScale = glm::length(probe.boneWorldPosition(static_cast<std::size_t>(handRd)) -
+                                       probe.boneWorldPosition(static_cast<std::size_t>(shoulderRd))) / 0.516f;
+            }
+        }
+        const auto at = [&](const std::vector<glm::vec3>& pose, int bone) {
+            return bone >= 0 && static_cast<std::size_t>(bone) < pose.size() ? pose[static_cast<std::size_t>(bone)] : glm::vec3(0.0f);
+        };
+        // The fold, sign-free across the rigs: how far the head stands AHEAD of the hips (the figure
+        // faces +z) at the end, less what it stood at the start.
+        const auto headAhead = [&](const RunResult& r) {
+            return static_cast<double>((at(r.endPos, headRd).z - at(r.endPos, hipRd).z) -
+                                       (at(r.startPos, headRd).z - at(r.startPos, hipRd).z)) * 1000.0;
+        };
+        const auto rootPitch = [&](const RunResult& r) {
+            return hipRd >= 0 && static_cast<std::size_t>(hipRd) < r.endEuler.size()
+                       ? static_cast<double>(r.endEuler[static_cast<std::size_t>(hipRd)].x) : 0.0;
+        };
+        const auto kneeBend = [&](const RunResult& r, int shin) {
+            return shin >= 0 && static_cast<std::size_t>(shin) < r.endEuler.size()
+                       ? static_cast<double>(std::abs(r.endEuler[static_cast<std::size_t>(shin)].x)) : 0.0;
+        };
+        struct Reach {
+            const char* name;
+            glm::vec3   offset;
+            double      aheadMin; // the head ahead of the hips, at least (mm)
+            double      kneeMax;  // either knee's bend, at most (deg)
+        };
+        for (const Reach& rc : {Reach{"[real] a hand brought to the knee (rHand -30cm y): a bow over softened knees", glm::vec3(0.0f, -0.30f, -0.02f), 150.0, 70.0},
+                                // (72cm, not 78: on two custom characters with shorter arms the deeper
+                                // target lay 2cm under the floor, and the clamp read as a miss.)
+                                Reach{"[real] a hand taken to the floor ahead (rHand -72cm y, +45cm z): a fold at the hips and the knees", glm::vec3(0.0f, -0.72f, 0.45f), 350.0, 80.0}}) {
+            Scenario sc;
+            sc.grab = "rHand";
+            sc.path = pullPath(rc.offset * armScale, 70, 60);
+            const RunResult r = run(sc);
+            phaseLegs(rc.name,
+                         {gateMax("hand-to-cursor at rest (mm)", r.restingMiss * 1000.0, 3.0),
+                          info("the arm's length over the base rig's (the reach is sized by it)", armScale),
+                          gateMin("the head ahead of the hips, gained (mm): the fold", headAhead(r), rc.aheadMin),
+                          info("the pelvis's pitch at the end (deg)", rootPitch(r)),
+                          info("left knee bend (deg)", kneeBend(r, lShinRd)),
+                          info("right knee bend (deg)", kneeBend(r, rShinRd)),
+                          gateMax("the deeper knee's bend (deg)", std::max(kneeBend(r, lShinRd), kneeBend(r, rShinRd)), rc.kneeMax),
+                          info("gaze over the horizon at the end (deg)", r.gazeEndDeg),
+                          gateMax("steps", static_cast<double>(r.stepsTaken), 0.0),
+                          gateMax("lifted off the floor (0 = no)", r.suspended ? 1.0 : 0.0, 0.0),
+                          gateMax("floor penetration, any joint (mm)", r.penetrationMax * 1000.0, 5.0),
+                          gateMax("worst single-tick jump (mm)", r.phases.empty() ? 0.0 : r.phases[0].maxJump * 1000.0, 80.0),
+                          // (2.0 since the collar box, 2026-09-25: the hand resting against the collar's
+                          // bound converges in small reversing steps — 1.3-1.5mm ACCUMULATED over the
+                          // 60-tick hold on three large characters, 0.2-0.8 on the base rig, no step
+                          // over 0.5mm; the old solver's tremble was 11mm a tick.)
+                          gateMax("hold oscillation (mm)", r.phases.size() > 1 ? r.phases[1].effOsc * 1000.0 : 0.0, 2.0),
+                          gateMax("settle max step (mm)", r.settleMaxStep * 1000.0, 10.0)}, r);
+        }
+        {
+            // ... and brought back up in the same drag: she stands as she stood.
+            Scenario sc;
+            sc.grab = "rHand";
+            sc.path = {{0, glm::vec3(0.0f), "start"},
+                       {70, glm::vec3(0.0f, -0.30f, -0.02f) * armScale, "down"},
+                       {100, glm::vec3(0.0f, -0.30f, -0.02f) * armScale, "hold"},
+                       {170, glm::vec3(0.0f), "up"},
+                       {230, glm::vec3(0.0f), "hold"}};
+            const RunResult r = run(sc);
+            double jump = 0.0;
+            for (const PhaseStats& ph : r.phases) {
+                jump = std::max(jump, ph.maxJump);
+            }
+            phaseLegs("[real] a hand brought to the knee and back up (rHand -30cm y, then home)",
+                         {gateMax("the head off where it began (mm)", static_cast<double>(glm::length(at(r.endPos, headRd) - at(r.startPos, headRd))) * 1000.0, 3.0),
+                          gateMax("hip displacement (mm)", r.hipDisp * 1000.0, 3.0),
+                          gateMax("the pelvis's pitch at the end (deg)", std::abs(rootPitch(r)), 0.5),
+                          gateMax("steps", static_cast<double>(r.stepsTaken), 0.0),
+                          gateMax("worst single-tick jump (mm)", jump * 1000.0, 80.0),
+                          gateMax("settle max step (mm)", r.settleMaxStep * 1000.0, 10.0)}, r);
+        }
+    }
+
     if (report.wants("lifted-foot")) {
         Armature probe;
         probe.build(bones);
@@ -2578,8 +3201,14 @@ void realPhases(Report& report, const std::vector<ArmatureBone>& bones) {
             const double rise = static_cast<double>(r.grabEnd.y - r.grabStart.y) * 1000.0;
             phaseLegs("[real] mid-thigh grabbed and raised 15cm",
                          {gateMin("the grabbed point rose (mm)", rise, 140.0),
-                          gateMax("the grabbed point rose (mm), no further", rise, 160.0),
-                          gateMax("the hips (mm)", moved(r, hip), 30.0),
+                          // (170: the point rose 161 once the weight shift moved the socket the
+                          // dilation is measured about; 150-158 before it.)
+                          gateMax("the grabbed point rose (mm), no further", rise, 170.0),
+                          // (The weight shift: a knee drag that lifts the foot takes the hips over
+                          // the standing foot — see the knee raise.)
+                          gateMax("the weight over the standing foot: centre of mass outside its footprint (mm)",
+                                  comOutsideFootMm(r, resolveBone(probe, "rFoot"), bones), 25.0),
+                          info("the hips (mm)", moved(r, hip)),
                           gateMax("steps", static_cast<double>(r.stepsTaken), 0.0),
                           gateMax("worst single-tick jump (mm)", r.phases.empty() ? 0.0 : r.phases[0].maxJump * 1000.0, 70.0),
                           gateMax("hold oscillation (mm)", r.phases.size() > 1 ? r.phases[1].effOsc * 1000.0 : 0.0, 1.0)}, r);
@@ -3473,12 +4102,34 @@ void realPhases(Report& report, const std::vector<ArmatureBone>& bones) {
         sc.path = {{0, glm::vec3(0.0f), "start"}, {120, glm::vec3(0.0f), "hold"}};
         sc.release = false;
         const RunResult r = run(sc);
+        // (The REAL-MASS joints: an idle hand's fingers RELAX under any drag — IDLE HANDS RELAX in
+        // hangIdleArms, 2026-09-25 — and that is motion by design, 39mm at a fingertip; it is
+        // reported apart. The rig's masses say which bones are token: below 0.005 of the body.)
+        std::vector<float> masses;
+        {
+            Armature probeHs;
+            probeHs.build(bones);
+            const int hs = resolveBone(probeHs, "lHand");
+            if (hs >= 0) {
+                probeHs.selectBoneByName(probeHs.boneName(static_cast<std::size_t>(hs)));
+                if (probeHs.beginIkDrag() && probeHs.ikRig() != nullptr) {
+                    masses = probeHs.ikRig()->masses();
+                }
+                probeHs.endIkDrag();
+            }
+        }
         double worst = 0.0;
+        double worstToken = 0.0;
         for (std::size_t i = 0; i < r.endPos.size(); ++i) {
-            worst = std::max(worst, static_cast<double>(glm::length(r.endPos[i] - r.startPos[i])));
+            const double d = static_cast<double>(glm::length(r.endPos[i] - r.startPos[i]));
+            const bool token = i < masses.size() && masses[i] < 0.005f;
+            (token ? worstToken : worst) = std::max(token ? worstToken : worst, d);
         }
         phaseLegs("[real] hold still (no cursor motion)",
-                     {gateMax("worst joint drift (mm)", worst * 1000.0, 2.0)}, r);
+                     {gateMax("worst joint drift (mm; the real-mass joints)", worst * 1000.0, 2.0),
+                      // (An idle hand's fingers RELAX under any drag, IDLE HANDS RELAX in hangIdleArms:
+                      // 39mm at a fingertip on the base rig. Gated low, as "the relax happened".)
+                      gateMin("an idle hand's fingers relaxed: worst token-joint move (mm)", worstToken * 1000.0, 15.0)}, r);
     }
 }
 

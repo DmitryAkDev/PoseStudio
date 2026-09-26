@@ -1,0 +1,124 @@
+# Gallery: HANDS LAID ON THE BODY (round 98) — a hand brought to the hip, the chest, the head, the belly, the
+# small of the back or a knee lies on its palm there (the back of the hand where the forearm has no pronation
+# left), the way a hand on the floor lies on its palm. Placed by WORLD targets (dragw) from the reference
+# figure's rest pose (the right hand starts at about (-0.51 1.08 0.02)); the figures face +z, the right side
+# is -x. `palm.<hand>.<axis>` is the palm normal's world component: +x = the right palm faces inward.
+view front
+
+# 1. akimbo: the right hand to the side of the right hip — the palm faces the hip, fingers down or forward
+press rHand
+dragw 0.31 -0.08 -0.02 50 40
+report hand_on_hip
+expect palm.rHand.x > 0.75
+expect steps == 0
+expect jump < 40
+expect head < 30
+shot 301_front_hand_on_hip
+release
+orbit 40 -10
+shot 302_threeq_hand_on_hip
+reset
+
+view front
+# 2. both hands on the hips
+press rHand
+dragw 0.31 -0.08 -0.02 50 20
+release
+press lHand
+dragw -0.31 -0.08 -0.02 50 40
+report both_hands_on_hips
+expect palm.lHand.x < -0.75
+expect palm.rHand.x > 0.75
+expect steps == 0
+shot 303_front_both_hands_hips
+release
+reset
+
+view front
+# 3. a hand on the heart: the palm on the chest
+press rHand
+dragw 0.42 0.27 0.12 60 40
+report hand_on_chest
+expect palm.rHand.z < -0.75
+expect grab < 5
+expect steps == 0
+expect jump < 40
+shot 304_front_hand_on_chest
+release
+orbit 40 -10
+shot 305_threeq_hand_on_chest
+reset
+
+view front
+# 4. a hand on top of the head: the palm down on the crown (the cursor sits inside the skull's clearance)
+press rHand
+dragw 0.51 0.66 -0.02 60 40
+report hand_on_head
+expect palm.rHand.y < -0.8
+expect grab < 80
+expect steps == 0
+expect jump < 80
+shot 306_front_hand_on_head
+release
+orbit 40 -10
+shot 307_threeq_hand_on_head
+reset
+
+view front
+# 5. a hand on the belly
+press rHand
+dragw 0.47 0.02 0.11 60 40
+report hand_on_belly
+expect palm.rHand.z < -0.7
+expect steps == 0
+expect jump < 60
+shot 308_front_hand_on_belly
+release
+reset
+
+view front
+# 6. a hand to the small of the back: it rests on the BACK of the hand (the forearm has no pronation left
+# for the palm), so the palm faces away from the body, backward
+press rHand
+dragw 0.55 -0.06 -0.16 60 40
+report hand_behind_back
+expect palm.rHand.z < -0.6
+expect steps == 0
+expect jump < 50
+release
+orbit 140 -10
+shot 309_back_hand_behind_back
+reset
+
+view right
+# 7. seated, hips pinned: the hand brought down onto the knee — the palm on the knee
+press hip
+dragv 0.22 -0.24 60 20
+release
+pin hip
+press rHand
+dragw 0.41 -0.22 0.29 60 40
+report seated_hand_on_knee
+expect palm.rHand.y < -0.55
+expect grab < 5
+expect steps == 0
+expect jump < 60
+shot 310_side_seated_hand_on_knee
+release
+orbit -40 -10
+shot 311_threeq_seated_hand_on_knee
+reset
+
+view front
+# 8. a hand laid on the hip and taken away again: the arm follows the cursor out cleanly
+press rHand
+dragw 0.31 -0.08 -0.02 50 20
+release
+press rHand
+dragw -0.31 0.08 0.02 50 40
+report hand_off_hip
+expect grab < 5
+expect steps == 0
+expect jump < 30
+release
+quit

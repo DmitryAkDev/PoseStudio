@@ -24,7 +24,10 @@ reset
 press lShin
 dragv 0 0.30 50 40
 shot 23_front_knee_raise
-expect grabpx < 12
+# (24px since the weight shift, 2026-09-25: the hips go 22cm over the standing foot as the knee
+# lifts, so a knee held at the cursor stands that far outside its socket - at the thigh's lateral
+# reach in this pose, a hand's width short of the pointer; 6 before, with the body toppling.)
+expect grabpx < 35
 expect steps == 0
 expect lowest > 0
 release
@@ -48,7 +51,10 @@ shot 23b_side_knee_raise
 # (47mm today: the gesture's arc is a guess at this figure's thigh, 42cm.)
 expect grab < 60
 expect steps == 0
-expect hips < 30
+# (The weight shift, 2026-09-25: a foot lifted off a two-footed stance takes the hips over the
+# standing foot - 22cm on this figure's wide A-pose. They stayed within 3cm before, and she stood
+# on one leg with her weight between where the feet had been.)
+expect hips > 150
 release
 reset
 
@@ -81,6 +87,44 @@ shot 27_side_foot_up_behind
 expect steps == 0
 release
 reset
+
+# A hand pulled up just BEYOND the arm's reach: she rises onto the balls of her feet - the
+# tiptoe (2026-09-25) - before a further pull lifts her off the floor (28). The hips rise with
+# the heels (65mm on this figure), the head with them, no step; the hand rests short of a cursor
+# past what the tiptoe adds - 41mm since the collar box (2026-09-25): the last centimetres had
+# been bought with a collar bone hoisted 55 degrees, the shoulder up the neck; a clavicle gives 30.
+press lHand
+dragv -0.03 0.95 60 40
+shot 27b_side_tiptoe_reach
+expect hips > 45
+expect steps == 0
+expect grab < 60
+expect lowest > 0
+release
+reset
+
+# A hand behind the head, the way a front-view user makes it: up beside the head, then the wheel a
+# notch at a time pushes it back (2026-09-25). The elbow comes forward, the head barely moves, and the
+# collar stays within what a clavicle does (its elevation 30 degrees at most under IK, its swing and
+# twist 15). Dragged straight there in one diagonal motion the arm goes up its extension route and
+# flips into this basin late - a known soft spot; this is the path that makes the pose cleanly.
+view front
+press rHand
+dragv 0.22 0.52 60 10
+wheel 1
+dragv 0 0 3 6
+wheel 1
+dragv 0 0 3 40
+shot 27c_front_hand_behind_head
+expect grab < 5
+expect head < 40
+expect jump < 70
+expect steps == 0
+release
+orbit 40 -10
+shot 27d_threeq_hand_behind_head
+reset
+view right
 
 # Lifted by the hand: past her reach she comes off the floor and hangs under it.
 press lHand

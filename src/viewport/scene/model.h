@@ -147,7 +147,7 @@ public:
     }
 
     // --- Full-body IK (scene/ik/, driven through the armature): drag a joint, the body follows ---
-    bool beginIkDrag() { return m_armature.beginIkDrag(); }
+    bool beginIkDrag(IkScope scope = IkScope::Body) { return m_armature.beginIkDrag(scope); }
     void setIkGrabPoint(int bone, const glm::vec3& worldPoint) { m_armature.setIkGrabPoint(bone, worldPoint); }
     glm::vec3 ikGrabPointWorld() const { return m_armature.ikGrabPointWorld(); }
     void setIkGrabOnSegment(int bone, float share) { m_armature.setIkGrabOnSegment(bone, share); }
@@ -197,6 +197,10 @@ public:
     /// comparable across models) to @p tOut and returns true. Box-level precision — enough to
     /// pick which imported object the cursor is over.
     bool intersectRay(const Ray& ray, float& tOut) const;
+    /// The FIRST point of the CURRENT pose's SKIN along @p ray (world) and the joint that weighs
+    /// most on the skin there — what a click is ON (GroundSampler::pickSurface; the opaque meshes
+    /// only). False for a static model or a ray that misses.
+    bool pickSurface(const Ray& ray, float& tOut, glm::vec3& hitWorld, int& bone) const;
 
     /// The world height of the CURRENT pose's lowest point (GroundSampler::lowestY): positive =
     /// hovering that far above the floor, negative = sunk into it. False when there is no

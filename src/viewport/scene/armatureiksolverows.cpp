@@ -29,6 +29,28 @@
 
 namespace pose {
 
+namespace {
+/// @p target pulled back along the geodesic toward @p now so that it leads the hand's rotation now by at
+/// most kPalmLeadDeg (IK_JS_PALMLEAD; 0 = uncapped): the palm eases' lead cap, see kPalmLeadDeg.
+glm::mat3 capPalmLead(const glm::mat3& now, const glm::mat3& target) {
+    static const float kLead = envOr("IK_JS_PALMLEAD", kPalmLeadDeg);
+    if (kLead <= 0.0f) {
+        return target;
+    }
+    const glm::quat nowQ = glm::normalize(glm::quat_cast(now));
+    glm::quat       to = glm::normalize(glm::quat_cast(target));
+    if (glm::dot(nowQ, to) < 0.0f) {
+        to = -to;
+    }
+    const float lead = glm::degrees(2.0f * std::acos(glm::clamp(glm::dot(nowQ, to), -1.0f, 1.0f)));
+    if (lead <= kLead) {
+        return target;
+    }
+    return glm::mat3_cast(glm::slerp(nowQ, to, kLead / lead));
+}
+} // namespace
+
+
 // THE FOOT SWINGS UNDER A LIFTED KNEE. Its hang was the ankle's offset from the knee AS THE
 // DRAG FOUND IT — under it for a standing leg, and BEHIND it for a kneeling one, whose shin
 // lies on the floor: a knee drawn up out of a kneel took its foot up behind it, trailing at
@@ -133,12 +155,20 @@ void Armature::ikPinRowsBegin(IkSolveScratch& s) {
     std::size_t& kneePlaceRow = s.kneePlaceRow;
     s.kneeHangMerged = false;
     bool& kneeHangMerged = s.kneeHangMerged;
+    s.lyingKneeFoot = false;
+    s.lyingFootPitchExcessDeg = 0.0f;
+    s.flatEasing = false;
+    if (m_jsKneeHeldDown.size() == n) {
+        m_jsKneeHeldDownPrev = m_jsKneeHeldDown;
+        std::fill(m_jsKneeHeldDown.begin(), m_jsKneeHeldDown.end(), 0);
+    }
     s.handTipHeld.assign(n, 0); // (hands whose fingertip hold stands this tick: see the live contacts)
     std::vector<char>& handTipHeld = s.handTipHeld;
     std::vector<JointOrientationTask>& palmRows = s.palmRows; // (... and their palms' pulls, added once the contact's fade is known)
     std::vector<JointPositionTask>& tipRows = s.tipRows; // (... and their fingertips' heights)
     s.footFreed.assign(pins.size(), 0); // (see THE FEET COME UP: their floor rows return)
     std::vector<char>& footFreed = s.footFreed;
+    s.footLying.assign(pins.size(), 0); // (A KNEELING FOOT LIES FLAT: the ankle's and mid-foot's floor rows off)
     std::vector<std::tuple<int, float, float>>& handCeilings = s.handCeilings; // (a slack-armed hand, a loaded knee may not rise off the floor: node, height, weight share — a one-sided row, see the plane source)
     std::vector<std::tuple<std::size_t, int, float>>& kneeCeilings = s.kneeCeilings; // (a loaded knee may not rise either: pin, node, height — added to the ceilings below by its hold)
     s.risePositions.resize(n); // (the pose as it stands: what a live contact has risen by)
@@ -147,6 +177,10 @@ void Armature::ikPinRowsBegin(IkSolveScratch& s) {
         m_jsContactUnloaded.assign(n, 0);
     }
     std::fill(m_jsContactUnloaded.begin(), m_jsContactUnloaded.end(), 0);
+    if (m_jsContactRiseUnloaded.size() != n) {
+        m_jsContactRiseUnloaded.assign(n, 0);
+    }
+    std::fill(m_jsContactRiseUnloaded.begin(), m_jsContactRiseUnloaded.end(), 0);
     for (std::size_t i = 0; i < n; ++i) {
         risePositions[i] = glm::vec3(m_poseGlobal[i][3]);
     }
@@ -218,6 +252,459 @@ void Armature::ikPinRows(IkSolveScratch& s, std::size_t p) {
         task.axisScale = glm::dvec3(0.0, 1.0, 0.0);
     }
     const std::size_t heelTask = problem.positions.size(); // (its target is finished below)
+    // A KNEELING FOOT LIES FLAT (2026-09-26; kKneelFlat* in the tuning header, IK_JS_NO_KNEEL_FLAT).
+    // The foot behind a knee that is ON the floor is no standing foot: it lies on its top, toes
+    // pointing back, as every kneeling person's does — where this model stood it on its tucked
+    // toes (the ball pinned hard at the floor, the toes held level, the ankle at its dorsiflexion
+    // limit), the first thing the user saw wrong in every kneel. Its share `flat` eases in once
+    // the knee above it has LANDED and while that knee's hold stands (the knee's contact fade is
+    // the share's ceiling: a body getting up unloads its knees first, and the foot's model turns
+    // back to the standing one as it does). Here: the share and the knee; the rows read it below —
+    // the ball's row and the toes' hold fall by decades over it (the ball's target tracking the
+    // ball, so a returning row starts from where the ball lies), the floor's rows come onto the
+    // foot (footFreed), the lying ball and heel offsets are re-seated on the pose, and the ankle's
+    // pitch channel gets its plantar REFERENCE (ikPostureModel reads m_jsFootFlatRef: a price can
+    // only prefer less travel, so the pose is given and the floor stops it).
+    static const bool kNoKneelFlat = std::getenv("IK_JS_NO_KNEEL_FLAT") != nullptr; // A/B probe: the tucked-toe kneel
+    static const bool kKneelFlatTrace = std::getenv("IK_JS_KNEEL_FLAT_TRACE") != nullptr;
+    float flat = 0.0f;      // this foot's flat share (m_jsFootFlat, eased)
+    float flip = 0.0f;      // how far its lying model has turned back to the standing one (the rise's progress, or the knee's lift)
+    bool  flatFoot = false; // its model is the lying one (it is, or was this drag, flat)
+    bool  unrolling = false; // let go of by its knee, rolling back onto its toes in place: the ankle rides the shin meanwhile
+    bool  toLying = false;   // its knee holds: the foot is lying, or rolling onto its top
+    // (The STANDING ball offset from the ankle: the bind's, turned to the foot's heading as the drag
+    // found it — its lateral axis's, which a pitch does not move.)
+    const auto standingBallOffset = [&](int ballBone) {
+        glm::vec3 standing = m_ikBindPos[static_cast<std::size_t>(ballBone)] - m_ikBindPos[node];
+        glm::vec3 lateralFound = node < m_jsStartRot.size() ? m_jsStartRot[node] * glm::vec3(1.0f, 0.0f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
+        lateralFound.y = 0.0f;
+        if (glm::length(lateralFound) > 0.3f) {
+            const float yaw = std::atan2(-lateralFound.z, lateralFound.x);
+            standing = glm::mat3_cast(glm::angleAxis(yaw, glm::vec3(0.0f, 1.0f, 0.0f))) * standing;
+        }
+        return standing;
+    };
+    float rollProgress = 1.0f; // how far the roll onto its top has gone (1: lying, or never rolled)
+    bool  lyingKneeFoot = false; // the DRAGGED KNEE's foot, found lying: it rides its shin (below)
+    // The ankle's PITCH channel: the one whose axis lies along the foot's lateral axis (the
+    // bind's, across the ankle-to-ball line); its plantar direction is the one that takes the
+    // ball DOWN. (Every bind is translation-only: a channel's orientation axis is a world axis
+    // at rest.) Found once per foot, for the lying model and for the knee-drag's foot alike.
+    if (ball >= 0 && m_jsFootFlat.size() == n && m_jsFootFlatAxis[node] == -2) {
+        m_jsFootFlatAxis[node] = -1;
+        glm::vec3 fore = m_ikBindPos[static_cast<std::size_t>(ball)] - m_ikBindPos[node];
+        fore.y = 0.0f;
+        if (glm::length(fore) > 1.0e-4f) {
+            const glm::vec3 lateral = glm::normalize(glm::cross(glm::vec3(0.0f, 1.0f, 0.0f), fore));
+            float bestAlong = 0.7f;
+            for (int a = 0; a < 3; ++a) {
+                const glm::vec3 axis = glm::normalize(glm::vec3(m_bones[node].orient[a]));
+                const float along = std::abs(glm::dot(axis, lateral));
+                if (along > bestAlong && m_bones[node].rotLimited[a]) {
+                    bestAlong = along;
+                    m_jsFootFlatAxis[node] = a;
+                    const glm::vec3 lever = m_ikBindPos[static_cast<std::size_t>(ball)] - m_ikBindPos[node];
+                    const bool plantarPositive = glm::cross(axis, lever).y < 0.0f;
+                    m_jsFootFlatLimit[node] = plantarPositive ? m_bones[node].rotMax[a] : m_bones[node].rotMin[a];
+                    m_jsFootFlatTuck[node] = plantarPositive ? m_bones[node].rotMin[a] : m_bones[node].rotMax[a];
+                }
+            }
+        }
+    }
+    if (!kNoKneelFlat && ball >= 0 && !kneeFoot && !rig.pinIsUser(p) && !rig.pinIsLive(p) && m_jsFootFlat.size() == n) {
+        const float scale = rig.sizeScale();
+        int kneePin = -1;
+        for (std::size_t q = 0; q < pins.size() && kneePin < 0; ++q) {
+            // (A KNEE: a leg joint with a foot below it. Any live pin among the foot's ancestors
+            // was taken for one, and a floor-sitter's SEAT — the pelvis bone, a live contact on
+            // the floor — flattened both her feet: 252mm jumps and 77mm through the floor in the
+            // floor-seat phases.)
+            // (... and not a SHADOW: a lifted contact the body still leans on is no knee on the floor.)
+            if (q == p || !rig.pinIsLive(q) || rig.pinIsShadow(q) || pins[q].node < 0 || !rig.isLegJointAboveFoot(pins[q].node)) {
+                continue;
+            }
+            for (int cur = m_bones[node].parent; cur >= 0 && cur != root; cur = m_bones[static_cast<std::size_t>(cur)].parent) {
+                if (cur == pins[q].node) {
+                    kneePin = static_cast<int>(q);
+                    break;
+                }
+            }
+        }
+        float want = 0.0f;
+        float kneeAboveTrace = 0.0f, kneePinYTrace = 0.0f; // (for the trace)
+        if (kneePin >= 0) {
+            const std::size_t kneeNode = static_cast<std::size_t>(pins[static_cast<std::size_t>(kneePin)].node);
+            m_jsFootKnee[node] = static_cast<int>(kneeNode);
+            const float above = m_poseGlobal[kneeNode][3].y - pins[static_cast<std::size_t>(kneePin)].target.y;
+            kneeAboveTrace = above;
+            kneePinYTrace = pins[static_cast<std::size_t>(kneePin)].target.y;
+            const float landed = 1.0f - glm::smoothstep(kKneelFlatLandFrom * scale, kKneelFlatLandTo * scale, above);
+            // The foot LIES while its knee is ON the floor (landed: the knee joint within 2cm of its
+            // planted height) and the body is not getting up; it rolls back onto its toes with the
+            // body's RISE (m_jsRootRise / m_jsContactRise, over its first 30%) or once the knee has
+            // really left the floor. Not with the knee's HOLD fading, as until 2026-09-26: the hold
+            // fades for a dip of the target too, and a kneel sat back onto its heels — a body going
+            // DOWN — unrolled both feet in mid-air on the third generation, 102mm at a toe, where the
+            // user's photo has them lying flat under her.
+            // (... and only when the knee is being UNLOADED by that rise: a knee held down by its
+            // ceiling — one the hips were LOW over at the press, kneeBelowHips: a body pushed up off
+            // its belly — keeps its foot lying, and from prone onto all fours the feet stay flat, as a
+            // person's do. Read off the rise alone the push-up rolled both feet onto their toes under
+            // held knees, and the returning rows brought them down in a tick: 107-117mm at a toe.)
+            const bool kneeHeld = kneeNode < m_jsKneeHeldDownPrev.size() && m_jsKneeHeldDownPrev[kneeNode];
+            const float bodyRise = kneeHeld ? 0.0f : std::max(m_jsRootRise, m_jsContactRise);
+            want = landed * (1.0f - glm::smoothstep(0.0f, 0.3f, bodyRise));
+            // (The lying ankle's height: the knee's planted height — the shin lies level along the
+            // floor on its front, and the ankle joint sits as high over it as the knee joint does.
+            // Held at its STANDING height, 7.5cm, the foot floated level 5cm off the floor: the
+            // rig's 65 degrees of plantar flexion are spent bringing a foot that points 20 degrees
+            // down at rest — the ankle stands above the ball — up to the shin's line.)
+            m_jsFlatLyingY[node] = pins[static_cast<std::size_t>(kneePin)].target.y;
+        }
+        const int axis = m_jsFootFlatAxis[node];
+        if (!m_jsFootFlatSeen[node]) {
+            // The first tick of a drag: is this foot FLAT? No planted knee — no (whatever a kneel
+            // let go of and Reset left in the share); a planted knee and the ankle within
+            // kKneelFlatNearLimitDeg of its plantar limit — yes, from the first tick.
+            m_jsFootFlatSeen[node] = 1;
+            if (want < 0.5f) {
+                m_jsFootFlat[node] = 0.0f;
+            } else if (axis >= 0 && std::abs(m_boneEuler[node][axis] - m_jsFootFlatLimit[node]) < kKneelFlatNearLimitDeg) {
+                m_jsFootFlat[node] = want;
+            }
+            m_jsFootWasFlat[node] = m_jsFootFlatAtStart[node] = m_jsFootFlat[node] > 0.5f ? 1 : 0;
+        }
+        if (axis < 0) {
+            want = 0.0f;
+        }
+        // THE FOOT'S STATE. Toward LYING while its knee holds (want); let go of, it UNROLLS first —
+        // its references run back to standing at the turn's pace, in the air, every row of the
+        // foot still off, the ankle riding its shin — and only once it stands again does its
+        // share fade and the standing model return (below: the rows come back by decades as the
+        // ball's target eases from where the ball is to its planted spot — a landing). Turned back
+        // by the knee's LIFT while the rows hardened, a chest rise that lifted the knee 13cm in a
+        // tick had the ball's row haul the ball 16cm forward along the floor and the leg shot
+        // straight: the knee 51cm up in two ticks, 578mm at a toe.
+        // (... to the TUCKED foot — the ankle's other limit, the ball coming down under the ankle
+        // on the floor — not to standing: unrolled to standing the foot hung in the air on a shin
+        // the rise had lifted, and landing it onto a spot 20cm ahead snapped the knee straight, 267mm
+        // in a tick. Tucked, it is the tucked kneel's own foot, and that kneel's rise — the ball
+        // planted, the heel turning flat with the progress — is the path every rig gets up by.)
+        toLying = want > 0.5f;
+        if (!toLying && m_jsFootWasFlat[node] && m_jsFootFlatRefValid[node] && axis >= 0) {
+            glm::vec3 left = m_jsFootFlatRef[node];
+            left[axis] -= m_jsFootFlatTuck[node];
+            unrolling = std::abs(left.x) + std::abs(left.y) + std::abs(left.z) > 1.0f;
+        }
+        const float flatGoal = toLying ? want : (unrolling ? m_jsFootFlat[node] : 0.0f);
+        // (How far the foot has rolled back onto its toes — 0 while it lies, 1 once handed over — for
+        // the ceiling on the knee above it, below in the live contacts: the knee lifts as the toes tuck.)
+        if (m_jsFootUnrollProgress.size() == n) {
+            if (toLying) {
+                m_jsFootUnrollProgress[node] = 0.0f;
+            } else if (unrolling && axis >= 0 && m_jsFootFlatRefValid[node]) {
+                const float whole = m_jsFootFlatTuck[node] - m_jsFootFlatLimit[node];
+                m_jsFootUnrollProgress[node] = std::abs(whole) > 0.5f
+                                                   ? glm::clamp((m_jsFootFlatRef[node][axis] - m_jsFootFlatLimit[node]) / whole, 0.0f, 1.0f)
+                                                   : 1.0f;
+            } else {
+                m_jsFootUnrollProgress[node] = 1.0f;
+            }
+        }
+        {
+            const float d = glm::clamp(flatGoal - m_jsFootFlat[node], -kKneelFlatEaseStep, kKneelFlatEaseStep);
+            m_jsFootFlat[node] += d;
+            if (std::abs(d) > 1.0e-4f) {
+                s.flatEasing = true; // (the settle waits for it: settleIkSolveTick)
+            }
+        }
+        flat = m_jsFootFlat[node];
+        if (flat > 0.5f) {
+            m_jsFootWasFlat[node] = 1;
+        }
+        flatFoot = m_jsFootWasFlat[node] != 0;
+        // The references: from where the channels stand when the share first rises, the pitch's
+        // toward the plantar limit and the two others' toward 0 — in line with the shin — at
+        // kKneelFlatTurnStepDeg a tick. (Asked there at once, a foot on tucked toes has 100
+        // degrees to turn, and would turn them in a tick; and the other two channels, which a
+        // tucked foot under a kneel's turned-in shin holds 17 and 25 degrees off to keep the
+        // standing heading the sole's hold asks for, sprang back 78mm at the toes the tick that
+        // hold went — every channel of a lying foot eases to its lying value.)
+        if (flat > 0.0f && axis >= 0) {
+            if (!m_jsFootFlatRefValid[node]) {
+                m_jsFootFlatRefValid[node] = 1;
+                m_jsFootFlatRef[node] = m_boneEuler[node];
+                m_jsFlatRollStartY[node] = m_poseGlobal[node][3].y;
+                m_jsFlatRollStartRef[node] = m_boneEuler[node][axis];
+                if (flat > 0.5f) {
+                    m_jsFootFlatRef[node][axis] = m_jsFootFlatLimit[node];
+                }
+            }
+            const float turnStep = toLying ? kKneelFlatTurnStepDeg : kKneelFlatUnrollStepDeg; // (the unroll is quicker: the body is on its way up, its knee lifting with the roll)
+            for (int a = 0; a < 3; ++a) {
+                const float goal = a == axis ? (toLying ? m_jsFootFlatLimit[node] : m_jsFootFlatTuck[node]) : 0.0f; // (tucked, once its knee lets go)
+                const float gap = goal - m_jsFootFlatRef[node][a];
+                const float d = glm::clamp(gap, -turnStep, turnStep);
+                m_jsFootFlatRef[node][a] += d;
+                if (std::abs(d) > 1.0e-3f) {
+                    s.flatEasing = true;
+                }
+            }
+            // (The roll's progress: the pitch reference's way from where it began to the limit —
+            // 1 at once for a foot found lying.)
+            const float whole = m_jsFootFlatLimit[node] - m_jsFlatRollStartRef[node];
+            rollProgress = std::abs(whole) < 0.5f ? 1.0f : glm::clamp((m_jsFootFlatRef[node][axis] - m_jsFlatRollStartRef[node]) / whole, 0.0f, 1.0f);
+            // The TOES and the mid-foot — EVERY joint below the ankle: the ball's chain, the toe
+            // segments, the toe mates — ease STRAIGHT at the same pace: a tucked foot's toes are
+            // folded back under it, and rolled over with them folded — and the floor's rows on their
+            // joints — the roll locked and let go at once. (The ball's chain alone until 2026-09-26:
+            // the toe segments rode at their weak posture and the floor bent them, a big toe 32
+            // degrees through a kneel's hold on the generation whose toes fan from the mid-foot.)
+            std::vector<int> footBelow;
+            collectSubtree(pin.node, footBelow);
+            for (const int cur : footBelow) {
+                if (cur == pin.node) {
+                    continue;
+                }
+                const std::size_t c = static_cast<std::size_t>(cur);
+                if (!m_jsToeFlatValid[c]) {
+                    m_jsToeFlatValid[c] = 1;
+                    m_jsToeFlatRef[c] = m_boneEuler[c];
+                }
+                for (int a = 0; a < 3; ++a) {
+                    const float d = glm::clamp(-m_jsToeFlatRef[c][a], -kKneelFlatTurnStepDeg, kKneelFlatTurnStepDeg);
+                    m_jsToeFlatRef[c][a] += d;
+                    if (std::abs(d) > 1.0e-3f) {
+                        s.flatEasing = true;
+                    }
+                }
+                // (While the foot rolls ONTO its top, or lies: through the UNROLL back onto tucked toes
+                // the toes must BEND — a tucked foot's are folded back against the floor under the
+                // ankle — and held straight at the lying stiffness the foot could not tuck: the male
+                // rig's getting-up by the hip jumped 133mm where it had passed, the third generation's 140.)
+                m_jsToeFlatShare[c] = toLying ? flat : 0.0f;
+            }
+        } else {
+            m_jsFootFlatRefValid[node] = 0;
+            std::vector<int> footBelow;
+            collectSubtree(pin.node, footBelow);
+            for (const int cur : footBelow) {
+                if (cur != pin.node) {
+                    m_jsToeFlatValid[static_cast<std::size_t>(cur)] = 0;
+                    m_jsToeFlatShare[static_cast<std::size_t>(cur)] = 0.0f;
+                }
+            }
+        }
+        // The lying model, re-seated on the pose while the foot lies (the ball where it rests, the
+        // ankle where it stands), and its turn back to the standing one once the foot has rolled
+        // back onto its toes (flip, below).
+        const glm::vec3 ballNow(m_poseGlobal[static_cast<std::size_t>(ball)][3]);
+        const glm::vec3 pinNow(m_poseGlobal[node][3]);
+        // The model SWITCHES back to the standing one once the foot stands again (flip: 0 while it
+        // lies or unrolls, 1 after) — and its posture references are the standing ones from then
+        // (a foot found lying has the plantar limit as its drag-start reference, and as the share
+        // fades that would draw it back toward the floor).
+        if (flatFoot && !toLying && !unrolling) {
+            flip = 1.0f;
+            if (!m_jsFootUnrolled[node]) {
+                // (From here the foot is the tucked kneel's: its posture references and the sole's and
+                // toes' held orientations are re-read off the tucked foot, as a drag that found it
+                // tucked would have them, and the rise turns them flat with its progress.)
+                m_jsFootUnrolled[node] = 1;
+                m_jsFlatRiseBase[node] = m_jsRiseProgress;
+                // The RIG's ankle pin goes where the standing ankle will stand: a heel's length
+                // behind the ball, which stays where it lay. Left at the spot the ankle LAY at — a
+                // foot's length ahead — the rig's support polygon (balance, the steps) stood 24cm
+                // ahead of the feet, the heel row pulled the ankle 21cm forward, and every rise
+                // ended on a straight leg on tiptoe with the hips 12.5cm short of the cursor.
+                // (Re-seating it where the ankle STANDS at the handover, with the ball slid under
+                // the ankle through the unroll, was tried on 2026-09-26 and taken out: it moved the
+                // getting-up's jumps about between rigs without settling them.)
+                {
+                    const glm::vec3 standing = standingBallOffset(ball);
+                    const glm::vec3 lyingBall = pin.target + m_jsFlatBallOffset[node];
+                    const glm::vec3 newAnkle = lyingBall - standing;
+                    rig.reseatPin(p, newAnkle.x, newAnkle.z);
+                    m_jsFlatBallOffset[node] = lyingBall - pin.target; // (relative to the re-seated pin: the ball where it lay)
+                }
+                for (std::size_t k = 0; k < m_ikFlatNodes.size(); ++k) {
+                    if (m_ikFlatOwner[k] == pin.node && m_ikFlatNodes[k] >= 0 && static_cast<std::size_t>(m_ikFlatNodes[k]) < n) {
+                        m_ikFlatRot[k] = glm::mat3(m_poseGlobal[static_cast<std::size_t>(m_ikFlatNodes[k])]);
+                        if (static_cast<std::size_t>(m_ikFlatNodes[k]) < m_ikStartEuler.size()) {
+                            m_ikStartEuler[static_cast<std::size_t>(m_ikFlatNodes[k])] = m_boneEuler[static_cast<std::size_t>(m_ikFlatNodes[k])];
+                        }
+                    }
+                }
+            }
+        }
+        // (The ball's target TRACKS the ball while its row is soft — whatever the model: a target
+        // that ran ahead while the row hardened yanked the ball 16cm in the tick the row was back.)
+        if (flat > kKneelFlatTrackFrom) {
+            if (toLying) {
+                m_jsFlatBallOffset[node] = ballNow - pin.target; // (the lying ball, where it rests)
+                m_jsFlatHeelOffset[node] = pinNow - ballNow;
+                m_jsBallTarget[node] = ballNow;
+                m_jsBallTargetValid[node] = 1;
+            } else if (unrolling) {
+                // (Rolling back onto its toes IN PLACE: the ball's spot is the lying one, frozen; the
+                // heel's relation to it is read to the switch — the tucked foot's, for the rise. Sliding
+                // the spot under the ankle through the roll was tried, 2026-09-26, and taken out with
+                // the rest of that variant.)
+                // (... and the ball is held DOWN too, softly, its height target easing to the ball's
+                // floor height at the landing pace and never above where the ball is: free in its
+                // height, the foot flew 15cm into the air on a leg the rise folded up while the foot's
+                // rows were off, and the returning rows brought it down in a tick — 175mm at a
+                // fingertip on the third generation. IK_JS_UNROLL_BALL_FREE is the A/B.)
+                // (... held DOWN too, behind IK_JS_UNROLL_BALL_DOWN: it measured worse than the plane-only
+                // spring on all three rigs it was tried on — the knee's ceiling, below, is what keeps the
+                // foot from flying.)
+                static const bool kBallDown = std::getenv("IK_JS_UNROLL_BALL_DOWN") != nullptr; // A/B probe
+                const float ballFloorY = pin.target.y + standingBallOffset(ball).y;
+                const float ballY = kBallDown ? std::max(ballFloorY, ballNow.y - kKneelFlatLandStep * rig.sizeScale()) : ballNow.y;
+                m_jsFlatHeelOffset[node] = pinNow - ballNow;
+                m_jsBallTarget[node] = glm::vec3(pin.target.x + m_jsFlatBallOffset[node].x, ballY, pin.target.z + m_jsFlatBallOffset[node].z);
+                m_jsBallTargetValid[node] = 1;
+            }
+        }
+        if (flat > 0.0f || flatFoot) {
+            footFreed[p] = 1; // (the floor's rows keep the lying foot up: its ball row is gone)
+        }
+        if (flat > 0.0f) {
+            s.footLying[p] = 1; // (... all but the ankle's and the mid-foot's, which read standing heights)
+        }
+        if (kKneelFlatTrace) {
+            std::fprintf(stderr, "[kneel-flat] %s: want %.2f flat %.2f flip %.2f axis %d ref %.1f limit %.1f euler %.1f knee %d (pinY %.3f above %.3f) ball(%.3f %.3f %.3f) ankle(%.3f %.3f %.3f) pinY %.3f",
+                         m_boneNames[node].c_str(), want, flat, flip, axis, axis >= 0 ? m_jsFootFlatRef[node][axis] : 0.0f, m_jsFootFlatLimit[node],
+                         axis >= 0 ? m_boneEuler[node][axis] : 0.0f, m_jsFootKnee[node], kneePinYTrace, kneeAboveTrace, ballNow.x, ballNow.y, ballNow.z, pinNow.x, pinNow.y, pinNow.z, pin.target.y);
+            {
+                const int bp = m_bones[static_cast<std::size_t>(ball)].parent;
+                if (bp >= 0) {
+                    std::fprintf(stderr, " %s(%.3f %.3f %.3f) e(%.1f %.1f %.1f)", m_boneNames[static_cast<std::size_t>(bp)].c_str(), m_poseGlobal[static_cast<std::size_t>(bp)][3].x,
+                                 m_poseGlobal[static_cast<std::size_t>(bp)][3].y, m_poseGlobal[static_cast<std::size_t>(bp)][3].z, m_boneEuler[static_cast<std::size_t>(bp)].x,
+                                 m_boneEuler[static_cast<std::size_t>(bp)].y, m_boneEuler[static_cast<std::size_t>(bp)].z);
+                }
+            }
+            if (m_jsFootKnee[node] >= 0) {
+                const std::size_t k = static_cast<std::size_t>(m_jsFootKnee[node]);
+                const int kp = m_bones[k].parent;
+                std::fprintf(stderr, " knee(%.3f %.3f %.3f) shin(%.1f %.1f %.1f) parent %s(%.1f %.1f %.1f) foot(%.1f %.1f %.1f)", m_poseGlobal[k][3].x, m_poseGlobal[k][3].y, m_poseGlobal[k][3].z,
+                             m_boneEuler[k].x, m_boneEuler[k].y, m_boneEuler[k].z, kp >= 0 ? m_boneNames[static_cast<std::size_t>(kp)].c_str() : "-",
+                             kp >= 0 ? m_boneEuler[static_cast<std::size_t>(kp)].x : 0.0f, kp >= 0 ? m_boneEuler[static_cast<std::size_t>(kp)].y : 0.0f, kp >= 0 ? m_boneEuler[static_cast<std::size_t>(kp)].z : 0.0f,
+                             m_boneEuler[node].x, m_boneEuler[node].y, m_boneEuler[node].z);
+            }
+            std::fputc(10, stderr);
+        }
+    } else if (m_jsFootFlat.size() == n && !rig.pinIsLive(p) && !rig.pinIsUser(p) && ball >= 0) {
+        if (kneeFoot && !kNoKneelFlat) {
+            // A LYING FOOT UNDER A DRAWN-UP KNEE RIDES ITS SHIN (2026-09-26). The knee-drag's foot
+            // has no lying model — it is planted, swung over, let go of and landed by the knee
+            // drag's own rows — and found LYING (its share from the kneel that made it, and the
+            // ankle at its plantar limit) it was given the STANDING foot's: the sole's and toes'
+            // holds at the lying orientation IN THE WORLD, which a shin lifting off the floor
+            // cannot keep — the ankle dorsiflexed to its limit, the foot stood up on its toe pads
+            // with the ankle 16cm up, and when the hang brought the ankle down under the knee the
+            // toes flipped 147mm in one tick (the half kneel out of a flat kneel). Such a foot
+            // now RIDES: its ankle keeps its lying height (footLying: the ankle's and mid-foot's
+            // floor rows read standing heights), its ball row is off, and the sole's and toes'
+            // holds come in with the trail's flatten toward LEVEL — the foot hangs from its shin
+            // as the shin rises and turns flat for the landing, as a person's does.
+            if (!m_jsFootFlatSeen[node]) {
+                m_jsFootFlatSeen[node] = 1;
+                const int axis = m_jsFootFlatAxis[node];
+                const bool lying = axis >= 0 && m_jsFootFlat[node] > 0.5f &&
+                                   std::abs(m_boneEuler[node][axis] - m_jsFootFlatLimit[node]) < kKneelFlatNearLimitDeg;
+                m_jsFootFlatAtStart[node] = lying ? 1 : 0;
+                m_jsFootFlat[node] = lying ? 1.0f : 0.0f;
+                m_jsFlatLyingY[node] = m_poseGlobal[node][3].y; // (the lying ankle's height, as found)
+                m_jsFlatRollStartY[node] = m_jsFlatLyingY[node];
+            }
+            lyingKneeFoot = m_jsFootFlatAtStart[node] != 0;
+            s.lyingKneeFoot = s.lyingKneeFoot || lyingKneeFoot;
+            flat = lyingKneeFoot ? 1.0f : 0.0f;
+            float refLevel = 0.0f, pitchNowDeg = 0.0f; // (for the trace)
+            if (lyingKneeFoot) {
+                footFreed[p] = 1;     // (the floor's rows on the toes and the ball keep the lying foot up)
+                s.footLying[p] = 1;   // (... the ankle's and the mid-foot's, which read standing heights, off)
+                // ... and its TOES are held STRAIGHT at the lying stiffness (m_jsToeFlatRef/Share,
+                // ikPostureModel) while it rides: at their own weak posture, bending a toe 40 degrees
+                // against the floor cost less than lifting the ankle 3cm against its hang, so the
+                // floor's rows bent them to their limits tick by tick as the foot turned — the hang's
+                // clearance, read off the bent shape, could never take hold — and they sprang back
+                // 100mm at a tip when the turning foot lifted them off. Held, the floor lifts the ankle.
+                {
+                    std::vector<int> footBelow;
+                    collectSubtree(pin.node, footBelow);
+                    for (const int cur : footBelow) {
+                        if (cur == pin.node) {
+                            continue;
+                        }
+                        const std::size_t c = static_cast<std::size_t>(cur);
+                        if (c < m_jsToeFlatValid.size()) {
+                            m_jsToeFlatValid[c] = 1;
+                            m_jsToeFlatRef[c] = glm::vec3(0.0f);
+                            m_jsToeFlatShare[c] = 1.0f;
+                        }
+                    }
+                }
+                // ... AND TURNS TOWARD LEVEL IN THE AIR: the ankle's pitch REFERENCE (ikPostureModel reads
+                // m_jsFootFlatRef at kKneelFlatStiffness over the share) eases from the plantar limit
+                // the lying foot has toward the value that LEVELS the sole — read off the shin's
+                // orientation as it stands, each tick — at kKneelFlatTurnStepDeg a tick, once the knee
+                // has lifted the foot (over kKneeLiftFull .. kKneeTrailFull of lift). A lying foot's
+                // level is 180 degrees away in pitch: no orientation row can say which way round, and
+                // a foot left hanging plantar until its ankle came down landed on its toe tips pointing
+                // down and back — a local minimum (any forward turn dipped the toes into the floor's
+                // rows first), the foot 88 degrees from level and 15cm from its hang on every rig.
+                const int axis = m_jsFootFlatAxis[node];
+                if (axis >= 0) {
+                    if (!m_jsFootFlatRefValid[node]) {
+                        m_jsFootFlatRefValid[node] = 1;
+                        m_jsFootFlatRef[node] = m_boneEuler[node]; // (the two other channels stay as found)
+                    }
+                    const glm::mat3 R(m_poseGlobal[node]);
+                    glm::vec3 bindFore = m_ikBindPos[static_cast<std::size_t>(ball)] - m_ikBindPos[node];
+                    glm::vec3 bindForeH = bindFore;
+                    bindForeH.y = 0.0f;
+                    if (glm::length(bindFore) > 1.0e-4f && glm::length(bindForeH) > 1.0e-4f) {
+                        const glm::vec3 lateralLocal0 = glm::normalize(glm::cross(glm::vec3(0.0f, 1.0f, 0.0f), bindForeH));
+                        glm::vec3 lateralNow = R * lateralLocal0;
+                        lateralNow.y = 0.0f;
+                        if (glm::length(lateralNow) > 0.2f) {
+                            lateralNow = glm::normalize(lateralNow);
+                            const glm::vec3 headingDir = glm::normalize(glm::cross(lateralNow, glm::vec3(0.0f, 1.0f, 0.0f)));
+                            const glm::vec3 fore = glm::normalize(R * bindFore);
+                            const float pitchNow = std::atan2(-fore.y, glm::dot(fore, headingDir));      // toes down positive; back and down > 90
+                            const float pitchBind = std::atan2(-bindFore.y, glm::length(bindForeH));     // the level sole's droop (~20 degrees)
+                            const bool plantarPositive = m_jsFootFlatLimit[node] > m_jsFootFlatTuck[node];
+                            const float dPlantar = glm::degrees(pitchBind - pitchNow);
+                            pitchNowDeg = glm::degrees(pitchNow);
+                            s.lyingFootPitchExcessDeg = std::max(s.lyingFootPitchExcessDeg, glm::degrees(pitchNow - pitchBind));
+                            refLevel = glm::clamp(m_boneEuler[node][axis] + (plantarPositive ? dPlantar : -dPlantar),
+                                                  m_bones[node].rotMin[axis], m_bones[node].rotMax[axis]);
+                            const float turn = glm::smoothstep(kKneeLiftFull * legScale, kKneeTrailFull * legScale, kneeLift);
+                            const float step = kKneelFlatTurnStepDeg * 2.0f * turn;
+                            const float d = glm::clamp(refLevel - m_jsFootFlatRef[node][axis], -step, step);
+                            m_jsFootFlatRef[node][axis] += d;
+                            if (std::abs(d) > 1.0e-3f) {
+                                s.flatEasing = true;
+                            }
+                        }
+                    }
+                }
+            }
+            if (kKneelFlatTrace) {
+                std::fprintf(stderr, "[kneel-flat] %s: the dragged knee's foot, lying %d, pitch now %.1f, ref %.1f -> level %.1f, lift %.3f\n", m_boneNames[node].c_str(),
+                             lyingKneeFoot ? 1 : 0, pitchNowDeg, m_jsFootFlatAxis[node] >= 0 ? m_jsFootFlatRef[node][m_jsFootFlatAxis[node]] : 0.0f, refLevel, kneeLift);
+            }
+            if (!lyingKneeFoot) {
+                m_jsFootFlatRefValid[node] = 0;
+            }
+        } else {
+            // (A flat kneel A/B'd off: no lying model this drag.)
+            m_jsFootFlat[node] = 0.0f;
+            m_jsFootFlatRefValid[node] = 0;
+        }
+    }
     // A knee COMING DOWN over its planted foot (the rig's HARD live pin: a kneel) is held hard in
     // its HEIGHT — that is what brings it onto the floor — and only SOFTLY to its place
     // (kKneeLandingHold: enough that it does not wander, a knee left free drifted 12cm inward
@@ -282,6 +769,12 @@ void Armature::ikPinRows(IkSolveScratch& s, std::size_t p) {
                 if (ceilingShare > 1.0e-3f) {
                     handCeilings.emplace_back(pin.node, pin.target.y, ceilingShare);
                 }
+                // (Tried and taken out the same day, 2026-09-26: the held arm's posture references
+                // FOLLOWING the pose while the ceiling holds, so that the arm would not spring back
+                // to "folded under the chest" when the ceiling let go. It did not stop the prone
+                // push-up's hand shooting up at the release — 247mm where it read 196 — and added a
+                // 104mm finger pop to the prone descent's hold: what springs at that release is the
+                // TRUNK the arm strut was holding down, not the arm.)
             }
         }
         // A HAND ON THE FLOOR LIES ON ITS PALM. Its place is held where the rig holds it - at the
@@ -386,6 +879,10 @@ void Armature::ikPinRows(IkSolveScratch& s, std::size_t p) {
                                                   : 1.0f;
                         targetRot = glm::mat3_cast(glm::slerp(from, to, m_jsPalmEase[hnode]));
                     }
+                    // (... and never more than kPalmLeadDeg ahead of the hand: an arm folded under a prone chest
+                    // cannot turn its pinned hand, and the target sailing on to flat snapped the arm into another
+                    // basin — the one-tick unfold as the hips rose off the belly.)
+                    targetRot = capPalmLead(glm::mat3(m_poseGlobal[hnode]), targetRot);
                     JointOrientationTask flat;
                     flat.bone = wrist;
                     flat.target = glm::dmat3(targetRot);
@@ -500,6 +997,14 @@ void Armature::ikPinRows(IkSolveScratch& s, std::size_t p) {
                                            ? m_jsStartPos[socketIndex].y - m_jsStartPos[node].y
                                            : thigh;
                     kneeBelowHips = thigh > 0.0f && over < kKneeUnloadHeight * thigh;
+                    if (kneeBelowHips && node < m_jsKneeHeldDown.size()) {
+                        m_jsKneeHeldDown[node] = 1; // (its lying foot stays lying: the flat block)
+                    }
+                    // (Tried and taken out, 2026-09-26: holding a knee down while the lying foot below it
+                    // rolled back onto its toes, so the weight would stay on the knees while the toes
+                    // tucked under. It stalled the rise — the grab 47mm behind its cursor — and let go of
+                    // everything in one tick at the handover: 240-260mm jumps on every rig. The unroll's
+                    // foot is held by its BALL instead, hard in place: the leg straightens over it.)
                     static const bool kKneeTrace = std::getenv("IK_JS_KNEE_CEILING_TRACE") != nullptr;
                     if (kKneeTrace) {
                         std::fprintf(stderr, "[knee-ceiling] node=%zu socket=%d over=%.3f thigh=%.3f below=%d rise=%.2f", node, socket, over, thigh, kneeBelowHips ? 1 : 0, m_jsRootRise);
@@ -550,6 +1055,15 @@ void Armature::ikPinRows(IkSolveScratch& s, std::size_t p) {
                 if (!kNoDipUnload) {
                     gone = std::max(gone, m_jsContactRise);
                 }
+                // (A HAND the rise has unloaded outright is TAUT to the rig's lift-off — see
+                // m_jsContactRiseUnloaded: its arm has no length to give by the solve's measure,
+                // and left to the rig's — the junction's reach — a straight arm on a shrugged
+                // collar never read taut, its hand riding the rising chest 17cm into the air
+                // weightless with its pin standing.)
+                if (std::max(m_jsRootRise, kNoDipUnload ? 0.0f : m_jsContactRise) >= kRiseUnloadedShare &&
+                    m_jsWristOf.size() == n && m_jsWristOf[node] >= 0 && node < m_jsContactRiseUnloaded.size()) {
+                    m_jsContactRiseUnloaded[node] = 1;
+                }
             }
             task.weight *= gone >= 1.0f ? 0.0 : std::pow(10.0, -6.0 * static_cast<double>(gone));
             contactGone = gone;
@@ -570,6 +1084,20 @@ void Armature::ikPinRows(IkSolveScratch& s, std::size_t p) {
             for (const auto& [kp, knode, kheight] : kneeCeilings) {
                 if (kp == p && gone < 0.999f) {
                     handCeilings.emplace_back(knode, kheight, static_cast<float>(std::pow(10.0, -6.0 * static_cast<double>(gone))));
+                }
+            }
+            // THE KNEE LIFTS AS ITS FOOT ROLLS ONTO ITS TOES (A KNEELING FOOT LIES FLAT, 2026-09-26): a
+            // knee whose lying foot is still rolling back gets a ceiling that RISES with the roll's
+            // progress (kKneeUnrollLift), so the knee comes up as the toes tuck under and no faster.
+            // Held down outright until the foot had handed over, the rise stalled (the grab 47mm behind
+            // its cursor) and let go of everything in one tick — 260mm; free, the knee lifted with the
+            // hips while the foot still hung in the air on its soft spring, and where the foot hung when
+            // its rows returned decided the pop: 52 to 275mm, rig by rig and variant by variant.
+            if (rig.isLegJointAboveFoot(pin.node) && m_jsFootUnrollProgress.size() == n) {
+                for (std::size_t f = 0; f < m_jsFootKnee.size() && f < m_jsFootWasFlat.size() && f < m_jsFootUnrolled.size(); ++f) {
+                    if (m_jsFootKnee[f] == static_cast<int>(node) && m_jsFootWasFlat[f] && !m_jsFootUnrolled[f]) {
+                        handCeilings.emplace_back(pin.node, pin.target.y + m_jsFootUnrollProgress[f] * kKneeUnrollLift * rig.sizeScale(), 1.0f);
+                    }
                 }
             }
         }
@@ -594,8 +1122,14 @@ void Armature::ikPinRows(IkSolveScratch& s, std::size_t p) {
     // the hips 22-35cm up, whatever the cursor asked. The foot's rows fade with the hips'
     // travel AHEAD of its knee (kProneFootFreeFrom .. Full, figure-scaled); the floor's rows
     // keep it from sinking, and nothing else holds it down. Not under a limb's drag.
+    // (... and NOT a LYING foot, 2026-09-26: the rule is a tucked foot's, whose shin must fold up
+    // behind as the thigh lays forward — a lying foot's shin stays where it lies and the knee
+    // OPENS as the hips go ahead of it, the legs straightening into a flat prone. Let go of
+    // outright, the lying ankle's one hold — the soft heel row at its lying place — went in a
+    // tick, the thigh's twist relaxed 9 degrees toward its reference and swung the lying leg up
+    // and sideways: 140mm at a toe, and both legs pointing up in the prone. A/B: IK_JS_NO_KNEEL_FLAT.)
     double footFree = 0.0;
-    if (!kneeFoot && !rig.pinIsUser(p) && !rig.pinIsLive(p) && ball >= 0 && effector == root && m_jsProneShare > 0.0f) {
+    if (!kneeFoot && !toLying && !rig.pinIsUser(p) && !rig.pinIsLive(p) && ball >= 0 && effector == root && m_jsProneShare > 0.0f) {
         for (std::size_t q = 0; q < pins.size(); ++q) {
             if (q == p || !rig.pinIsLive(q) || pins[q].node < 0) {
                 continue;
@@ -618,6 +1152,12 @@ void Armature::ikPinRows(IkSolveScratch& s, std::size_t p) {
     if (footFree > 0.0) {
         footFreed[p] = 1; // (... and the floor's rows take over its height: see floorExempt)
     }
+    if (unrolling) {
+        // (A KNEELING FOOT LIES FLAT: the ankle rides its shin while the foot rolls back onto its
+        // toes. After the handover the row is back in full, its target measured from the tucked
+        // foot as it stands — see m_jsFlatRiseBase.)
+        task.weight *= std::pow(10.0, -kKneelFlatRowDecades * static_cast<double>(flat));
+    }
     problem.positions.push_back(task);
     if (kneeFoot) {
         kneePlaceRow = problem.positions.size();
@@ -632,15 +1172,26 @@ void Armature::ikPinRows(IkSolveScratch& s, std::size_t p) {
         // The ball bears, hard, carried with the pin target (a step swings the whole foot)
         // and approached at the pins' pace from where the ball is (see m_jsBallTarget).
         {
-            const glm::vec3 ballGoal = pin.target + m_jsBallOffset[node];
+            glm::vec3 ballGoal = pin.target + m_jsBallOffset[node];
+            if (flatFoot) {
+                // (The lying ball, and — once the foot has rolled back onto its toes — the standing
+                // model's: the ball where it lay, at its own floor height, the re-seated ankle pin a
+                // heel's length behind it.)
+                const glm::vec3 standing = standingBallOffset(ball);
+                // (Where the ball LAY, at its own floor height: a kneeling person stands up without
+                // moving her feet — the toes tuck under in place, the ankle rises over them, and the
+                // heel comes down behind.)
+                ballGoal = pin.target + glm::vec3(m_jsFlatBallOffset[node].x, flip >= 1.0f ? standing.y : m_jsFlatBallOffset[node].y, m_jsFlatBallOffset[node].z);
+            }
             if (!m_jsBallTargetValid[node]) {
                 m_jsBallTarget[node] = glm::vec3(m_poseGlobal[static_cast<std::size_t>(ball)][3]);
                 m_jsBallTargetValid[node] = 1;
             }
             const glm::vec3 ballGap = ballGoal - m_jsBallTarget[node];
             const float ballLen = glm::length(ballGap);
-            if (ballLen > kPinEaseStep) {
-                m_jsBallTarget[node] += ballGap * (kPinEaseStep / ballLen);
+            const float ballStep = (flatFoot && flip >= 1.0f) ? kKneelFlatLandStep : kPinEaseStep; // (a foot rolled back to standing lands gently)
+            if (ballLen > ballStep) {
+                m_jsBallTarget[node] += ballGap * (ballStep / ballLen);
                 pinsEasing = true;
             } else {
                 m_jsBallTarget[node] = ballGoal;
@@ -659,9 +1210,9 @@ void Armature::ikPinRows(IkSolveScratch& s, std::size_t p) {
         {
             const float scale = rig.sizeScale();
             const glm::vec3 bindOffset = m_ikBindPos[node] - m_ikBindPos[static_cast<std::size_t>(ball)];
-            const glm::vec3& found = m_jsHeelOffset[node];
+            const glm::vec3& found = flatFoot ? m_jsFlatHeelOffset[node] : m_jsHeelOffset[node];
             const bool pitched = std::abs(found.y - bindOffset.y) > 0.01f * scale;
-            if (pitched || m_jsRootRise > 0.0f) {
+            if (pitched || m_jsRootRise > 0.0f || flatFoot) {
                 // Flat: the bind offset turned to the foot's heading — its LATERAL axis's, as the
                 // drag found it (the bone's own: a pitch does not move it). It was read off the
                 // ankle-to-ball offset's horizontal part, which a foot standing on tucked toes
@@ -677,9 +1228,51 @@ void Armature::ikPinRows(IkSolveScratch& s, std::size_t p) {
                     const float yaw = std::atan2(-lateralFound.z, lateralFound.x);
                     flat = glm::mat3_cast(glm::angleAxis(yaw, glm::vec3(0.0f, 1.0f, 0.0f))) * bindOffset;
                 }
+                float turn = m_jsRiseProgress;
+                if (flatFoot && flip >= 1.0f) { // (from the tucked foot the handover left, not the drag's start)
+                    const float base = m_jsFlatRiseBase[node];
+                    turn = base < 0.999f ? glm::clamp((m_jsRiseProgress - base) / (1.0f - base), 0.0f, 1.0f) : 1.0f;
+                }
                 problem.positions[heelTask].target =
-                    glm::dvec3(m_jsBallTarget[node] + glm::mix(found, flat, m_jsRiseProgress));
+                    glm::dvec3(m_jsBallTarget[node] + glm::mix(found, flat, turn));
             }
+            // (A KNEELING FOOT LIES FLAT: the SHIN lies down with it, and STAYS. Nothing else brings
+            // the ankle down once the foot no longer props it — the floor's rows only push up, and
+            // the model has no gravity — so the heel's soft row asks the ankle DOWN to the lying
+            // height (the knee's planted height: the shin's radius), by the foot's share; and it
+            // holds the ankle at its planted PLACE: a lying shin is held to the floor by friction,
+            // and with the ball's pin gone the thigh's twist relaxed to its reference and swung the
+            // shin 10cm inward across the floor through a kneel's still hold.)
+            // (... and IN THE AIR: the ankle keeps the height the roll found it at through the
+            // roll's first half — the ball and the toes swing up and back off the floor — and the
+            // shin lies down through the second. Asked down from the first tick, the foot rolled
+            // over its ball and toe tips resting on the floor: the toes folded to their limits
+            // under it, the floor's rows on their joints locked the roll, and the foot flipped 8cm
+            // in the tick the active set gave — 131mm at a toe in a kneel's still hold.)
+            if (flat > 0.0f) {
+                const float rollDone = glm::smoothstep(0.5f, 1.0f, rollProgress); // (1 for a foot found lying)
+                const float lyingY = glm::mix(m_jsFlatRollStartY[node], m_jsFlatLyingY[node], rollDone);
+                const glm::dvec3 lying(pin.target.x, lyingY, pin.target.z);
+                problem.positions[heelTask].target = glm::mix(problem.positions[heelTask].target, lying, static_cast<double>(flat));
+            }
+        }
+        // THE TIPTOE (dragIkTick, m_jsTiptoe): a hand pulled up beyond its reach lifts the heels.
+        // The root's home rises by the lift, and each heel's target with it — the ankle pitched
+        // about ITS ball by m_jsTiptoeTheta: up by d sin t + h0 (cos t - 1), toward the ball by
+        // d (1 - cos t) + h0 sin t, this foot's own d and h0 read off the target as it stands (the
+        // ankle over its ball). Left where it was, the soft heel row (2000/m^2, twice) pulled the
+        // heels down against the root's home and the body rose a fifth of the way.
+        if (m_jsTiptoe > 0.0f && !rig.pinIsLive(p) && !rig.pinIsUser(p) && !kneeFoot) {
+            const glm::dvec3 off = problem.positions[heelTask].target - glm::dvec3(m_jsBallTarget[node]);
+            const glm::dvec3 horizontal(off.x, 0.0, off.z);
+            const double d = glm::length(horizontal);
+            const double h0 = off.y;
+            const double t = m_jsTiptoeTheta;
+            glm::dvec3 delta(0.0, d * std::sin(t) + h0 * (std::cos(t) - 1.0), 0.0);
+            if (d > 1.0e-6) {
+                delta -= horizontal / d * (d * (1.0 - std::cos(t)) + h0 * std::sin(t));
+            }
+            problem.positions[heelTask].target += delta;
         }
         JointPositionTask bear;
         bear.bone = ball;
@@ -699,7 +1292,11 @@ void Armature::ikPinRows(IkSolveScratch& s, std::size_t p) {
         static const bool kKneelFootHard = std::getenv("IK_JS_KNEEL_FOOT_HARD") != nullptr; // A/B probe
         if (!kKneelFootHard && !kneeFoot && !rig.pinIsUser(p)) {
             for (std::size_t q = 0; q < pins.size(); ++q) {
-                if (q == p || !rig.pinIsLive(q) || pins[q].node < 0) {
+                // (A SHADOW — a lifted contact the body still leans on, its hold long faded — is no
+                // knee ON the floor: a foot under one is a standing foot, its place hard. Taken for
+                // a knee, the feet of a figure rising by the chest off a kneel kept the kneeling
+                // foot's soft place while she stood up on them: 105mm jumps, 175 on one rig.)
+                if (q == p || !rig.pinIsLive(q) || rig.pinIsShadow(q) || pins[q].node < 0) {
                     continue;
                 }
                 bool above = false;
@@ -718,6 +1315,28 @@ void Armature::ikPinRows(IkSolveScratch& s, std::size_t p) {
         // and the ankle turns under them as the shin comes up. Let go of too, the foot — held
         // at its dorsiflexion limit under the tucked toes — sprang 10cm in the tick.)
         bear.weight *= 1.0 - footFree;
+        // (A KNEELING FOOT LIES FLAT: rolling onto its top the ball is no bearing — the row goes by
+        // decades over the share, its target tracking the ball. Let go of by its knee the foot
+        // rolls back onto its TOES IN PLACE: the ball is pinned where it lay and the ankle rises
+        // over it as the shin lifts. Faded through that roll too, the free leg followed its
+        // kneeling posture references while the rise drew the hips up and away, and the foot
+        // trailed 30cm behind in the air until its rows came back — a 130mm yank.)
+        if (toLying || lyingKneeFoot) { // (a lying foot under a drawn-up knee: no bearing either, its toes on the floor's rows)
+            bear.weight *= std::pow(10.0, -kKneelFlatRowDecades * static_cast<double>(flat));
+        } else if (unrolling) {
+            // (A soft spring on the ball's PLACE at its lying spot — and, softly too, on its HEIGHT
+            // toward the floor (the tracking above): the toes come up through the roll, and pinned
+            // HARD at the lying height they went 9cm through the floor; pinned hard in every axis
+            // (tried 2026-09-26) the tuck was infeasible — the toes at their curl limits against a
+            // nailed ball, the solve failing, the hips collapsing back onto the knees. Soft, the foot
+            // cannot trail after a rising pelvis, nor fly up on a leg the rise folds.)
+            static const bool kBallDown2 = std::getenv("IK_JS_UNROLL_BALL_DOWN") != nullptr; // A/B probe
+            bear.weight = kKneelFootHold;
+            bear.axisScale = kBallDown2 ? glm::dvec3(1.0, 1.0, 1.0) : glm::dvec3(1.0, 0.0, 1.0);
+        }
+        // (After the handover the row is HARD at once: its target is the spot the spring held the
+        // ball at, so nothing is yanked — faded in over the share the free foot trailed the rising
+        // body 22cm and snapped back 195mm when the row was there.)
         problem.positions.push_back(bear);
         // The sole's frame: pitch (about the foot's LATERAL axis), heading (about the
         // vertical), level (about the fore axis) — built from the foot BONE's own lateral
@@ -743,6 +1362,10 @@ void Armature::ikPinRows(IkSolveScratch& s, std::size_t p) {
         // asked flat, its toes pushed 18mm into the floor against the floor's 1e7 rows, the
         // solve rejected every step from a cost of 6000 and the knee shot 8cm sideways.)
         float flatten = m_jsRootRise > 0.0f ? m_jsRiseProgress : 0.0f;
+        if (flatFoot && flip >= 1.0f && m_jsRootRise > 0.0f) { // (a foot rolled back onto its toes turns flat from the handover on)
+            const float base = m_jsFlatRiseBase[node];
+            flatten = base < 0.999f ? glm::clamp((m_jsRiseProgress - base) / (1.0f - base), 0.0f, 1.0f) : 1.0f;
+        }
         if (static_cast<int>(p) == kneeFootPin && !kHangAsFound) {
             flatten = std::max(flatten, glm::smoothstep(kKneeLiftFull * legScale, kKneeTrailFull * legScale, kneeLift));
         }
@@ -771,7 +1394,11 @@ void Armature::ikPinRows(IkSolveScratch& s, std::size_t p) {
                 // kneel (toes tucked) or a deep crouch (heels lifted) puts its heels down as
                 // it stands. Held to the pitched orientation, she stood up with her heels
                 // 4cm off the floor — the pitch hold's pull meeting the soft heel row's.
-                if (flatten > 0.0f) {
+                // (A lying foot under a drawn-up knee: its target is LEVEL from the start — the
+                // lying orientation is not one a rising shin can keep — and the hold's weight comes
+                // in with the flatten, below.)
+                const float soleTurn = lyingKneeFoot ? 1.0f : flatten;
+                if (soleTurn > 0.0f) {
                     glm::vec3 lateralNow = target * lateralLocal;
                     lateralNow.y = 0.0f;
                     if (glm::length(lateralNow) > 0.2f) {
@@ -779,7 +1406,7 @@ void Armature::ikPinRows(IkSolveScratch& s, std::size_t p) {
                         const float yaw = std::atan2(glm::cross(lateralLocal, lateralNow).y,
                                                      glm::dot(lateralLocal, lateralNow));
                         const glm::quat flat = glm::angleAxis(yaw, glm::vec3(0.0f, 1.0f, 0.0f));
-                        target = glm::mat3_cast(glm::slerp(glm::quat_cast(target), flat, flatten));
+                        target = glm::mat3_cast(glm::slerp(glm::quat_cast(target), flat, soleTurn));
                     }
                 }
                 hold.target = glm::dmat3(target);
@@ -794,6 +1421,21 @@ void Armature::ikPinRows(IkSolveScratch& s, std::size_t p) {
                 static const double kKneeHeading = envOr("IK_JS_KNEEHEADING", kKneeFootHeadingWeight);
                 if (static_cast<int>(p) == kneeFootPin) {
                     hold.axisWeights[1] = kKneeHeading;
+                }
+                // (A KNEELING FOOT LIES FLAT: the sole's hold goes with the foot's share. Its pitch is
+                // the plantar reference's; and its HEADING — the standing foot's, as the drag found
+                // it — is not a lying foot's: a kneel turns the shins in over the feet by the thighs'
+                // twist, and held to the heading it stood with the lying foot twisted 18 and rolled
+                // 25 degrees against its shin to keep it. A lying foot follows its shin, its own
+                // channels at their references.)
+                if (lyingKneeFoot) {
+                    // (Rides its shin, and is held LEVEL over the trail's second half: a lying foot's
+                    // level target is 180 degrees away in pitch, and an orientation row that far off
+                    // cannot say which way round — by the trail's middle the shin has lifted the foot
+                    // to hang, the error is under 120 degrees, and the hold turns it flat to land.)
+                    hold.axisWeights *= static_cast<double>(glm::smoothstep(0.3f, 1.0f, flatten));
+                } else {
+                    hold.axisWeights *= std::pow(10.0, -kKneelFlatRowDecades * static_cast<double>(flat));
                 }
                 // (A foot let go of behind a planted knee — THE FEET COME UP — keeps its sole's
                 // hold, but two decades softer: at the heading's 4e6 the floor's rows lost, and
@@ -823,6 +1465,10 @@ void Armature::ikPinRows(IkSolveScratch& s, std::size_t p) {
                 }
                 toes.target = glm::dmat3(toeTarget);
                 toes.weight = kToeHoldWeight;
+                // (A KNEELING FOOT LIES FLAT: the toes' hold — to the level orientation the drag
+                // found them at — goes with the foot's share while the foot rolls onto its top; a
+                // foot found lying keeps it, its found orientation being the lying one.)
+                toes.weight *= std::pow(10.0, -6.0 * static_cast<double>(flat));
                 if (static_cast<int>(p) == kneeFootPin) {
                     // (The toes turn WITH their foot: their yaw is locked to it, so a toe
                     // hold in full was the foot's heading held hard by another name.)
@@ -833,6 +1479,14 @@ void Armature::ikPinRows(IkSolveScratch& s, std::size_t p) {
                     toes.perAxis = true;
                     toes.frame = glm::dmat3(lateral, upSquare, glm::cross(lateral, upSquare));
                     toes.axisWeights = glm::dvec3(kToeHoldWeight, kKneeHeading, kToeHoldWeight);
+                    if (lyingKneeFoot) {
+                        // (A LYING FOOT UNDER A DRAWN-UP KNEE: no toes' hold at all — their posture
+                        // reference, the straight toes the lying foot has, is what a landing foot
+                        // wants too. Held to "level" — 127 degrees away for toes lying on their top —
+                        // at 4e4, the drag's first step pushed them 16mm into the floor.)
+                        toes.weight *= 1.0e-8;
+                        toes.axisWeights *= 1.0e-8;
+                    }
                 }
                 // (The ball and its toe mates together weigh what one ball does: at the full
                 // weight each, five level holds against a foot rolling onto its edge under a
@@ -898,6 +1552,29 @@ void Armature::ikPinRowsEnd(IkSolveScratch& s) {
     int& elbowHeldPin = s.elbowHeldPin;
     glm::vec3& elbowGoal = s.elbowGoal;
     JointSolver::Problem& problem = s.problem;
+    // (The ankle height at which every joint of the dragged knee's foot clears the floor, the foot
+    // shaped as it is now: A KNEELING FOOT LIES FLAT, the lying foot under a drawn-up knee.)
+    const auto lyingFootHangY = [&]() {
+        float y = -1.0e9f;
+        if (kneeAnkle < 0 || static_cast<std::size_t>(kneeAnkle) >= n) {
+            return y;
+        }
+        const float ankleY = m_poseGlobal[static_cast<std::size_t>(kneeAnkle)][3].y;
+        std::vector<int> foot;
+        collectSubtree(kneeAnkle, foot);
+        for (const int j : foot) {
+            const float jointY = m_poseGlobal[static_cast<std::size_t>(j)][3].y;
+            y = std::max(y, -m_transform[3][1] + s.rig.floorClearance(j) + (ankleY - jointY));
+        }
+        // (... plus a CLEARANCE while the foot still points down past level, fading as it comes
+        // level so the landing is a landing: hung exactly at the height that put its lowest joint AT
+        // the floor, the toes dragged and the floor's rows bent them up to their limits tick by
+        // tick — the hang read off the shape the rows had just bent — and they sprang back 100mm
+        // at a tip when the turning foot lifted them off.)
+        y += kLyingFootHangClear * s.rig.sizeScale() *
+             glm::smoothstep(kLyingFootHangClearFromDeg, kLyingFootHangClearToDeg, s.lyingFootPitchExcessDeg);
+        return y;
+    };
     std::vector<char>& pinned = s.pinned;
     bool& pinsEasing = s.pinsEasing;
     std::array<std::size_t, 4>& kneeFootRows = s.kneeFootRows;
@@ -911,7 +1588,7 @@ void Armature::ikPinRowsEnd(IkSolveScratch& s) {
             m_jsBallTargetValid[i] = 0;
         }
     }
-    m_jsPinsEasing = pinsEasing;
+    m_jsPinsEasing = pinsEasing || m_jsWeightEasing || s.flatEasing; // (... or the weight shift's home still on its way: ikPostureModel; or a foot still rolling onto its top, or back)
     // (A hand whose contact is gone lets go of its fingertip hold: the next landing plants it anew.)
     for (std::size_t i = 0; i < m_jsHandTipValid.size() && i < handTipHeld.size(); ++i) {
         if (!handTipHeld[i]) {
@@ -967,6 +1644,13 @@ void Armature::ikPinRowsEnd(IkSolveScratch& s) {
             }
             if (spring + hang > 0.0) {
                 place.target = (place.target * spring + under * hang) / (spring + hang);
+                if (s.lyingKneeFoot) {
+                    // (A LYING FOOT UNDER A DRAWN-UP KNEE hangs CLEAR: the ankle's target is never lower
+                    // than what puts the foot's lowest joint at its clearance given the foot's shape
+                    // NOW — its toes trail behind and below it until the pitch reference has turned it
+                    // level, and hung at the standing ankle height meanwhile it came down onto them.)
+                    place.target.y = std::max(place.target.y, static_cast<double>(lyingFootHangY()));
+                }
                 // THE HANG PULLS DOWN TOO (2026-09-22): the row held the ankle in the floor's plane
                 // only, its height left to the floor's rows — and a foot that lifts off behind a
                 // rising knee had nothing to bring it down: on a half-size character the shin
@@ -1042,6 +1726,9 @@ void Armature::ikPinRowsEnd(IkSolveScratch& s) {
         JointPositionTask hang;
         hang.bone = kneeAnkle;
         hang.target = glm::dvec3(ikKneeHangUnder(s));
+        if (s.lyingKneeFoot) {
+            hang.target.y = std::max(hang.target.y, static_cast<double>(lyingFootHangY())); // (see the merged row)
+        }
         hang.weight = kHang * static_cast<double>(1.0f - plant);
         static const bool kHangFlat2 = std::getenv("IK_JS_KNEE_HANG_FLAT") != nullptr; // A/B probe
         hang.axisScale = kHangFlat2 ? glm::dvec3(1.0, 0.0, 1.0) : glm::dvec3(1.0, 1.0, 1.0);
@@ -1173,6 +1860,44 @@ void Armature::ikCursorRows(IkSolveScratch& s) {
                 const glm::quat flat = glm::angleAxis(yaw, glm::vec3(0.0f, 1.0f, 0.0f));
                 target = glm::mat3_cast(glm::slerp(flat, glm::quat_cast(target), slideAtStart));
             }
+            // THE SOLE TURNS FLAT AS THE FOOT COMES DOWN (2026-09-25; IK_JS_NO_SOLE_EASE): the
+            // hold's target is eased from the rotation the slide FOUND the foot at — the tick the
+            // target came within the slide's band — toward its flat target at kSoleTurnStepDeg a
+            // tick, and the ease only ever LEADS (a foot already further along is met there). A
+            // foot lifted and carried on a taut leg rides its shin, 50 degrees from flat (once the
+            // weight shift took the hips over the standing foot, a foot carried 35cm sideways
+            // stood 57cm outside its socket); the hold, at a fiftieth of its weight already
+            // twenty times the ankle's posture term, flipped it flat in two ticks: 85mm at a toe,
+            // on four of the newest generation's characters and the reference rig alike.
+            static const bool kNoSoleEase = std::getenv("IK_JS_NO_SOLE_EASE") != nullptr; // A/B probe
+            if (!kNoSoleEase) {
+                if (!m_jsSoleEaseValid) {
+                    m_jsSoleEaseFrom = glm::mat3(m_poseGlobal[e]);
+                    m_jsSoleEase = 0.0f;
+                    m_jsSoleEaseValid = true;
+                }
+                if (m_jsSoleEase < 1.0f) {
+                    const glm::quat from = glm::normalize(glm::quat_cast(m_jsSoleEaseFrom));
+                    glm::quat       to = glm::normalize(glm::quat_cast(target));
+                    if (glm::dot(from, to) < 0.0f) {
+                        to = -to;
+                    }
+                    glm::quat now = glm::normalize(glm::quat_cast(glm::mat3(m_poseGlobal[e])));
+                    if (glm::dot(now, to) < 0.0f) {
+                        now = -now;
+                    }
+                    const float whole = glm::degrees(2.0f * std::acos(glm::clamp(glm::dot(from, to), -1.0f, 1.0f)));
+                    const float left = glm::degrees(2.0f * std::acos(glm::clamp(glm::dot(now, to), -1.0f, 1.0f)));
+                    const float reached = whole > 1.0e-3f ? glm::clamp(1.0f - left / whole, 0.0f, 1.0f) : 1.0f;
+                    m_jsSoleEase = whole > kSoleTurnStepDeg
+                                       ? std::min(1.0f, std::max(m_jsSoleEase, reached) + kSoleTurnStepDeg / whole)
+                                       : 1.0f;
+                    if (m_jsSoleEase < 1.0f) {
+                        target = glm::mat3_cast(glm::slerp(from, to, m_jsSoleEase));
+                        m_jsPinsEasing = true; // (the settle waits for the sole to arrive, as for a pin)
+                    }
+                }
+            }
             const glm::dvec3 upAxis(0.0, 1.0, 0.0);
             const glm::dvec3 lateral = glm::normalize(glm::dvec3(target * lateralLocal));
             glm::dvec3 upSquare = upAxis - lateral * glm::dot(lateral, upAxis);
@@ -1213,6 +1938,21 @@ void Armature::ikCursorRows(IkSolveScratch& s) {
         glm::vec3         travel = *dragTarget - m_jsEffectorStartPos;
         travel.y = 0.0f;
         if (handSlide > 1.0e-3f && glm::length(fingers) > 1.0e-4f) {
+            // (A hand being PLACED on the floor is landing, and its arm is out of the fold retry as
+            // a landed hand's is (JointSolverDof::foldRetry). Kicked, a straight arm reaching the
+            // floor from a standing fold flipped its hand between the palm frame's basins every
+            // tick of the hold: 133mm at a thumb tip on a heavy character, the grab oscillating
+            // 1.8mm; 38 and 0.03 without the kick.)
+            if (handSlide > 0.5f) {
+                const int junction = rig.limbJunction(effector);
+                for (int cur = effector; cur >= 0 && cur != junction && cur != root; cur = m_bones[static_cast<std::size_t>(cur)].parent) {
+                    for (JointSolverDof& dof : problem.dofs) {
+                        if (dof.bone == cur) {
+                            dof.foldRetry = false;
+                        }
+                    }
+                }
+            }
             const glm::vec3 f = fingers / glm::length(fingers);
             const glm::vec3 down(0.0f, -1.0f, 0.0f);
             glm::vec3       palm = down - f * glm::dot(down, f);
@@ -1239,6 +1979,7 @@ void Armature::ikCursorRows(IkSolveScratch& s) {
                     m_jsHandSlideEase = whole > kPalmTurnStepDeg ? std::min(1.0f, m_jsHandSlideEase + kPalmTurnStepDeg / whole) : 1.0f;
                     lieRot = glm::mat3_cast(glm::slerp(from, to, m_jsHandSlideEase));
                 }
+                lieRot = capPalmLead(glm::mat3(m_poseGlobal[hnode]), lieRot); // (never more than kPalmLeadDeg ahead of the hand)
                 const glm::dvec3 up(0.0, 1.0, 0.0);
                 const glm::dvec3 fore(h);
                 static const double kPitch = envOr("IK_JS_SLIDEPITCH", kSlideSolePitchWeight);
@@ -1253,6 +1994,336 @@ void Armature::ikCursorRows(IkSolveScratch& s) {
                 problem.orientations.push_back(flat);
             }
         }
+    }
+
+    // A HAND LAID ON THE BODY (2026-09-25; IK_JS_NO_HAND_LAY): a dragged WRIST whose target comes to
+    // rest against a BODY VOLUME — the hip, the chest, the head, a knee, the other forearm — is a
+    // hand being laid on the body, and it lies on its PALM there as a hand on the floor does.
+    // Nothing said so: the wrist rode the forearm at the rotation the drag found it, so a hand
+    // brought to the hip stood edge-on beside it, a hand to the chin lay across the face palm
+    // down, and the everyday hand-on-hip and hand-on-knee poses needed a manual wrist turn after
+    // every drag (the round-96 audit's shots). The surface is the nearest capsule to the TARGET
+    // among every volume the rig built, the hand's own arm excepted — the legs included, though a
+    // hand is never kept OUT of them (it rests on knees and thighs: the palm turns to the knee the
+    // hand is put on) — read as its outward normal at the target's closest point; the lay comes in
+    // as the target's clearance of the surface closes on the wrist's own (kHandLayNear/Far over
+    // IkRig::volumeClearance: the drag clamp puts a hand pressed to the hip exactly there), and the
+    // floor's own share stands it down (a hand laid on the floor is the floor's, above). The palm
+    // faces INTO the surface and the fingers keep the heading they have across it — the least turn
+    // from where the hand is, and the heading row is soft, so the arm chooses — eased from the
+    // rotation the hand had when its target came within the band, kPalmTurnStepDeg a tick, the
+    // ease only ever leading. WHICH SIDE lies on the surface — the palm, or the BACK of the hand —
+    // is whichever needs the least turn where the target enters the band, kept while it stays
+    // (IK_JS_HAND_LAY_PALM_ONLY is the A/B): palm-in everywhere, a hand brought to the small of the
+    // back was laid palm-to-sacrum by a wrist flexed to its -90 limit — a forearm cannot supinate
+    // that far, and a hand behind the back rests on its back — while a hand brought to the hip,
+    // the chest, the head or a knee arrives palm-first and lies on its palm. Its arm STAYS in the
+    // fold retry (a hand sliding on the floor takes its arm out of it): taken out, a hand lowered
+    // beside the body after a lift — the arm dead straight, the straight limb's saddle — could not
+    // unlock its elbow for a cursor 13cm away (the suspension-lower phase: the hand 133mm off).
+    static const bool kNoHandLay = std::getenv("IK_JS_NO_HAND_LAY") != nullptr; // A/B probe
+    static const bool kHandLayTrace = std::getenv("IK_JS_HAND_LAY_TRACE") != nullptr;
+    bool              handLaid = false;
+    if (!kNoHandLay && dragTarget != nullptr && effector != root && m_jsWristOf.size() == n &&
+        m_jsWristOf[static_cast<std::size_t>(effector)] == effector && m_jsHandTip[static_cast<std::size_t>(effector)] >= 0) {
+        const std::size_t hnode = static_cast<std::size_t>(effector);
+        const int         tip = m_jsHandTip[hnode];
+        const float       scale = rig.sizeScale();
+        const glm::vec3   T = *dragTarget;
+        // (The floor's own share — the hand slide above.)
+        const float handFloor = floorModel + rig.floorClearance(effector);
+        const float floorShare = 1.0f - glm::smoothstep(0.03f * legScale, 0.12f * legScale, T.y - handFloor);
+        // The hand's own arm has no surface to offer it.
+        std::vector<char> ownArm(n, 0);
+        {
+            const int junction = rig.limbJunction(effector);
+            for (int cur = effector; cur >= 0 && cur != junction && cur != root; cur = m_bones[static_cast<std::size_t>(cur)].parent) {
+                ownArm[static_cast<std::size_t>(cur)] = 1;
+            }
+        }
+        // THE SURFACE IS THE BLEND OF EVERY VOLUME IN REACH (IK_JS_HAND_LAY_NEAREST is the nearest alone):
+        // each volume within the band weighs in with its own share, and the lie's normal is their
+        // share-weighted sum. A hand at the hip sits between the pelvis band's capsule and the thigh's,
+        // about equally near, and read off the NEAREST alone the lie flipped between the two surfaces'
+        // normals — 43 degrees apart — tick to tick as the nearest changed, and the arm with it (61-63mm
+        // in a tick on the second generation, at rest). Blended, the normal is a continuous function
+        // of the target, as everything about the lay must be.
+        static const bool  kNearestOnly = std::getenv("IK_JS_HAND_LAY_NEAREST") != nullptr; // A/B probe
+        static const float kNear = envOr("IK_JS_HANDLAYNEAR", kHandLayNear);
+        static const float kFar = envOr("IK_JS_HANDLAYFAR", kHandLayFar);
+        const float clearance = rig.volumeClearance(effector);
+        const auto  pos = [&](int i) { return glm::vec3(m_poseGlobal[static_cast<std::size_t>(i)][3]); };
+        float     bestGap = 1.0e9f;
+        float     bestShare = 0.0f;
+        glm::vec3 bestNormal(0.0f);
+        glm::vec3 blendNormal(0.0f);
+        int       bestA = -1;
+        int       bestB = -1;
+        for (const BodyVolume& v : rig.bodyVolumes()) {
+            if (v.a < 0 || v.b < 0 || v.a >= static_cast<int>(n) || v.b >= static_cast<int>(n) ||
+                ownArm[static_cast<std::size_t>(v.a)] || ownArm[static_cast<std::size_t>(v.b)]) {
+                continue;
+            }
+            const VolumeAxis ax = volumeAxis(v, static_cast<int>(n), pos);
+            if (!ax.ok) {
+                continue;
+            }
+            const float     t = ax.ab2 > 1.0e-12f ? glm::clamp(glm::dot(T - ax.A, ax.ab) / ax.ab2, 0.0f, 1.0f) : 0.0f;
+            const glm::vec3 away = T - (ax.A + ax.ab * t);
+            const float     d = glm::length(away);
+            if (d < 1.0e-4f) {
+                continue;
+            }
+            float gap = d - volumeRadiusAt(v, t);
+            // ... or the FOREARM's touch (IK_JS_HAND_LAY_WRIST_ONLY): the drag clamp keeps the forearm
+            // segment's flesh out of the torso, and where the forearm comes to the body first the wrist
+            // is held off it by the forearm's own thickness — on the newest generation a hand brought to
+            // the hip rests 9cm off the pelvis capsule, its forearm against the hip, and read at the wrist
+            // alone it never lay (the palm 53 degrees off). The segment's gap is read as if it were the
+            // wrist's: its flesh touching counts as the wrist at its clearance.
+            static const bool kWristOnly = std::getenv("IK_JS_HAND_LAY_WRIST_ONLY") != nullptr; // A/B probe
+            const int   hpar = m_bones[hnode].parent;
+            const float segFlesh = kVolumeSegmentFlesh * rig.volumeSegmentRadius(effector);
+            if (!kWristOnly && hpar >= 0 && segFlesh > 0.0f) {
+                float sPar = 0.0f;
+                float tPar = 0.0f;
+                const float dSeg = closestSegmentPoints(pos(hpar), T, ax.A, ax.B, sPar, tPar);
+                if (sPar > 0.05f && sPar < 0.95f) {
+                    gap = std::min(gap, dSeg - volumeRadiusAt(v, tPar) - segFlesh + clearance);
+                }
+            }
+            // ... or the RAW CURSOR's (the target before the drag clamp pushed it out of the volumes):
+            // a cursor inside the body is a hand on it, however far the clamp holds the wrist off —
+            // a hand that arrives fingers-first is held a hand's length out by the riders' clearance
+            // (the newest generation's hand on the hip rested 9cm off, its fingers pointing at the hip,
+            // and read at the wrist it never lay). A function of the target, like the wrist's gap. (The
+            // FINGERTIPS' own touch was tried first, the tip carried rigidly from where the hand stands:
+            // it fed back — the palm turning moved the tip, the tip's gap swung centimetres a tick, and
+            // the oldest generation's hand on the chest fell into a growing limit cycle in the hold.)
+            if (!kWristOnly && m_jsRawTargetValid) {
+                const glm::vec3& R = m_jsRawTarget;
+                const float      tRaw = ax.ab2 > 1.0e-12f ? glm::clamp(glm::dot(R - ax.A, ax.ab) / ax.ab2, 0.0f, 1.0f) : 0.0f;
+                const float      dRaw = glm::length(R - (ax.A + ax.ab * tRaw));
+                gap = std::min(gap, dRaw - volumeRadiusAt(v, tRaw) + clearance);
+            }
+            const float share = 1.0f - glm::smoothstep(clearance + kNear * scale, clearance + kFar * scale, std::max(gap, 0.0f));
+            blendNormal += (away / d) * share;
+            if (gap < bestGap) {
+                bestGap = gap;
+                bestShare = share;
+                bestNormal = away / d;
+                bestA = v.a;
+                bestB = v.b;
+            }
+        }
+        // (The nearest volume's share is the lay's: the blend only turns the normal. Two surfaces facing
+        // each other — a hand between the thighs — cancel, and the nearest alone stands in.)
+        if (!kNearestOnly && glm::length(blendNormal) > 0.3f) {
+            bestNormal = glm::normalize(blendNormal);
+        }
+        float lay = bestA >= 0 ? bestShare : 0.0f;
+        lay *= 1.0f - floorShare;
+        // ... and only as the target SLOWS (kHandLaySpeedFrom/To): a hand lies on what it rests against,
+        // not on what it passes. Engaged at any speed a hand dragged past the body was turned onto each
+        // surface it brushed, and where the forearm's twist ran out mid-pass the arm flipped basins.
+        static const bool  kAnySpeed = std::getenv("IK_JS_HAND_LAY_ANY_SPEED") != nullptr; // A/B probe
+        static const float kSpeedFrom = envOr("IK_JS_HANDLAYSPEEDFROM", kHandLaySpeedFrom);
+        static const float kSpeedTo = envOr("IK_JS_HANDLAYSPEEDTO", kHandLaySpeedTo);
+        const float speed = m_jsPrevGoalValid ? glm::length(T - m_jsPrevGoal) : 0.0f;
+        const float still = kAnySpeed ? 1.0f : 1.0f - glm::smoothstep(kSpeedFrom * scale, kSpeedTo * scale, speed);
+        lay *= still;
+        const glm::vec3 fingers = m_ikBindPos[static_cast<std::size_t>(tip)] - m_ikBindPos[hnode];
+        if (kHandLayTrace && lay <= 1.0e-3f && bestA >= 0) {
+            std::fprintf(stderr, "[js-lay] %s near no surface: nearest %s-%s, gap %.1fmm (clearance %.1f, band to %.1f); target (%.3f %.3f %.3f)\n",
+                         m_boneNames[hnode].c_str(), m_boneNames[static_cast<std::size_t>(bestA)].c_str(),
+                         m_boneNames[static_cast<std::size_t>(bestB)].c_str(), bestGap * 1000.0f, clearance * 1000.0f,
+                         (clearance + kFar * scale) * 1000.0f, T.x, T.y, T.z);
+        }
+        if (lay > 1.0e-3f && glm::length(fingers) > 1.0e-4f) {
+            handLaid = true;
+            const glm::vec3 f = fingers / glm::length(fingers);
+            const glm::vec3 down(0.0f, -1.0f, 0.0f);
+            glm::vec3       palm = down - f * glm::dot(down, f);
+            if (glm::length(palm) > 0.2f) {
+                palm = glm::normalize(palm);
+                const glm::mat3 now(m_poseGlobal[hnode]);
+                const glm::vec3 nOut = bestNormal;
+                // The fingers' heading ACROSS the surface: where they point now, projected onto it
+                // (pointing straight into or out of it, the palm's own direction across instead; a
+                // hand that is degenerate both ways takes any tangent).
+                glm::vec3 h = now * f;
+                h -= nOut * glm::dot(h, nOut);
+                if (glm::length(h) < 0.2f) {
+                    h = now * palm;
+                    h -= nOut * glm::dot(h, nOut);
+                }
+                if (glm::length(h) < 0.2f) {
+                    h = glm::cross(nOut, glm::vec3(0.0f, 1.0f, 0.0f));
+                    if (glm::length(h) < 0.2f) {
+                        h = glm::cross(nOut, glm::vec3(1.0f, 0.0f, 0.0f));
+                    }
+                }
+                h = glm::normalize(h);
+                const glm::mat3 local(f, palm, glm::cross(f, palm));
+                static const bool kPalmOnly = std::getenv("IK_JS_HAND_LAY_PALM_ONLY") != nullptr; // A/B probe
+                // (While the lay is under kHandLayEngage the start rotation and the side are re-read every
+                // tick: the rows are all but weightless there, and an ease that ran on from a stale start
+                // stood at the full lie by the time they came in — see the tuning note.)
+                if (!m_jsHandLayValid || lay < kHandLayEngage) {
+                    m_jsHandLayValid = lay >= kHandLayEngage;
+                    m_jsHandLayFrom = now;
+                    m_jsHandLayEase = 0.0f;
+                    // THE SIDE, by the forearm's TWIST ROOM (kHandLayBackMarginDeg): the elbow is the
+                    // first fold joint up from the wrist, the forearm's axis runs from it to the wrist,
+                    // and each side's lie asks a rotation of the hand whose part about that axis is
+                    // pronation the twist channels between the wrist and the elbow must have room for.
+                    static const double kBackMargin = envOr("IK_JS_HANDLAYBACKMARGIN", kHandLayBackMarginDeg);
+                    int elbow = -1;
+                    {
+                        const int junction = rig.limbJunction(effector);
+                        for (int cur = m_bones[hnode].parent; cur >= 0 && cur != root && cur != junction;
+                             cur = m_bones[static_cast<std::size_t>(cur)].parent) {
+                            const Bone& bone = m_bones[static_cast<std::size_t>(cur)];
+                            bool        folds = false;
+                            for (int a = 0; a < 3 && !folds; ++a) {
+                                const float range = bone.rotMax[a] - bone.rotMin[a];
+                                folds = bone.rotLimited[a] && range >= kFoldRangeDeg && bone.rotMin[a] < 0.0f && bone.rotMax[a] > 0.0f &&
+                                        std::min(-bone.rotMin[a], bone.rotMax[a]) <= kFoldNarrowFraction * std::max(-bone.rotMin[a], bone.rotMax[a]);
+                            }
+                            if (folds) {
+                                elbow = cur;
+                                break;
+                            }
+                        }
+                    }
+                    const int       hpar = m_bones[hnode].parent;
+                    const glm::vec3 wristAt(m_poseGlobal[hnode][3]);
+                    const glm::vec3 elbowAt(m_poseGlobal[static_cast<std::size_t>(elbow >= 0 ? elbow : (hpar >= 0 ? hpar : effector))][3]);
+                    glm::vec3       forearm = wristAt - elbowAt;
+                    float           need[2] = {0.0f, 0.0f};
+                    float           room[2] = {0.0f, 0.0f};
+                    float           deficit[2] = {0.0f, 0.0f};
+                    if (glm::length(forearm) > 1.0e-4f) {
+                        forearm = glm::normalize(forearm);
+                        for (int side = 0; side < 2; ++side) {
+                            const glm::vec3 ln = -nOut * (side == 0 ? 1.0f : -1.0f);
+                            const glm::mat3 worldSide(h, ln, glm::cross(h, ln));
+                            const glm::mat3 lieSide = worldSide * glm::transpose(local);
+                            glm::quat       dq = glm::normalize(glm::quat_cast(lieSide * glm::transpose(now)));
+                            if (dq.w < 0.0f) {
+                                dq = -dq;
+                            }
+                            const float     ang = 2.0f * std::acos(glm::clamp(dq.w, -1.0f, 1.0f));
+                            const glm::vec3 dv(dq.x, dq.y, dq.z);
+                            const glm::vec3 ax = glm::length(dv) > 1.0e-6f ? glm::normalize(dv) : glm::vec3(0.0f);
+                            const float     twist = glm::degrees(ang * glm::dot(ax, forearm)); // signed, about the forearm
+                            float           have = 0.0f;
+                            for (int cur = hpar; cur >= 0; cur = m_bones[static_cast<std::size_t>(cur)].parent) {
+                                const std::size_t cb = static_cast<std::size_t>(cur);
+                                const int         a = cb < m_jsTwistAxis.size() ? m_jsTwistAxis[cb] : -1;
+                                if (a >= 0) {
+                                    const Bone& bone = m_bones[cb];
+                                    // (the channel's axis as it stands: the rotation-order prefix applied)
+                                    glm::mat3 prefix(1.0f);
+                                    for (const char ch : bone.rotationOrder) {
+                                        const int axis = ch == 'X' ? 0 : ch == 'Y' ? 1 : ch == 'Z' ? 2 : -1;
+                                        if (axis < 0 || axis == a) {
+                                            break;
+                                        }
+                                        glm::vec3 e(0.0f);
+                                        e[axis] = 1.0f;
+                                        prefix = prefix * glm::mat3(glm::rotate(glm::mat4(1.0f), glm::radians(m_boneEuler[cb][axis]), e));
+                                    }
+                                    glm::vec3 e(0.0f);
+                                    e[a] = 1.0f;
+                                    const int       cpar = bone.parent;
+                                    const glm::mat3 parentRot = cpar >= 0 ? glm::mat3(m_poseGlobal[static_cast<std::size_t>(cpar)]) : glm::mat3(1.0f);
+                                    const glm::vec3 axisWorld = parentRot * glm::mat3(bone.orient) * prefix * e;
+                                    const float     along = glm::dot(axisWorld, forearm);
+                                    if (std::abs(along) > 0.5f) {
+                                        const bool  positive = twist * along > 0.0f;
+                                        const float at = m_boneEuler[cb][a];
+                                        const float channelRoom = !bone.rotLimited[a] ? 360.0f : (positive ? bone.rotMax[a] - at : at - bone.rotMin[a]);
+                                        have += std::max(channelRoom, 0.0f) * std::abs(along);
+                                    }
+                                }
+                                if (cur == elbow) {
+                                    break;
+                                }
+                            }
+                            need[side] = twist;
+                            room[side] = have;
+                            deficit[side] = std::max(0.0f, std::abs(twist) - have);
+                        }
+                    }
+                    // In front of the body the palm is preferred, behind it the back of the hand.
+                    const glm::vec3 forward(std::sin(m_jsRootHeading), 0.0f, std::cos(m_jsRootHeading));
+                    const bool      behind = glm::dot(T - glm::vec3(m_poseGlobal[static_cast<std::size_t>(root)][3]), forward) < -0.05f * scale;
+                    const int       preferred = behind ? 1 : 0;
+                    const int       other = 1 - preferred;
+                    const int       chosen = (kPalmOnly || deficit[preferred] <= deficit[other] + static_cast<float>(kBackMargin)) ? preferred : other;
+                    m_jsHandLaySide = chosen == 0 ? 1.0f : -1.0f;
+                    if (kPalmOnly) {
+                        m_jsHandLaySide = 1.0f;
+                    }
+                    if (kHandLayTrace) {
+                        std::fprintf(stderr, "[js-lay] %s enters the band on %s-%s%s: palm needs %.0f deg of forearm twist (room %.0f), the back %.0f (room %.0f) -> %s\n",
+                                     m_boneNames[hnode].c_str(), m_boneNames[static_cast<std::size_t>(bestA)].c_str(),
+                                     m_boneNames[static_cast<std::size_t>(bestB)].c_str(), behind ? " (behind the body)" : "",
+                                     need[0], room[0], need[1], room[1], m_jsHandLaySide > 0.0f ? "palm" : "back");
+                    }
+                }
+                // (The back of the hand on the surface: the palm faces OUT along the normal, and the
+                // fingers' line is mirrored across it so the frame stays right-handed.)
+                const glm::vec3 lieNormal = -nOut * m_jsHandLaySide;
+                const glm::mat3 world(h, lieNormal, glm::cross(h, lieNormal));
+                glm::mat3       lieRot = world * glm::transpose(local);
+                if (m_jsHandLayEase < 1.0f) {
+                    const glm::quat from = glm::normalize(glm::quat_cast(m_jsHandLayFrom));
+                    glm::quat       to = glm::normalize(glm::quat_cast(lieRot));
+                    if (glm::dot(from, to) < 0.0f) {
+                        to = -to;
+                    }
+                    glm::quat nowQ = glm::normalize(glm::quat_cast(now));
+                    if (glm::dot(nowQ, to) < 0.0f) {
+                        nowQ = -nowQ;
+                    }
+                    const float whole = glm::degrees(2.0f * std::acos(glm::clamp(glm::dot(from, to), -1.0f, 1.0f)));
+                    const float left = glm::degrees(2.0f * std::acos(glm::clamp(glm::dot(nowQ, to), -1.0f, 1.0f)));
+                    const float reached = whole > 1.0e-3f ? glm::clamp(1.0f - left / whole, 0.0f, 1.0f) : 1.0f;
+                    static const float kLayStep = envOr("IK_JS_HANDLAYSTEP", kHandLayTurnStepDeg);
+                    const float        step = kLayStep * lay; // (the ease advances WITH the lay)
+                    m_jsHandLayEase = whole > step
+                                          ? std::min(1.0f, std::max(m_jsHandLayEase, reached) + step / whole)
+                                          : 1.0f;
+                    lieRot = glm::mat3_cast(glm::slerp(from, to, m_jsHandLayEase));
+                }
+                lieRot = capPalmLead(now, lieRot); // (never more than kPalmLeadDeg ahead of the hand)
+                static const double kPitch = envOr("IK_JS_HANDLAYPITCH", kHandLayPitchWeight);
+                static const double kLevel = envOr("IK_JS_HANDLAYLEVEL", kHandLayLevelWeight);
+                static const double kHeading = envOr("IK_JS_HANDLAYHEADING", kHandLayHeadingWeight);
+                JointOrientationTask lie;
+                lie.bone = effector;
+                lie.target = glm::dmat3(lieRot);
+                lie.perAxis = true;
+                const glm::dvec3 up(nOut);
+                const glm::dvec3 fore(h);
+                lie.frame = glm::dmat3(glm::cross(up, fore), up, fore);
+                lie.axisWeights = glm::dvec3(kPitch, kHeading, kLevel) * static_cast<double>(lay);
+                problem.orientations.push_back(lie);
+                if (kHandLayTrace) {
+                    const glm::vec3 palmNow = now * palm;
+                    std::fprintf(stderr, "[js-lay] %s on %s-%s (%s): gap %.1fmm speed %.1fmm/tick lay %.2f ease %.2f side-to-surface %.0f deg\n",
+                                 m_boneNames[hnode].c_str(), m_boneNames[static_cast<std::size_t>(bestA)].c_str(),
+                                 m_boneNames[static_cast<std::size_t>(bestB)].c_str(), m_jsHandLaySide > 0.0f ? "palm" : "back",
+                                 bestGap * 1000.0f, speed * 1000.0f, lay, m_jsHandLayEase,
+                                 glm::degrees(std::acos(glm::clamp(glm::dot(palmNow * m_jsHandLaySide, -nOut), -1.0f, 1.0f))));
+                }
+            }
+        }
+    }
+    if (!handLaid) {
+        m_jsHandLayValid = false; // (the hand has left the band: the next approach eases from where it then is)
     }
 
     // SUSPENDED (IkRig::suspended: a sustained beyond-reach lift released the feet): the root
@@ -1283,6 +2354,10 @@ void Armature::ikBalanceRow(IkSolveScratch& s) {
     JointSolver::Problem& problem = s.problem;
     const bool& trunkDrag = s.trunkDrag;
     const bool& trunkRise = s.trunkRise;
+
+    if (m_ikScope == IkScope::Chain) {
+        return; // (a SCOPED drag keeps no balance: the chain alone moves, and the body it hangs from stays where it was)
+    }
 
     // Balance — not under a pelvis drag (the user is driving the pelvis).
     static const double kBalance = envOr("IK_JS_BALANCE", kBalanceWeight);
@@ -1497,9 +2572,19 @@ void Armature::ikBalanceRow(IkSolveScratch& s) {
                 // (Measured against the RIG's support, the dragged foot not in it: a foot lifted
                 // off the floor has never taken the body's weight over the other one — the drag
                 // begins with the weight between the feet, and that is the imbalance it keeps.)
+                // (... unless THE WEIGHT SHIFT is on — the drag began on two planted feet, one of
+                // which it can lift (m_jsWeightShift, beginIkDrag): then the weight DOES go over
+                // the standing foot. The hips' home takes it most of the way, and the row polices
+                // the rest — the lifted leg's own mass, which a home read at the press cannot
+                // know: a knee held at its cursor 24cm outside its shifted socket carries the
+                // weight 7cm back toward the lifted side, and forgiven it stayed there, 12cm from
+                // the standing ankle. Measured against the support AS IT STOOD at the press, both
+                // feet in it, the base is what it truly was: nothing.)
+                static const bool kWeightForgiven = std::getenv("IK_JS_WEIGHT_FORGIVEN") != nullptr; // A/B probe: the old base
+                const bool weightShifts = !kWeightForgiven && glm::dot(m_jsWeightShift, m_jsWeightShift) > 0.0f;
                 glm::vec2 rigNeed(0.0f);
                 BalanceController::balanceCorrection(positions, parents, rig.masses(),
-                                                     othersHull.empty() ? rig.supportHull() : othersHull,
+                                                     weightShifts ? support : (othersHull.empty() ? rig.supportHull() : othersHull),
                                                      rig.balanceMargin(), rigNeed);
                 m_jsBalanceBase = std::max(m_jsBalanceSlack, glm::length(rigNeed));
             }
@@ -1622,6 +2707,21 @@ void Armature::ikPlaneRows(IkSolveScratch& s) {
                     if (!kNoAllow && m_jsFootAllowValid && m_jsFootAllow.size() == n) {
                         floorAllow[static_cast<std::size_t>(b)] = m_jsFootAllow[static_cast<std::size_t>(b)] * (1.0f - trailNow);
                     }
+                }
+            }
+            continue;
+        }
+        if (p < s.footLying.size() && s.footLying[p]) {
+            // (A KNEELING FOOT LIES FLAT: the foot-class joints' clearances are their BIND heights —
+            // the standing model's — and a lying ankle sits at the shin's radius, its mid-foot
+            // joint beside it: their rows would hold the foot level 5cm off the floor. Exempt from
+            // the ankle down to the ball's parent; the ball's and the toes' rows, a toe's thickness
+            // over the floor, stay and stop the foot's top there.)
+            const int ball = m_jsBall[static_cast<std::size_t>(pin.node)];
+            for (int cur = ball >= 0 ? m_bones[static_cast<std::size_t>(ball)].parent : pin.node; cur >= 0; cur = m_bones[static_cast<std::size_t>(cur)].parent) {
+                floorExempt[static_cast<std::size_t>(cur)] = 1;
+                if (cur == pin.node) {
+                    break;
                 }
             }
             continue;

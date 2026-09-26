@@ -8,7 +8,7 @@ Every control in one place. "Viewport focus" means you have clicked in the 3D vi
 | --- | --- | --- |
 | Left-drag | on a joint | Full-body IK: the point you grabbed follows the cursor, the body follows anatomically. |
 | Left-drag | on empty space or a model's body | Orbit the camera. |
-| Ctrl + left-drag | on a joint | Rotate that joint alone (sideways: about its vertical axis; up and down: about its sideways axis). |
+| Ctrl + left-drag | on a joint | Scoped IK: only the chain the joint belongs to follows — a limb up to the body, the head and neck, the spine over a still pelvis, the hips with only their legs. Nothing else moves. |
 | Left-click | on a model | Select it (blue outline); on empty space, deselect. |
 | Left-click | on a joint | Select the joint (and make its figure the active one). |
 | Middle-drag | anywhere | Pan. |

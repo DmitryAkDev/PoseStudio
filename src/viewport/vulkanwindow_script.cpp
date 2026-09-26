@@ -205,12 +205,31 @@ void VulkanWindow::scriptStep() {
                 say("[ikscript]   unknown bone\n");
             }
         } else if (cmd == QLatin1String("pin") && w.size() > 1) {
+            // The joint a CLICK there finds — and, since the pick is the SKIN's (2026-09-26), the named
+            // bone by name where the click lands on another part of the body (a hanging hand covers
+            // the hip from the side: the click pinned a finger, and a "seated, hips pinned" lean had no
+            // seat), as press does.
             QPointF px;
-            if (scriptPixelOf(w[1], px) && boneAt(px) >= 0) { // the joint a CLICK there finds
-                togglePinSelectedJoint();
+            if (scriptPixelOf(w[1], px)) {
+                const int picked = boneAt(px);
+                const Armature* found = scene().figureArmature();
+                const std::string name = figureBoneName(found, w[1].section(QLatin1Char('@'), 0, 0).toStdString());
+                const int wanted = found ? found->boneIndex(name) : -1;
+                if (wanted >= 0 && (picked < 0 || !found->sameRigidSegment(picked, wanted))) {
+                    if (picked >= 0) {
+                        say("[ikscript]   the pick found %s there, not %s: pinned by name instead\n",
+                            found->boneName(static_cast<std::size_t>(picked)).c_str(), name.c_str());
+                    }
+                    scene().selectBoneByName(name);
+                }
+                if (scene().hasSelectedBone()) {
+                    togglePinSelectedJoint();
+                }
             }
         } else if (cmd == QLatin1String("unpinall")) {
             unpinAllJoints();
+        } else if (cmd == QLatin1String("pick2d") && w.size() > 1) {
+            scene().setPick2D(w[1] == QLatin1String("on")); // (the A/B probe: the 2D pick alone, as before 2026-09-26)
         } else if (cmd == QLatin1String("click") && w.size() > 1) {
             QPointF px;
             if (scriptPixelOf(w[1], px)) {
@@ -220,14 +239,16 @@ void VulkanWindow::scriptStep() {
                     picked >= 0 && arm ? arm->boneName(static_cast<std::size_t>(picked)).c_str() : "nothing");
                 requestUpdate();
             }
-        } else if (cmd == QLatin1String("press") && w.size() > 1) {
+        } else if ((cmd == QLatin1String("press") || cmd == QLatin1String("cpress")) && w.size() > 1) {
             // The real press: the picker at the pixel, then the press path (IK drag + undo snapshot).
+            // cpress is the Ctrl press: the SCOPED drag of the grabbed chain alone (IkScope::Chain).
+            const bool scoped = cmd == QLatin1String("cpress");
             QPointF px;
             if (!scriptPixelOf(w[1], px)) {
                 continue;
             }
             closeOpenPoseEdits();
-            bool began = beginJointGesture(px, /*fkModifier=*/false) && m_ik.dragging;
+            bool began = beginJointGesture(px, scoped) && m_ik.dragging;
             // The pick is honest: what it finds is what is under that pixel. On another body that is
             // not always the bone the script names — a broad character's hanging arm covers her chest
             // from the side, one hand covers the other — and the gesture that follows is then some
@@ -249,7 +270,7 @@ void VulkanWindow::scriptStep() {
                     if (!share.isEmpty()) {
                         scene().setIkGrabOnSegment(share.toFloat());
                     }
-                    began = beginIkDrag();
+                    began = beginIkDrag(scoped);
                     if (began) {
                         m_preEditPose = scene().capturePose();
                     }
@@ -405,6 +426,28 @@ void VulkanWindow::scriptDragTick() {
             say("[ikscript]   POP at tick %d: %s moved %.0f mm in one tick\n", s.dragTicks, arm->boneName(tickBone).c_str(),
                 tickWorst * 1000.0f);
         }
+        // The per-tick trace (POSESTUDIO_IK_SCRIPT_TICKS, POSESTUDIO_IK_SCRIPT_EULERS): the worst joint's
+        // move every tick, and named bones' Euler channels — the app's twin of the harness's
+        // IK_HARNESS_POSE_TRACE / IK_HARNESS_EULER_TICKS, for a pop only a scripted click makes.
+        static const bool  kTickTrace = std::getenv("POSESTUDIO_IK_SCRIPT_TICKS") != nullptr;
+        static const char* kEulerBones = std::getenv("POSESTUDIO_IK_SCRIPT_EULERS");
+        if (kTickTrace) {
+            say("[ikscript]   tick %d: worst %s %.1f mm | grab (%.3f %.3f %.3f) cursor (%.3f %.3f %.3f)\n", s.dragTicks,
+                arm->boneName(tickBone).c_str(), tickWorst * 1000.0f, grab.x, grab.y, grab.z, s.cursorWorld.x, s.cursorWorld.y,
+                s.cursorWorld.z);
+        }
+        if (kEulerBones != nullptr) {
+            const QStringList names = QString::fromUtf8(kEulerBones).split(QLatin1Char(','), Qt::SkipEmptyParts);
+            QString           row;
+            for (const QString& nm : names) {
+                const int b = arm->boneIndex(figureBoneName(arm, nm.trimmed().toStdString()));
+                if (b >= 0) {
+                    const glm::vec3 e = arm->boneEuler(static_cast<std::size_t>(b));
+                    row += QStringLiteral(" %1(%2 %3 %4)").arg(nm.trimmed()).arg(e.x, 0, 'f', 1).arg(e.y, 0, 'f', 1).arg(e.z, 0, 'f', 1);
+                }
+            }
+            say("[ikscript]   tick %d eulers:%s\n", s.dragTicks, row.toUtf8().constData());
+        }
         s.lastPositions = now;
     }
     if (t >= s.moveTicks + s.holdTicks) {
@@ -456,6 +499,9 @@ void VulkanWindow::scriptFrameRendered() {
 ///   tilt.<bone>     a bone's tilt from upright, degrees      y.<bone>     its height, mm
 ///   hang.<bone>     a bone's direction (origin to its longest child) from straight DOWN, degrees
 ///   moved.<bone>    moved since the last press, mm           euler.<bone>.<x|y|z>  a posed channel
+///   movedxz.<bone>  moved along the FLOOR since the last press, mm (a planted foot's place, heel lift aside)
+///   selected.<bone> 1 if the selected joint is that bone or a bone of its rigid segment (a click's pick), else 0
+///   palm.<bone>.<x|y|z>  a HAND's palm normal, that world component (where a laid hand faces)
 bool VulkanWindow::scriptMetric(const QString& name, double& value) {
     IkScript&       s = *m_script;
     const Armature* arm = scene().figureArmature();
@@ -476,6 +522,13 @@ bool VulkanWindow::scriptMetric(const QString& name, double& value) {
             return false;
         }
         value = glm::length(grab - s.cursorWorld) * 1000.0;
+    } else if (key == QLatin1String("palm") && bone >= 0 && part.size() > 2) {
+        const glm::vec3 pn = arm->handPalmNormal(bone);
+        if (glm::length(pn) < 0.5f) {
+            return false;
+        }
+        const QString axis = part[2].toLower();
+        value = axis == QLatin1String("x") ? pn.x : axis == QLatin1String("y") ? pn.y : pn.z;
     } else if (key == QLatin1String("grabpx")) {
         // ... on SCREEN, in pixels: what the user sees. (A knee pulled up in a front view is taken
         // FORWARD onto its thigh's reach: under the pointer, and 40cm from the cursor's plane.)
@@ -544,6 +597,15 @@ bool VulkanWindow::scriptMetric(const QString& name, double& value) {
         value = arm->boneWorldPosition(static_cast<std::size_t>(bone)).y * 1000.0;
     } else if (key == QLatin1String("moved") && bone >= 0) {
         value = moved(bone);
+    } else if (key == QLatin1String("selected") && bone >= 0) {
+        value = arm->selectedBone() >= 0 && arm->sameRigidSegment(arm->selectedBone(), bone) ? 1.0 : 0.0;
+    } else if (key == QLatin1String("movedxz") && bone >= 0) {
+        const std::size_t b = static_cast<std::size_t>(bone);
+        if (b >= s.pressPositions.size()) {
+            return false;
+        }
+        const glm::vec3 d = arm->boneWorldPosition(b) - s.pressPositions[b];
+        value = static_cast<double>(glm::length(glm::vec2(d.x, d.z))) * 1000.0;
     } else if (key == QLatin1String("euler") && bone >= 0 && part.size() > 2) {
         const int axis = part[2].toLower() == QLatin1String("x") ? 0 : part[2].toLower() == QLatin1String("y") ? 1 : 2;
         value = arm->boneEuler(static_cast<std::size_t>(bone))[axis];

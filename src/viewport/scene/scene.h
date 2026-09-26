@@ -18,6 +18,7 @@
 #include "environment.h"
 #include "lightingsettings.h"
 #include "shademode.h"
+#include "armature.h" // IkScope
 
 #include <glm/glm.hpp>
 #include <vulkan/vulkan.h>
@@ -169,6 +170,9 @@ public:
     /// if within a small radius; see bonepicker.h). Returns the selected bone index, or -1 if
     /// none is selected.
     int selectBoneAt(float px, float py, float vpW, float vpH, const Camera& camera);
+    /// A/B probe (the scripts' `pick2d on|off`): the 2D projection pick alone, as before the
+    /// skin cast of 2026-09-26 — which parts a click may reach through others.
+    void setPick2D(bool on) { m_pick2D = on; }
     /// True if a joint is currently selected on the figure.
     bool hasSelectedBone() const;
     /// Selects the posable figure's bone named @p name (diagnostics / the IK benchmark).
@@ -184,7 +188,7 @@ public:
     /// Begins an FBIK drag of the figure's selected joint: ground contacts are detected and become
     /// the anchor/pins, and the balance support polygon is captured. Returns false without a
     /// figure or selection.
-    bool beginBoneIkDrag();
+    bool beginBoneIkDrag(IkScope scope = IkScope::Body);
     /// One FBIK drag update: solves the whole body so the selected joint reaches toward
     /// @p targetWorld (feet stay planted, CoM auto-balanced), then re-poses the figure. Returns
     /// true if the pose actually changed (false: the solve left the pose where it was — no redraw needed).
@@ -260,7 +264,8 @@ private:
     std::unique_ptr<IblMaps>        m_iblMaps;
 
     std::vector<std::unique_ptr<Model>> m_models;
-    int m_activeFigure = -1; ///< See activeFigureIndex(): the posing target among the figures.
+    int m_activeFigure = -1;
+    bool m_pick2D = false; ///< See setPick2D(). ///< See activeFigureIndex(): the posing target among the figures.
     int m_selectedModel = -1; ///< See selectedModelIndex(): the outlined model (-1 = none).
 
     int m_shadeMode = kDefaultShadeMode; // picker-table index (shademode.h)

@@ -13,6 +13,7 @@
  */
 
 #include "armature.h"
+#include "balancecontroller.h"  // the centre of mass the weight shift is measured from
 
 #include "ikmath.h"
 #include "ikrig.h"             // the drag's policy: contacts, pins, volumes, stepping, lift-off
@@ -248,6 +249,28 @@ bool Armature::rigidSegment(int bone, int& nearJoint, int& farJoint) const {
     return farJoint >= 0 && farJoint != nearJoint;
 }
 
+bool Armature::footLyingExempt(int node) const {
+    if (node < 0 || static_cast<std::size_t>(node) >= m_bones.size() || m_jsFootFlat.size() != m_bones.size() ||
+        m_jsBall.size() != m_bones.size()) {
+        return false;
+    }
+    for (std::size_t f = 0; f < m_bones.size(); ++f) {
+        if (m_jsFootFlat[f] <= 0.5f || m_jsBall[f] < 0) {
+            continue;
+        }
+        // (the chain from the ball's parent up to the foot bone, inclusive)
+        for (int cur = m_bones[static_cast<std::size_t>(m_jsBall[f])].parent; cur >= 0; cur = m_bones[static_cast<std::size_t>(cur)].parent) {
+            if (cur == node) {
+                return true;
+            }
+            if (cur == static_cast<int>(f)) {
+                break;
+            }
+        }
+    }
+    return false;
+}
+
 void Armature::setIkGrabPoint(int bone, const glm::vec3& worldPoint) {
     if (bone < 0 || bone >= static_cast<int>(m_bones.size())) {
         m_ikGrabBone = -1;
@@ -282,7 +305,8 @@ glm::vec3 Armature::ikGrabPointWorld() const {
     return glm::vec3(0.0f);
 }
 
-bool Armature::beginIkDrag() {
+bool Armature::beginIkDrag(IkScope scope) {
+    m_ikScope = IkScope::Body; // (set once the rig has the drag: a failed begin leaves no scope behind)
     if (m_selectedBone < 0 || m_selectedBone >= static_cast<int>(m_bones.size()) ||
         m_bones.empty()) {
         return false;
@@ -393,6 +417,18 @@ bool Armature::beginIkDrag() {
     if (!m_ikRig->beginDrag(grabNode, positions, contacts, groundOffsetY, &userPins)) {
         return false;
     }
+    m_ikScope = scope;
+    m_ikRig->setScoped(scope == IkScope::Chain); // (no intent, no suspension, no step under a scoped drag)
+    if (kDragStateTrace) { // (the pins the rig planted: node, target, kind)
+        const std::vector<IkEffector>& pins = m_ikRig->pins();
+        for (std::size_t p = 0; p < pins.size(); ++p) {
+            const int node = pins[p].node;
+            std::fprintf(stderr, "[drag-state] pin %s target(%.4f %.4f %.4f) live=%d user=%d hard=%d effector=%s", node >= 0 ? m_boneNames[static_cast<std::size_t>(node)].c_str() : "?",
+                         pins[p].target.x, pins[p].target.y, pins[p].target.z, m_ikRig->pinIsLive(p) ? 1 : 0, m_ikRig->pinIsUser(p) ? 1 : 0,
+                         pins[p].hard ? 1 : 0, m_boneNames[static_cast<std::size_t>(m_ikRig->dragEffector())].c_str());
+            std::fputc(10, stderr);
+        }
+    }
     m_jsFloorSeatStart = m_ikRig->floorSeat(); // (a constant of the drag: never a mode read off the pose it changes)
     m_jsSeatNode = m_ikRig->floorSeatNode();
     m_jsKneelStart = m_ikRig->onKnees();
@@ -400,6 +436,37 @@ bool Armature::beginIkDrag() {
     m_jsKneelSeat = m_jsKneelStart ? m_ikRig->kneelSeat() : glm::vec3(0.0f, -1.0f, 0.0f);
     m_jsHandTipValid.assign(m_bones.size(), 0);
     m_jsContactGone.assign(m_bones.size(), 0.0f);
+    // A KNEELING FOOT LIES FLAT: the share persists across drags (a kneel let go of is still a
+    // kneel); the drag-local flags reset. (Whether a foot IS flat is re-read at the first tick from
+    // the pins and the pose: a Reset Pose leaves no planted knee, and the share goes at once.)
+    if (m_jsFootFlat.size() != m_bones.size()) {
+        m_jsFootFlat.assign(m_bones.size(), 0.0f);
+        m_jsFootFlatAxis.assign(m_bones.size(), -2);
+        m_jsFootFlatLimit.assign(m_bones.size(), 0.0f);
+        m_jsFootFlatTuck.assign(m_bones.size(), 0.0f);
+        m_jsFootFlatRef.assign(m_bones.size(), glm::vec3(0.0f));
+        m_jsFlatBallOffset.assign(m_bones.size(), glm::vec3(0.0f));
+        m_jsFlatHeelOffset.assign(m_bones.size(), glm::vec3(0.0f));
+        m_jsFootKnee.assign(m_bones.size(), -1);
+        m_jsFlatLyingY.assign(m_bones.size(), 0.0f);
+        m_jsFlatRollStartY.assign(m_bones.size(), 0.0f);
+        m_jsFlatRollStartRef.assign(m_bones.size(), 0.0f);
+        m_jsToeFlatRef.assign(m_bones.size(), glm::vec3(0.0f));
+    }
+    m_jsToeFlatValid.assign(m_bones.size(), 0);
+    m_jsToeFlatShare.assign(m_bones.size(), 0.0f);
+    m_jsFootFlatRefValid.assign(m_bones.size(), 0);
+    m_jsFootFlatSeen.assign(m_bones.size(), 0);
+    m_jsFootWasFlat.assign(m_bones.size(), 0);
+    m_jsFootFlatAtStart.assign(m_bones.size(), 0);
+    m_jsFootUnrolled.assign(m_bones.size(), 0);
+    m_jsFootUnrollProgress.assign(m_bones.size(), 1.0f);
+    m_jsKneeHeldDown.assign(m_bones.size(), 0);
+    m_jsKneeHeldDownPrev.assign(m_bones.size(), 0);
+    m_jsFlatRiseBase.assign(m_bones.size(), 0.0f);
+    for (std::size_t i = 0; i < m_bones.size(); ++i) {
+        m_jsFootWasFlat[i] = m_jsFootFlatAtStart[i] = m_jsFootFlat[i] > 0.5f ? 1 : 0;
+    }
     m_jsContactUnloaded.assign(m_bones.size(), 0);
     m_jsContactLanding.assign(m_bones.size(), 0);
     m_jsKneelTilt = 1.0;
@@ -470,6 +537,9 @@ bool Armature::beginIkDrag() {
     m_jsHoldValid = false;
     m_jsFollowValid = false;
     m_jsRootYield = 0.0f;
+    m_jsReachDown = 0.0f;
+    m_jsReachHinge = 0.0f;
+    m_jsReachTravel = 0.0f;
     m_jsRootRise = 0.0f;
     m_jsContactRise = 0.0f;
     m_jsKneelYield = 0.0f;
@@ -546,6 +616,77 @@ bool Armature::beginIkDrag() {
     m_jsGrown = 0.0f;
     m_jsBalanceSlack = 0.0f;
     m_jsBalanceBase = -1.0f;
+    // THE WEIGHT SHIFT (ikPostureModel): a foot lifted off a TWO-FOOTED stance takes the hips over
+    // the standing foot. Read here, once, as a constant of the drag: from the centre of mass as the
+    // drag found it to the standing foot's footprint centre — for a drag that begins on exactly two
+    // planted feet, one of which the drag can lift (the dragged foot itself, or the foot under a
+    // dragged knee), and nothing else on the floor: a kneeling figure's knee drawn up stands on the
+    // other KNEE, a body with a hand on the floor is propped, a seated one is held up by its seat.
+    m_jsWeightShift = glm::vec2(0.0f);
+    m_jsWeightLiftStart = -1.0f;
+    m_jsWeightLift = 0.0f;
+    m_jsWeightEased = glm::vec2(0.0f);
+    m_jsWeightEasing = false;
+    {
+        const IkRig& rig = *m_ikRig;
+        const int effector = rig.dragEffector();
+        const float scale = rig.sizeScale();
+        const auto footClass = [&](int node) {
+            return node >= 0 && m_ikBindPos[static_cast<std::size_t>(node)].y < 0.20f * scale;
+        };
+        const bool effectorIsFoot = effector != rig.rootNode() && footClass(effector);
+        int  standing = -1;
+        int  standingCount = 0;
+        int  liftable = effectorIsFoot ? 1 : 0;
+        bool propped = rig.onKnees() || rig.floorSeat() || rig.seatPin() >= 0 || rig.suspended();
+        for (std::size_t p = 0; p < rig.pins().size() && !propped; ++p) {
+            const int node = rig.pins()[p].node;
+            if (node < 0) {
+                continue;
+            }
+            if (rig.pinIsLive(p) || !footClass(node)) {
+                propped = true; // a knee or a hand on the floor, a pinned hand: not a two-footed stance
+            } else if (rig.pinUnderEffector(p)) {
+                ++liftable; // the foot under a dragged knee
+            } else {
+                standing = static_cast<int>(p);
+                ++standingCount;
+            }
+        }
+        if (!propped && standingCount == 1 && liftable == 1) {
+            const std::vector<glm::vec2> footprint = rig.pinFootprintPoints(static_cast<std::size_t>(standing));
+            glm::vec2 centre(rig.pins()[static_cast<std::size_t>(standing)].target.x,
+                             rig.pins()[static_cast<std::size_t>(standing)].target.z);
+            if (!footprint.empty()) {
+                // The MIDFOOT: halfway from the ankle to the footprint's centroid. A body on one
+                // leg stands over its midfoot, between the heel and the ball; the footprint's
+                // points are mostly the toes', and on a rig whose toes splay outward the
+                // centroid alone sat 4cm outside the ankle.
+                glm::vec2 centroid(0.0f);
+                for (const glm::vec2& v : footprint) {
+                    centroid += v;
+                }
+                centroid /= static_cast<float>(footprint.size());
+                centre = 0.5f * (centre + centroid);
+            }
+            std::vector<int> parents(m_bones.size());
+            for (std::size_t i = 0; i < m_bones.size(); ++i) {
+                parents[i] = m_bones[i].parent;
+            }
+            const glm::vec3 com = BalanceController::centerOfMass(m_jsStartPos, parents, rig.masses());
+            m_jsWeightShift = centre - glm::vec2(com.x, com.z);
+            static const bool kWeightTrace = std::getenv("IK_JS_WEIGHT_TRACE") != nullptr;
+            if (kWeightTrace) {
+                const IkEffector& pin = rig.pins()[static_cast<std::size_t>(standing)];
+                std::fprintf(stderr, "[weight] standing %s target(%.4f %.4f %.4f) footprint %zu centre(%.4f %.4f) com(%.4f %.4f %.4f) shift(%.4f %.4f)\n",
+                             m_boneNames[static_cast<std::size_t>(pin.node)].c_str(), pin.target.x, pin.target.y, pin.target.z,
+                             footprint.size(), centre.x, centre.y, com.x, com.y, com.z, m_jsWeightShift.x, m_jsWeightShift.y);
+                for (const glm::vec2& v : footprint) {
+                    std::fprintf(stderr, "[weight]   footprint point (%.4f %.4f)\n", v.x, v.y);
+                }
+            }
+        }
+    }
     m_jsBall.assign(m_bones.size(), -2);
     m_jsToeMates.assign(m_bones.size(), {});
     m_jsBallTargetValid.assign(m_bones.size(), 0);
@@ -553,6 +694,51 @@ bool Armature::beginIkDrag() {
     m_jsFootAllowValid = 0;
     m_jsTargetDown = 0.0f;
     m_jsHandSlideEase = 0.0f;
+    m_jsHandLayValid = false;
+    m_jsHandLayEase = 0.0f;
+    m_jsRawTargetValid = false;
+    // THE TIPTOE (dragIkTick): a hand pulled up beyond its reach lifts the heels. Read here, once,
+    // whether this drag is one that can: a LIMB's joint — not the root, not a trunk joint, not a
+    // foot's — dragged from a stance of exactly two planted feet with nothing else on the floor:
+    // no live contact (a hand or a knee down is a propped body), no user pin (a pinned foot
+    // cannot pitch, a pinned hand holds the body), not on her knees or her seat, not suspended.
+    m_jsTiptoeDrag = false;
+    m_jsTiptoeRoom = -1.0f;
+    m_jsTiptoeD = 0.0f;
+    m_jsTiptoeH0 = 0.0f;
+    m_jsTiptoe = 0.0f;
+    m_jsTiptoeTheta = 0.0f;
+    {
+        const IkRig& rig = *m_ikRig;
+        const int effector = rig.dragEffector();
+        const float scale = rig.sizeScale();
+        const auto footClass = [&](int node) {
+            return node >= 0 && static_cast<std::size_t>(node) < m_ikBindPos.size() &&
+                   m_ikBindPos[static_cast<std::size_t>(node)].y < 0.20f * scale;
+        };
+        bool can = effector >= 0 && effector != rig.rootNode() && !footClass(effector) && !rig.effectorIsTrunk() &&
+                   !(rig.onKnees() || rig.floorSeat() || rig.seatPin() >= 0 || rig.suspended());
+        int standing = 0;
+        for (std::size_t p = 0; p < rig.pins().size() && can; ++p) {
+            const int node = rig.pins()[p].node;
+            if (node < 0) {
+                continue;
+            }
+            if (rig.pinIsLive(p) || rig.pinIsUser(p) || !footClass(node) || rig.pinUnderEffector(p)) {
+                can = false;
+            } else {
+                ++standing;
+            }
+        }
+        m_jsTiptoeDrag = can && standing == 2;
+    }
+    if (m_ikScope == IkScope::Chain) {
+        // A SCOPED drag moves the chain alone: no weight shift under a lifted foot, no tiptoe.
+        m_jsWeightShift = glm::vec2(0.0f);
+        m_jsTiptoeDrag = false;
+    }
+    m_jsSoleEaseValid = false;
+    m_jsSoleEase = 1.0f;
     m_jsBallOffset.assign(m_bones.size(), glm::vec3(0.0f));
     return true;
 }
@@ -647,11 +833,21 @@ bool Armature::dragIkTo(const glm::vec3& targetWorld) {
                      glm::vec3(m_poseGlobal[static_cast<std::size_t>(m_ikRig->dragEffector())][3]);
     }
     glm::vec3 target = mapped ? mappedTarget : cursor - grabOffset;
+    if (kDragStateTrace) {
+        const glm::vec3 eff(m_poseGlobal[static_cast<std::size_t>(m_ikRig->dragEffector())][3]);
+        std::fprintf(stderr, "[drag-map] cursor(%.4f %.4f %.4f) offset(%.4f %.4f %.4f) target(%.4f %.4f %.4f) effector(%.4f %.4f %.4f) measured=%d mapped=%d",
+                     cursor.x, cursor.y, cursor.z, grabOffset.x, grabOffset.y, grabOffset.z, target.x, target.y, target.z, eff.x, eff.y, eff.z,
+                     m_ikGrabMeasured ? 1 : 0, mapped ? 1 : 0);
+        std::fputc(10, stderr);
+    }
     // The floor bounds the cursor too: the grabbed joint cannot be asked below its clearance.
     target.y = std::max(target.y, -m_transform[3][1] +
                                       m_ikRig->floorClearance(m_ikRig->dragEffector()));
     // The body volumes bound it too (see IkRig::bodyVolumes): a cursor inside the torso asks
-    // for the hand at the chest's surface, not through it.
+    // for the hand at the chest's surface, not through it. (The hand lay reads the target as it
+    // was before: a cursor inside the body is a hand on it.)
+    m_jsRawTarget = target;
+    m_jsRawTargetValid = true;
     if (!m_ikRig->bodyVolumes().empty()) {
         std::vector<glm::vec3> current(m_bones.size());
         for (std::size_t i = 0; i < m_bones.size(); ++i) {
@@ -684,6 +880,7 @@ void Armature::endIkDrag() {
     if (m_ikRig) {
         m_ikRig->endDrag();
     }
+    m_ikScope = IkScope::Body;
 }
 
 void Armature::holdNudgedBoneThroughDrag(int bone) {

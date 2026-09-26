@@ -99,6 +99,30 @@ constexpr double kRootStiffnessVertical = 1000.0;
 /// at 200 / (2 x 4500) = 2cm — pulled up by the chest or the head, a kneeling figure did not
 /// rise at all. Balance (its own row) still says how far the hips may go.
 constexpr double kRootYieldStiffness = 30.0;
+/// REACHING DOWN (ikTrunkPolicy): under a HAND pushed down the hips' vertical yield is this share of
+/// a chest push's (the exponent kRootYieldStiffness is reached by), so the trunk's hinge can compete
+/// with the squat — at 0.5 the vertical price bottoms at 173/m^2 instead of 30: a hand to the knee is
+/// a bow over softened knees, a hand to the floor a fold at the hips AND a bend of the knees.
+constexpr double kReachSquatShare = 0.5;
+/// ... and the pelvis's coupling "range" under a hand's reach down (degrees; the bow's is
+/// kTrunkHingeRangeDeg): the spine follows the pelvis's pitch at the same share of its range, so a
+/// larger range here is a fold that lives more at the hips and less in a curling spine.
+constexpr double kReachHingeRangeDeg = 220.0;
+/// ... the pelvis's pitch price under a hand's reach down (per rad^2, over the reach's share): firm
+/// enough that its folding REFERENCE decides the fold, soft enough that the cursor's bounded pull can
+/// bend it 20 degrees; and the reference's fold — degrees a metre of the hand's downward travel,
+/// capped. A hand brought to the knee (30cm) folds ~30 degrees over softened knees; to the floor,
+/// the cap, over bent knees.
+constexpr double kReachHingeStiffness = 300.0;
+constexpr double kReachFoldPerMetre = 125.0;
+/// THE KNEES BEND ALIKE under a hand's reach down (ikSpineCoupling): a soft coupling between the two
+/// standing legs' fold channels, per rad^2 of the difference in their range shares, by the reach's
+/// share. A deep one-handed reach leaves one knee straight and the other bent 20-30 degrees. OFF
+/// (0): tried at 30 on 2026-09-25 — a straight knee is a fold BOUND, so the coupling could only pull
+/// the bent knee straight to match it, and a character rig's floor reach then missed by 24mm with
+/// both legs straight under a fold at its cap. IK_JS_REACHKNEECOUPLING=30 is the A/B.
+constexpr double kReachKneeCoupling = 0.0;
+constexpr double kReachFoldMaxDeg = 55.0;
 /// The pelvis's price, every way, while a dragged FOOT is on the floor (the SLIDE, see solveIk):
 /// per m^2. A stance cannot widen or lengthen without the hips coming between the feet and down —
 /// that is geometry, not preference (a hand pull is the opposite case: there the pelvis must
@@ -110,10 +134,29 @@ constexpr double kRootYieldStiffness = 30.0;
 /// resolved the legs' volumes by carrying the hips 17cm forward. 250 halves that, and a stride,
 /// a back step and a side step are the same to the millimetre.)
 constexpr double kLegDragRootStiffness = 250.0;
+/// THE WEIGHT SHIFT (ikPostureModel): how much of the way from the centre of mass, as a drag found
+/// it, to the standing foot's footprint centre the hips' HOME moves as the other foot lifts. 1 puts
+/// the weight over the middle of the standing foot — a person on one leg stands over it, the
+/// standing leg sloping in from the foot to a pelvis that has come across it; a smaller share would
+/// leave the rest to the trunk (balance, blind to what a drag began with, does not ask for it).
+/// The home moves at the pins' pace (kPinEaseStep) toward lift x share x the shift.
+constexpr double kWeightShiftShare = 1.0;
+/// CONTRAPPOSTO (ikPostureModel): standing on one leg under the weight shift, the pelvis ROLLS the
+/// free side down by this many degrees at the full lift (the standing hip hikes), and the chest is
+/// kept level by the sway's row — the spine curving back between them. A relaxed one-leg stance
+/// drops the unloaded hip 5-8 degrees; a dead-level pelvis over one foot reads as a mannequin.
+constexpr double kContrappostoDeg = 8.0;
+/// ... and the share the roll's price is divided by while nothing is lifted (the pelvis frozen at
+/// kRootRotationStiffness x kRootSquareness / this): the roll is an unknown from the drag's first tick.
+constexpr float  kContrappostoFloor = 0.02f;
 /// A sliding foot's SOLE: pitch, heading, level (per rad^2, x the slide). Soft next to the
 /// cursor's pull (200), two decades over the foot's own posture term — the sole stays on the floor
 /// as the leg swings out under it, and gives way before the cursor does.
 constexpr double kSlideSolePitchWeight = 20.0;
+/// ... and the sole's flat target is approached at this many degrees a tick from the rotation the
+/// slide found the foot at (ikCursorRows): a foot set down from a tilted carry rolls flat over its
+/// descent rather than flipping in two ticks. The landing hand's palm turns at kPalmTurnStepDeg.
+constexpr float  kSoleTurnStepDeg = 5.0f;
 constexpr double kSlideSoleHeadingWeight = 200.0;
 constexpr double kSlideSoleRollWeight = 20.0;
 /// A KNEE dragged over its planted foot (see the knee drag in solveIk): the foot lets go as the
@@ -214,13 +257,65 @@ constexpr double kKneelTiltScale = 5.0;
 /// The foot below a knee that is on the floor holds its PLACE this softly (per m^2): solveIk's
 /// ball row.
 constexpr double kKneelFootHold = 1.0e4;
+/// A KNEELING FOOT LIES FLAT (2026-09-26; the user, with a photo of a kneel-sit: "feet get
+/// unrealistically stretched ... way more common to flatten feet out against the floor"). The foot
+/// behind a knee that is ON the floor stood on its tucked toes — the ball pinned hard at the floor,
+/// the toes held level, the ankle at its dorsiflexion limit — where a kneeling person's foot lies
+/// on its top, toes pointing back. Once the knee has landed (its height over its planted height
+/// under kKneelFlatLandFrom .. To, figure-scaled) and while its hold stands, the foot's share
+/// m_jsFootFlat eases in at kKneelFlatEaseStep a tick: the ball's row falls by kKneelFlatRowDecades
+/// over the share (and its target tracks the ball, so the returning row starts from where the ball
+/// lies), the toes' hold with it, the floor's rows come onto the foot, and the ankle's pitch channel
+/// gets a REFERENCE at its plantar limit — advanced from where the channel stands at
+/// kKneelFlatTurnStepDeg a tick, at kKneelFlatStiffness per rad^2 over the share — so the foot rolls
+/// over its toes onto its top and the floor stops it there (a price only prefers less travel; the
+/// pose is given), and every toe joint below the ankle eases straight the same way. The lying foot's
+/// ball and heel offsets are re-seated on it (m_jsFlatBallOffset / m_jsFlatHeelOffset). Let go of by
+/// its knee — the knee's hold fading with the body's rise; a knee held down by its ceiling keeps its
+/// foot lying — the foot UNROLLS back onto its toes in place at kKneelFlatUnrollStepDeg, its ball
+/// held by a soft spring where it lay and the knee above it under a ceiling that rises with the roll
+/// (kKneeUnrollLift); at the handover the standing model returns from the tucked foot. A foot found
+/// within kKneelFlatNearLimitDeg of its plantar limit under a planted knee at a press is flat from
+/// the first tick. IK_JS_NO_KNEEL_FLAT restores the tucked-toe kneel; IK_JS_KNEELFLAT is the
+/// stiffness; IK_JS_KNEEL_FLAT_TRACE prints each foot's share, reference and offsets per tick.
+constexpr float  kKneelFlatEaseStep = 0.1f;
+constexpr float  kKneelFlatUnrollStepDeg = 4.0f; ///< ... and back onto its toes (the UNROLL, under a body getting up, whose knee lifts with it) at this pace: 100 degrees in 0.4s
+constexpr float  kKneelFlatTurnStepDeg = 2.5f; ///< (150 degrees a second: a foot on tucked toes rolls onto its top in three quarters of a second; at 4 the roll ran into a kneel's still hold at 26mm a tick at the toes)
+constexpr double kKneelFlatStiffness = 300.0;
+constexpr float  kKneelFlatLandFrom = 0.005f;
+constexpr float  kKneelFlatLandTo = 0.02f;
+constexpr double kKneelFlatRowDecades = 8.0;
+constexpr float  kKneelFlatNearLimitDeg = 20.0f;
+/// A knee whose lying foot is rolling back onto its toes may lift this far (m, figure-scaled) times
+/// the roll's progress: it comes up as the toes tuck under, no faster. Held down until the handover
+/// the rise stalled and let go in one tick (260mm); free, the knee lifted with the hips while the foot
+/// hung in the air on its soft spring, and the returning rows brought it down in a tick (52-275mm).
+constexpr float  kKneeUnrollLift = 0.25f;
+/// A LYING FOOT UNDER A DRAWN-UP KNEE (ikPinRows, ikPinRowsEnd) hangs with its lowest joint this far
+/// (m, figure-scaled) clear of the floor while it still points down past level by more than
+/// kLyingFootHangClearToDeg, none from kLyingFootHangClearFromDeg: hung exactly at the height that
+/// put its lowest joint AT the floor, the toes dragged, the floor's rows bent them up to their
+/// limits tick by tick (the hang read off the shape the rows had just bent — a ratchet), and they
+/// sprang back 100mm at a tip when the turning foot lifted them off. The clearance fades as the
+/// foot comes level so the landing is a landing.
+constexpr float  kLyingFootHangClear = 0.03f;
+constexpr float  kLyingFootHangClearFromDeg = 10.0f;
+constexpr float  kLyingFootHangClearToDeg = 40.0f;
+constexpr float  kKneelFlatTrackFrom = 0.3f; ///< the share from which the ball's target tracks the ball (the row is soft enough by then)
+constexpr float  kKneelFlatLandStep = 0.01f;  ///< a foot rolled back to standing LANDS at this pace (m a tick), not a step's 2.5cm: hauled at the pins' pace onto a spot 16cm ahead with the row hardening, the leg shot straight (219mm at the knee in a tick)
 /// ... and it is let go of altogether as the HIPS go ahead of that knee under a pelvis drag (a body
 /// lowered onto its belly folds its shins up behind it): the foot's rows fade over this travel.
 constexpr float kProneFootFreeFrom = 0.08f;
 constexpr float kProneFootFreeFull = 0.25f;
 /// ... and a planted knee is unloaded by a RISE only once the hips stand this share of the thigh's
-/// length over it (getting up off the belly comes onto all fours first).
-constexpr float kKneeUnloadHeight = 0.6f;
+/// length over it (getting up off the belly comes onto all fours first). The share is the cosine of
+/// the thigh's lean from vertical AS THE DRAG FOUND IT: all fours puts the socket 0.94-0.97 of the
+/// thigh over the knee on every reference rig (a hip drag up from there STANDS her), the base rig's
+/// flat prone 0.44 - and a heavy character's half-flat prone, his arms as struts holding the
+/// shoulders up, 0.70: past the 0.6 this was, so his knees lifted as the hips rose and he stood up
+/// into a bear crawl where the base comes onto all fours (2026-09-26). 0.8 is a thigh 37 degrees
+/// from vertical, a tenth of the thigh clear of both.
+constexpr float kKneeUnloadHeight = 0.8f;
 constexpr double kSpineCoupling = 80.0;
 /// ... and the NECK's links to it (see the couplings in solveIk): the neck is the spine's top.
 constexpr double kNeckCoupling = 80.0;
@@ -258,6 +353,68 @@ constexpr double kPalmHeadingWeight = 3.0;
 /// degrees a tick: the pull is soft, but so is a wrist, and asked for flat at once a hand that
 /// landed on its fingertips snapped down 16cm in the tick after.
 constexpr float kPalmTurnStepDeg = 4.0f;
+/// ... and the eased target never LEADS the hand by more than this (degrees; IK_JS_PALMLEAD): every palm
+/// ease — a landed hand's rows, the lay on the body, the slide along the floor — turns its target toward
+/// the lie at kPalmTurnStepDeg a tick whether or not the hand can follow, and a hand whose arm is folded
+/// under a prone chest with its wrist pinned to the floor cannot turn at all: the target ran 78 degrees
+/// ahead of it (3.7 a tick, the js-cost trace) and the pull, 30/rad^2 at 1.4 rad, finally snapped the arm
+/// into the basin where the palm lies flat — the folded arm's ONE-TICK UNFOLD as the hips rise off the
+/// belly (124-177mm at the forearm, a soft spot since 2026-09-23). Capped, the pull is bounded (30 x
+/// 0.35^2), the hand turns as fast as it is able and no faster than 4 degrees a tick, and a hand that
+/// cannot turn is left alone until the body's rise gives its arm the slack.
+constexpr float kPalmLeadDeg = 20.0f;
+/// A HAND LAID ON THE BODY (ikCursorRows): a dragged wrist whose target comes to rest against a body
+/// volume — the hip, the chest, the head, a knee, the other forearm — lies on its PALM there as a
+/// hand on the floor does. The lay comes in as the target's clearance of the nearest capsule closes
+/// on the wrist's own volume clearance (IkRig::volumeClearance, 3cm for a hand: the drag clamp puts a
+/// hand pressed to the hip exactly there): in full within kHandLayNear of it, none from kHandLayFar
+/// (metres, figure-scaled). A function of the target, like the foot slide's band.
+constexpr float kHandLayNear = 0.01f;
+constexpr float kHandLayFar = 0.06f;
+/// ... at the floor palm's weights (per rad^2, x the lay): the palm's tilt off the surface about the
+/// two tangent axes, and the fingers' heading ACROSS it — soft, so the arm chooses (a hand on the
+/// hip points its fingers down or forward as the elbow finds cheapest; the user turns it further).
+constexpr double kHandLayPitchWeight = 30.0;
+constexpr double kHandLayLevelWeight = 30.0;
+constexpr double kHandLayHeadingWeight = 3.0;
+/// ... and the lay's target turns from the rotation the hand had where its target entered the band
+/// toward the lie at this pace, degrees a tick (the floor palm's kPalmTurnStepDeg). IK_JS_HANDLAYSTEP.
+constexpr float kHandLayTurnStepDeg = 4.0f;
+/// A HAND LIES ON WHAT IT RESTS AGAINST, NOT ON WHAT IT PASSES: the lay comes in as the target SLOWS -
+/// its followed move per tick under kHandLaySpeedFrom in full, none from kHandLaySpeedTo (metres a
+/// tick, figure-scaled: 4mm a tick is 0.24 m/s). Engaged at any speed, a hand dragged past the body -
+/// the bench path along the hip, a seated hand reaching forward over its thigh, a hand rising past the
+/// chest to the head - was turned onto each surface it brushed, and where the forearm's twist ran out
+/// mid-pass the arm flipped basins (65-107mm in a tick on the oldest rigs, whose T-pose arms travel
+/// furthest). A hand placed and held lies as before, and the pose at rest is the target's: only the
+/// transient is the path's, as the ease's already was. IK_JS_HANDLAYSPEEDFROM/TO, IK_JS_HAND_LAY_ANY_SPEED.
+constexpr float kHandLaySpeedFrom = 0.004f;
+constexpr float kHandLaySpeedTo = 0.010f;
+/// ... and the lie's target eases from the rotation the hand HAS at kHandLayTurnStepDeg × the lay a tick
+/// — while the lay is under this much, the start rotation and the side are re-read every tick. Run at
+/// full pace from the tick the target entered the band while the speed gate held the rows at nothing
+/// through the move, the eased target stood at the full lie by the stop, the rows came in within two
+/// ticks, and a hand still 40-55 degrees off was asked round at once (35-53mm hold jumps on four heavy
+/// characters of the sweep).
+constexpr float kHandLayEngage = 0.05f;
+/// (A fade of the lay with the limb's STRETCH — a hand at full reach touching with its fingertips — was
+/// tried and reverted: measured over the whole limb from the collar's root it read 0.5 on the head it
+/// was made for, and a seated hand laid on the knee IS at the arm's full reach, the trunk leaning to it,
+/// so the fade took its lay away on every rig. A hand at its joint LIMITS is another thing than a hand
+/// at its length; the one case — a short-armed character's hand barely reaching the crown of its head,
+/// the upper arm at 110 and the collar at its caps, the palm 41 degrees from flat and hopping 42mm in
+/// the hold — stands as a soft spot.)
+/// ... and WHICH SIDE of the hand lies on the surface — the palm, or the BACK of the hand — is
+/// decided by the forearm's TWIST ROOM where the target enters the band: for each side, the rotation
+/// from where the hand is to its lie, its part about the forearm's axis, against the room the twist
+/// channels between the wrist and the elbow have in that direction (the pronation left). The PALM is
+/// preferred in front of the body and the BACK of the hand behind it (a hand behind the back rests on
+/// its back: a forearm cannot pronate that far round), and the other side is taken only when the
+/// preferred one is short of twist by this many degrees more. Read off the wrist's own rotation where
+/// the target entered the band the side was a coin flip — a hand arriving with its palm 79 degrees
+/// off the sacrum was laid palm-in by the forearm twisted to its -90 limit — and the forearm's neutral
+/// palm is the same coin (the wrist is unturned at entry). IK_JS_HANDLAYBACKMARGIN.
+constexpr double kHandLayBackMarginDeg = 15.0;
 /// ... and the hold of the FINGERTIP's height on the floor, per m^2: the contact's own, faded as
 /// the contact is. (Softened to 2000 for a day so that a figure taken back up off all fours in the
 /// same drag would let go of the floor - which was the contact's UNLOAD being read over the height
@@ -269,6 +426,12 @@ constexpr float kPalmTurnStepDeg = 4.0f;
 /// ABOVE the rig's lift-off test (kLiveContactTaut 0.95), so a hand hanging from its straight arm
 /// reads taut there every tick and lifts off (solveIk, the live-contact block).
 constexpr float kHandSlackShare = 0.97f;
+/// ... and a hand the RISE has unloaded (its arm not slack) is TAUT to the rig's lift-off once the rise
+/// term has faded its hold this far along the six-decade fade (0.9: 1e8 x 10^-5.4 = 400/m^2, under the
+/// pelvis's own price — a spring that holds nothing; m_jsContactRiseUnloaded, IK_LIFT_TAUT_ONLY). At
+/// 0.999 the flag came two ticks before the pop it was made for, and the lift-off's three-tick
+/// confirmation put the release IN the pop tick (2026-09-26).
+constexpr float kRiseUnloadedShare = 0.9f;
 /// A kneel-start trunk drag unloads its HAND contacts over this much upward travel of the target
 /// (metres, figure-scaled): the trunk leaving its hands, which come off the floor at once.
 constexpr float kKneelUpUnloadCm = 0.015f;
@@ -336,6 +499,37 @@ constexpr float  kElbowReachBand = 0.06f; ///< a target this far beyond it still
 /// A collar's range is a third of a shoulder's, but so is its lever's reach — at its plain price
 /// it did a third of every elbow move, carrying the socket 6cm as an elbow swung 8.
 constexpr double kElbowGirdleStiffness = 20.0;
+// THE COLLAR ELEVATES THIS MUCH AT MOST under a hand drag (2026-09-25; ikStiffnessClasses finds the
+// dragged arm's collar and its elevation channel — the unlocked channel about the fore axis — and
+// ikPostureModel narrows that channel's box to +-this about the bind, never tighter than where the
+// collar already stands: the fold bound's idiom; IK_JS_COLLARMAX). The rigs author 55 degrees; a
+// clavicle rises about 30, and a hand raised overhead takes exactly that on the base rig. At the
+// limb's price a collar with a 65-degree range is the cheapest joint in the arm, and a hand dragged
+// straight to the nape from the rest pose had it at all three of its limits (twist 30, swing -17,
+// elevation -55), the socket hauled 15cm up onto the neck; the cap halves the hoist. THREE MORE WERE
+// TRIED AND REJECTED THE SAME DAY, each measured on the eight rigs: (1) the collar's twist and swing
+// PRICED like the trunk (x4-x100) — those two channels are what carry an arm smoothly from one basin
+// to the next (a hand raised beside the head from the rest pose goes up the EXTENSION route first,
+// the arm swung back, and comes round into flexion as it nears the head, the collar's swing bridging
+// the two): priced x10 and more the male rig's arm FLIPPED 136mm in one tick where it had moved 19,
+// and every other rig's move doubled; (2) a SCAPULOHUMERAL RHYTHM coupling (the collar's elevation
+// held to half the arm's, 200/rad^2) — it subsidized elevation through the collar, sent the same
+// gesture up the extension route to the -40 limit and flipped it 174mm on the base rig; (3) a
+// SCAPULAR PLANE bias (the arm's swing reference 30 degrees forward for a target above the socket)
+// — a tie-breaker at the limb's price that moved reachable poses (a phone to the ear from 41 to 77
+// degrees of flexion) and nothing out of reach.
+constexpr double kCollarElevationMaxDeg = 30.0;
+// ... and its SWING and TWIST this much (IK_JS_COLLAROTHERMAX): a clavicle protracts or retracts
+// about 15 degrees and turns about as much on its axis. With the elevation alone capped, a hand
+// pulled straight up beyond the arm's reach jammed the base rig's collar twist at -30 and its swing
+// at +26 — their authored limits — for the reach the elevation no longer gave: the pull takes
+// whatever collar freedom is left. A BOX, not a price: the collar's swing and twist within these
+// bounds are what carry an arm smoothly from one basin to the next (the rejected price above), and
+// a box is inert until reached.
+constexpr double kCollarOtherMaxDeg = 15.0;
+// (Both are a STANDING body's: a body hanging by its hand has its girdle stretched to the authored
+// limits — with the box the two oldest generations' rigid hang rested 81-87mm short of the cursor,
+// 52-66 before — so the box stands down while suspended.)
 /// ... and the planted foot below a dragged knee may TURN on its spot (its heading, per rad^2:
 /// every other planted foot's is 4e6): a knee swung out or in over a foot that must keep pointing
 /// ahead is a knee that cannot go — the leg turns out from the hip, foot and all, or not at all.
@@ -386,6 +580,10 @@ constexpr float kBallHeightFraction = 0.45f;
 /// A FOLD channel: at least this much range, all but a sliver of it to one side of straight.
 constexpr float kFoldRangeDeg = 100.0f;
 constexpr float kFoldNarrowFraction = 0.2f;
+/// ... and a fold joint is a HINGE: the bone's other channel — the twist excepted — spans no more
+/// than this (degrees). A knee's side channel spans 10, an elbow's is locked; a thigh's flexion
+/// spans 150, and its abduction channel, -85..15 on the two oldest generations, is not a fold.
+constexpr float kFoldHingeOtherDeg = 60.0f;
 /// Channels with under this range are locked (a twist bone's swing axes): not unknowns.
 constexpr float kLockedRangeDeg = 2.0f;
 /// A pin target the rig MOVED (ground healing, a heel lift, a landing, a slide) is approached
@@ -394,6 +592,21 @@ constexpr float kPinEaseStep = 0.025f;
 /// A limb asks the BODY up only by what lies beyond this share of its reach (see the rise in
 /// dragIkTick): a straight arm is not a comfortable one, so a little short of the whole.
 constexpr float kLimbReachShare = 0.95f;
+// THE TIPTOE (dragIkTick, ikPostureModel, ikPinRows; 2026-09-25): a hand pulled UP beyond the
+// arm's reach lifts the HEELS — the body rises onto the balls of the feet before the lift-off
+// takes her off the floor. The root's home rises by what the limb cannot give upward (the
+// limb rise's own measure, less the height the legs had left), up to the heel lift this much
+// plantar flexion about the ball gives: d sin t + h0 (cos t - 1) for an ankle d behind the
+// ball and h0 over it — 6cm on the base rig (d 12.5cm, h0 5cm). Real tiptoe is 35-45 degrees
+// of plantar flexion beyond standing; the ankle's own limit is the box, and an over-ask rests
+// there. Before it a hand pulled 10cm beyond reach lifted the heels 15mm (the soft heel rows'
+// 2 x 2000 and the root's 1000 against the cursor's bounded pull) and rested 97mm short.
+// IK_JS_NO_TIPTOE is the A/B, IK_JS_TIPTOE_DEG the pitch.
+constexpr double kTiptoeDeg = 35.0;
+// ... and it begins where the arm's OWN reach ends — the target beyond the limb's full length
+// from its socket, not the limb rise's kLimbReachShare (0.95): at 0.95 a hand that could reach
+// flat-footed (+86cm on the base rig, 0.04mm short) went 4.6cm onto its toes.
+constexpr float kTiptoeReachShare = 1.0f;
 /// ... and the pace a LIFTED body comes up to its cursor at (see dragIkTick): per tick.
 constexpr float kLiftRiseStep = 0.025f;
 inline const bool kNoLiftEase = std::getenv("IK_JS_NO_LIFT_EASE") != nullptr; // A/B probe

@@ -101,11 +101,15 @@ shot 52c_prone_threeq
 # shoulders, and as the trunk pivots up over the knees the arms go taut before the hips arrive -
 # a hand unloads and lifts, one arm straight and the other in the air.)
 view right
+# (Each hand pulled straight DOWN under its shoulder, since the prone lies flat with straight legs and
+# lying feet, 2026-09-26: dragged 14% forward, as the tucked-foot prone had them, the hands stood
+# behind the shoulders once the trunk pivoted up over the knees, the arms went taut and both hands
+# lifted off - she kneeled up with her hands in the air.)
 press lHand
-dragv -0.14 -0.06 40 20
+dragv 0.00 -0.06 40 20
 release
 press rHand
-dragv -0.14 -0.06 40 20
+dragv 0.00 -0.06 40 20
 release
 press hip
 dragv 0.15 0.25 80 40
@@ -119,9 +123,11 @@ expect grab < 20
 expect y.lHand < 90
 expect y.rHand < 90
 expect y.lShin < 90
-# (147 at the right forearm: the arm folded under her unfolds in one tick as the hips rise -
-# the soft cost climbs for 25 ticks and lets go at once. A soft spot, 2026-09-23.)
-expect jump < 160
+# (15 since the palm eases' LEAD CAP, 2026-09-26. It read 124-177: the arm folded under her unfolded in
+# one tick as the hips rose - the landed hand's palm target turned on toward flat at 4 degrees a tick
+# while the pinned hand under the chest could not follow, ran 78 degrees ahead, and its pull snapped
+# the arm into the basin where the palm lies flat. The target leads the hand by 20 degrees at most now.)
+expect jump < 40
 expect steps < 1
 shot 53c_prone_up_side
 release
