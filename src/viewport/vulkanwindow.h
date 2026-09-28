@@ -116,11 +116,11 @@ public:
     /// without a selection or before the renderer exists; a drag in flight is ended first, and
     /// the undo history is cleared (model indices shift; the deleted figure's poses are moot).
     void deleteSelectedObject();
-    /// Resets the scene to a FRESH LAUNCH (File → New, and the base of Open): every model removed,
-    /// camera home, shade mode / skeleton / lighting dials / HDRI back to the startup defaults, the
-    /// import queue + pending pose dropped, and the undo/redo history cleared (a new history point —
-    /// Ctrl+Z does not undo a New). No-op before the renderer exists. Open-in-progress pose edits are
-    /// closed first, so no settle/fall keeps ticking at already-deleted models.
+
+    /// Resets the scene to a FRESH LAUNCH (File → New; the base of Open): models, camera,
+    /// shade mode / skeleton / lighting / HDRI back to startup defaults, history cleared —
+    /// Ctrl+Z does not undo a New. Open pose edits are closed first (no settle/fall ticking at
+    /// deleted models). No-op before the renderer exists.
     void resetToEmptyScene();
 
     /// Pose utilities (Edit menu / the joint context menu), each ONE undoable pose edit on the

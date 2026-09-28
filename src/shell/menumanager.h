@@ -47,9 +47,11 @@ public:
     /// Gives the File → Import actions a viewport to load models into. Must be called before the
     /// user can import (from main.cpp, once the viewport exists).
     void setViewportWidget(pose::ViewportWidget *viewport);
+
     /// Registers the live Environment tab so File → New can reset it to the startup defaults
     /// (dials + HDRI caption) alongside the scene. From main.cpp, once the panel exists.
     void setEnvironmentPanel(pose::EnvironmentPanel *panel);
+
     /// Opens the Preferences dialog, jumping straight to `initialTab` if given (e.g. "Assets"),
     /// or leaving it on whichever tab it last opened to otherwise. Shared by the Edit menu's
     /// "Preferences" action and any other entry point that wants a specific tab (e.g. the

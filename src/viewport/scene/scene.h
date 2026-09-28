@@ -103,6 +103,7 @@ public:
     /// is idle first (the model's buffers/descriptors may be referenced by in-flight frames) —
     /// VulkanRenderer::deleteModel() does this.
     void removeModel(std::size_t index);
+
     /// Removes EVERY model, resetting the selection and the active figure — File → New and Open
     /// start from this (the renderer's own delete pass runs first, as for removeModel).
     void clearModels();
