@@ -286,7 +286,7 @@ private:
     std::unique_ptr<VulkanContext>  m_context;
     std::unique_ptr<VulkanRenderer> m_renderer;
     DeferredSceneState              m_deferred;
-    int           m_announcedShadeMode = kDefaultShadeMode; // last value announced via shadeModeChanged
+    int                            m_announcedShadeMode = kDefaultShadeMode; // last value announced via shadeModeChanged
 
     // =========================================================================================
     // Environment (vulkanwindow_environment.cpp)
