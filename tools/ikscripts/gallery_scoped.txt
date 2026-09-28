@@ -73,10 +73,9 @@ expect meshlow > -1
 expect meshlow < 1
 expect euler.lShin.x == 0
 shot 62b_ctrl_lifted_grounded_side
-# (Reset Pose takes the lift out of the pose and leaves the Ground button's drop in the model's
-# transform — she stands 30cm under the floor — so Ground again: a sunk figure is lifted out at once.)
+# (The lift and the drop are both in her pose: Reset Pose takes both back, and she stands on the
+# floor as imported. Until the drop went into the pose she stood 30cm under it here.)
 reset
-ground
 expect meshlow > -1
 expect meshlow < 1
 

@@ -430,6 +430,9 @@ private:
     void finishGroundFall();
     /// The fall timer's tick: advances the free-fall curve on real elapsed time.
     void onFallTick();
+    /// The ground drop as a pose edit: the settled-pose hook and its one undo entry, once she has
+    /// landed (and her landing's bounce is over) or the fall was completed at once.
+    void commitGroundDrop();
 
     /// The animated ground drop (groundFigure): WHICH model falls (the active figure at the
     /// button press — undo can switch the active figure mid-fall, and the remaining drop must

@@ -153,6 +153,14 @@ public:
     /// Translates the figure by @p dy along world Y (the animated ground drop applies its
     /// per-frame fall increments through this) and refreshes the bone world positions.
     void translateY(float dy);
+    /// Moves the figure by @p dy along world Y IN HER POSE: the solve root's pose translation —
+    /// the figure's place, what a hip walk and the Ctrl+drag figure move write and a pose file
+    /// carries as its `@trans:` row. The Ground button's drop goes here (2026-09-28), so it is a
+    /// pose edit like any other: undoable, saved with the pose, and taken back by Reset Pose
+    /// together with everything else. (It went into the model transform until then, which no pose
+    /// operation touches: a figure lifted in her pose, grounded, and reset stood below the floor
+    /// by the lift.) A boneless model has no pose: there it is translateY().
+    void shiftPoseY(float dy);
 
     // --- Pose state ---
     /// Current world-space position of each joint (updated whenever the pose changes).

@@ -767,6 +767,13 @@ bool Armature::dragIkTick(const glm::vec3& rawTarget) {
             m_jsContactLanding[at] = 0;
         }
     }
+    // (Tried and taken out, 2026-09-28: a live contact whose faded hold RETURNS — its joint back on
+    // the floor after a centimetre's rise — re-seated where the joint stands, its fingertip's height
+    // row eased back down from where the tip stood. It was the first reading of a custom character's
+    // prone pop (the hands 47mm from their pins as the hold came back), and it cut the pop from 258mm
+    // to 190; the cause was the solver's — a trial judged by the rows of the pose it had left, see
+    // JointSolver::descend — and with that mended the re-seat only made a reclining sit's hold jump
+    // 39mm where it jumps 8 on two rigs, and a prone descent 61 where it jumps 29.)
     std::vector<char> heldBefore(m_jsHangArms.size(), 0);
     for (std::size_t a = 0; a < m_jsHangArms.size(); ++a) {
         heldBefore[a] = hangArmHeld(m_jsHangArms[a]) ? 1 : 0;

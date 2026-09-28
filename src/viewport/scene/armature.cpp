@@ -298,6 +298,23 @@ void Armature::translateY(float dy) {
     computeSkinMatrices(); // refresh the transform-dependent bone world positions (picking/markers)
 }
 
+void Armature::shiftPoseY(float dy) {
+    const int root = (!m_bones.empty() && ensureIkRig()) ? m_ikRig->rootNode() : -1;
+    if (root < 0) {
+        translateY(dy); // (no skeleton: the model itself moves)
+        return;
+    }
+    // World -> model -> the root's parent frame, where a pose translation lives.
+    const Bone& bone = m_bones[static_cast<std::size_t>(root)];
+    glm::vec3   delta = glm::inverse(glm::mat3(m_transform)) * glm::vec3(0.0f, dy, 0.0f);
+    if (bone.parent >= 0) {
+        delta = glm::transpose(glm::mat3(m_poseGlobal[static_cast<std::size_t>(bone.parent)])) * delta;
+    }
+    m_boneTranslation[static_cast<std::size_t>(root)] += delta;
+    recomposePoseLocal(static_cast<std::size_t>(root));
+    computeSkinMatrices();
+}
+
 void Armature::computeSkinMatrices() {
     ++m_skinVersion;
     if (m_skinDualQuats.size() < 2) {

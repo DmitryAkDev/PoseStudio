@@ -100,16 +100,14 @@ A **pin** holds a joint exactly where it is through every later drag: a hand kep
 
 ## The Ground button
 
-A pose that bends the knees lifts the feet off the floor, because the hips stayed where they were. The **Ground** button on the viewport strip drops the active figure so the lowest point of its current pose rests on the floor — animated as a real fall (a metre takes about half a second). A figure sunk below the floor is lifted out at once. Grounding is refused while you are dragging, and it is not on the undo history.
+A pose that bends the knees lifts the feet off the floor, because the hips stayed where they were. The **Ground** button on the viewport strip drops the active figure so the lowest point of its current pose rests on the floor — animated as a real fall (a metre takes about half a second). A figure sunk below the floor is lifted out at once. Grounding is refused while you are dragging. It is a pose edit like any other: one undo step (`Ctrl+Z` puts her back where she was), saved with the pose in a [pose file](pose-files.md), and taken back by **Reset Pose** along with everything else.
 
-**She lands like a person.** A figure that comes down on her feet absorbs the landing: her knees fold, her hips dip over her planted feet, and she comes back up — all in under half a second. The higher the drop, the deeper the dip: a few centimetres' drop barely bends the knees, a drop from a metre or more is a real knee bend. It is for the eye only. When it is over she stands in exactly the pose you dropped her in, so nothing about your pose has changed and there is nothing to undo.
+**She lands like a person.** A figure that comes down on her feet absorbs the landing: her knees fold, her hips dip over her planted feet, and she comes back up — all in under half a second. The higher the drop, the deeper the dip: a few centimetres' drop barely bends the knees, a drop from a metre or more is a real knee bend. It is for the eye only. When it is over she stands in exactly the pose you dropped her in: the dip itself leaves no trace, and undoing the drop is the one undo step.
 
 - There is no bounce when she lands on anything but her feet — her knees, her hands, her seat — or when her hips are [pinned](#joint-pins).
 - Clicking, pressing a key or starting any edit while she is still falling or dipping finishes it at once.
 
 Figures import standing on the floor, so you rarely need this after an IK drag: planted feet keep the figure on the ground.
-
-One thing to know: the Ground button moves the figure itself, not her pose. If you lift her with Ctrl + drag, ground her, and then use **Reset Pose**, the lift is taken back out of the pose and she ends up below the floor by that much. Press **Ground** again and she is lifted out at once.
 
 ## Reset and mirror
 
@@ -127,7 +125,7 @@ Pins are left alone by all five.
 
 ## Undo and redo
 
-**Edit → Undo** (`Ctrl+Z`) and **Redo** (`Ctrl+Y`) walk one history of everything you changed: each drag, each rotation, each pin toggle, each utility and each pose file loaded — and each lighting change on the Environment tab. An entry is recorded when a gesture ends, so a long drag is one step. Deleting an object clears the history.
+**Edit → Undo** (`Ctrl+Z`) and **Redo** (`Ctrl+Y`) walk one history of everything you changed: each drag, each rotation, each pin toggle, each utility, each drop to the ground and each pose file loaded — and each lighting change on the Environment tab. An entry is recorded when a gesture ends, so a long drag is one step. Deleting an object clears the history.
 
 ## Several figures
 

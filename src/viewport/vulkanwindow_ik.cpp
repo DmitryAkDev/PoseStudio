@@ -218,9 +218,15 @@ void VulkanWindow::groundFigure() {
         return; // nothing to ground, or already resting on the floor
     }
     const int figure = scene().activeFigureIndex(); // the figure figureGroundGap measured
+    // The drop goes into her POSE (the root's pose translation: Armature::shiftPoseY), so grounding
+    // is a pose edit: one undo step, committed when she has landed (and her landing's bounce is
+    // over) — or at once, below.
+    m_preEditPose = scene().capturePose();
     if (lowestY < 0.0f) {
         // Sunk into the floor: nothing falls upward — lift it out in one step.
         scene().translateModelY(figure, -lowestY);
+        scene().finalizePose();
+        commitPoseUndo();
         requestUpdate();
         return;
     }
@@ -248,6 +254,7 @@ void VulkanWindow::onFallTick() {
             m_fall.timer->stop();
             m_fall.bouncing = false;
             m_fall.figure = -1;
+            commitGroundDrop();
         }
         requestUpdate();
         return;
@@ -276,8 +283,16 @@ void VulkanWindow::onFallTick() {
         } else {
             m_fall.timer->stop();
             m_fall.figure = -1;
+            commitGroundDrop();
         }
     }
+}
+
+void VulkanWindow::commitGroundDrop() {
+    // The drop is in her pose: the settled-pose hook, and one undo entry (against the snapshot
+    // groundFigure took; a no-op when nothing moved).
+    scene().finalizePose();
+    commitPoseUndo();
 }
 
 void VulkanWindow::finishGroundFall() {
@@ -297,6 +312,9 @@ void VulkanWindow::finishGroundFall() {
     m_fall.dropped = 0.0f;
     m_fall.bouncing = false;
     m_fall.figure = -1;
+    if (m_renderer) {
+        commitGroundDrop();
+    }
 }
 
 // --- X/Y/Z wheel hold --------------------------------------------------------------------------

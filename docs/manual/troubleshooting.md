@@ -23,7 +23,7 @@ PoseStudio renders with Vulkan, which needs a graphics driver that provides it. 
 - **Skin looks like wet plastic** in the PBR mode: lower **Specular** under Image-Based Lighting, or try a less glossy environment. Most skin materials render as intended; the remaining cases are content whose maps were authored for another renderer.
 - **The figure is dark**: raise **Exposure**, or switch the HDRI — some panoramas are much dimmer than others.
 - **A black or missing texture**: the texture file the material refers to is not where the preset expects it. PoseStudio skips textures it cannot decode and uses the material's colour.
-- **The figure floats or sinks**: press the **Ground** button. Figures import on the floor; loading a pose file, rotating joints with the `X`/`Y`/`Z` wheel, lifting her with Ctrl + drag, or Reset Pose after grounding a lifted figure can leave her off it.
+- **The figure floats or sinks**: press the **Ground** button. Figures import on the floor; loading a pose file, rotating joints with the `X`/`Y`/`Z` wheel, or lifting her with Ctrl + drag can leave her off it.
 
 ## Posing does not do what I expect
 

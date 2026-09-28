@@ -28,6 +28,10 @@ namespace pose {
 /// count 1.5-2cm of clearance, and the volumes were sized for that; the full radius on top of
 /// them read an upper arm laid across the chest as 1cm inside (a capsule chest has no give).
 constexpr float kVolumeSegmentFlesh = 0.6f;
+/// A segment's row in the SOLVE comes in from each end of the segment over this share of its
+/// length (from the 2% where the joints' own rows take over): cut in at full strength there, the
+/// cost of a pose jumped as a closest point crossed the line (armatureiksolverows.cpp).
+constexpr float kSegmentRowRamp = 0.12f;
 
 /// How a body volume applies to a node (BodyVolume::applies): 0 = not tested. 1 = a body
 /// joint, kept out by the solve's one-sided rows, the cursor clamp and the FK stop. 2 = a

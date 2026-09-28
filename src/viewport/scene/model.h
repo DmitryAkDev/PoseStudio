@@ -221,9 +221,10 @@ public:
     /// geometry to measure. The viewport animates the ground button's drop from this and
     /// applies it through translateY.
     bool groundGap(float& lowestY) const;
-    /// Translates the model by @p dy along world Y and refreshes the transform-dependent bone
-    /// positions (the animated ground drop applies its per-frame fall increments through this).
-    void translateY(float dy) { m_armature.translateY(dy); }
+    /// Moves the model by @p dy along world Y (the animated ground drop applies its per-frame fall
+    /// increments through this): a FIGURE in her pose — the root's pose translation, so the drop is
+    /// a pose edit (Armature::shiftPoseY) — a static model by its transform.
+    void translateY(float dy) { m_armature.shiftPoseY(dy); }
 
 private:
     /// Which of the model's meshes a record path draws.

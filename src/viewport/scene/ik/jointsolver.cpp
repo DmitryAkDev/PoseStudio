@@ -809,6 +809,7 @@ JointSolver::Result JointSolver::descend(Pose& pose, const Problem& problem, con
     std::vector<double> r, rTrial, J, planeClear;
     std::vector<char>   rowOff, rowEntered;
     std::vector<JointPlaneTask> planes = problem.planes;
+    std::vector<JointPlaneTask> trialPlanes;
     double cost0 = residuals(pose, frames, problem, planes, com, r) + postureCost(pose, problem);
 
     std::vector<double> q(nDof), pull(nDof), dInv(nDof), step(nDof), d0(nDof), M, rhs;
@@ -817,14 +818,17 @@ JointSolver::Result JointSolver::descend(Pose& pose, const Problem& problem, con
     Frames trialFrames;
     double mu = 1e-4;
 
+    bool planesArePoses = false; // the planes are already this pose's own: the accepted trial's
     for (int it = 0; it < settings.maxIterations; ++it) {
-        if (problem.planeSource) {
-            // Fresh tangent planes for this linearization; the reference cost is re-read under
-            // them, so every comparison below is between poses judged by the same rows.
+        if (problem.planeSource && !planesArePoses) {
+            // Fresh tangent planes for this linearization, the reference cost read under them:
+            // a pose's cost is the cost under ITS rows (a trial's too — see the halving loop,
+            // which hands an accepted trial's rows on to the next linearization).
             planes.clear();
             problem.planeSource(frames, planes);
             cost0 = residuals(pose, frames, problem, planes, com, r) + postureCost(pose, problem);
         }
+        planesArePoses = false;
         linearize(pose, frames, problem, planes, com, r, J, &settings, &planeClear);
         const std::size_t rows = r.size();
         // A ONE-SIDED row costs and asks nothing until its joint is THROUGH the surface, so the
@@ -1026,8 +1030,26 @@ JointSolver::Result JointSolver::descend(Pose& pose, const Problem& problem, con
                     setDofValue(trial, problem.dofs[j], v);
                 }
                 forwardKinematics(trial, trialFrames);
+                // A TRIAL IS JUDGED BY THE ROWS IT MAKES (2026-09-28; IK_JS_STALE_TRIAL_PLANES is
+                // the A/B). The one-sided rows are regenerated per linearization, within a margin
+                // of each surface — and a step of 20 degrees at a shoulder moves its elbow 9cm:
+                // from outside the margin, where there is no row, to 15mm INSIDE the chest. Judged
+                // by the rows of the pose it left, that trial cost 211 against 245 and was taken;
+                // the next linearization read the same pose at 4900, threw the arm back out past
+                // the margin, and the one after took it in again — a two-cycle, sixteen iterations
+                // a tick, the pose left wherever the count ran out (a custom character's prone
+                // descent: her upper arms wedged between the chest and hands that had let go, the
+                // head thrown 258mm when the cycle broke). The true cost of a pose is the cost
+                // under ITS rows.
+                static const bool kStaleTrialPlanes = std::getenv("IK_JS_STALE_TRIAL_PLANES") != nullptr; // A/B probe
+                const std::vector<JointPlaneTask>* judgedBy = &planes;
+                if (problem.planeSource && !kStaleTrialPlanes) {
+                    trialPlanes.clear();
+                    problem.planeSource(trialFrames, trialPlanes);
+                    judgedBy = &trialPlanes;
+                }
                 const double costTrial =
-                    residuals(trial, trialFrames, problem, planes, com, rTrial) + postureCost(trial, problem);
+                    residuals(trial, trialFrames, problem, *judgedBy, com, rTrial) + postureCost(trial, problem);
                 static const bool kLmTrace = std::getenv("IK_JS_LM_TRACE") != nullptr;
                 if (kLmTrace) {
                     int nBlocked = 0;
@@ -1038,6 +1060,38 @@ JointSolver::Result JointSolver::descend(Pose& pose, const Problem& problem, con
                                  "[lm] it=%d try=%d/%d mu=%.3g factor=%.3g blocked=%d step=%.3g cost %.9g -> %.9g%s\n",
                                  it, attempt, halving, mu, factor, nBlocked, maxApplied, cost0, costTrial,
                                  costTrial < cost0 ? " ok" : " REJECT");
+                }
+                // IK_JS_TRIAL_PLANE_TRACE: for a REJECTED trial, its cost under the linearization's
+                // rows beside its own, and every row of either set that costs at the trial — which
+                // surface the step ran into that the model had no row for.
+                static const bool kTrialPlaneTrace = std::getenv("IK_JS_TRIAL_PLANE_TRACE") != nullptr;
+                if (kTrialPlaneTrace && costTrial >= cost0 && judgedBy == &trialPlanes && (attempt == 0 || attempt == 9) && halving == 0) {
+                    std::vector<double> rStale;
+                    const double costStale = residuals(trial, trialFrames, problem, planes, com, rStale) + postureCost(trial, problem);
+                    std::fprintf(stderr, "[trial-planes] attempt %d: cost %.6g at the pose, %.6g at the trial under its own rows, %.6g under the pose's (%zu rows, %zu at the pose)\n",
+                                 attempt, cost0, costTrial, costStale, trialPlanes.size(), planes.size());
+                    const auto dump = [&](const char* label, const std::vector<JointPlaneTask>& set, const Frames& at) {
+                        for (const JointPlaneTask& plane : set) {
+                            const std::size_t b = static_cast<std::size_t>(plane.bone);
+                            const glm::dvec3  point = at.pos[b] + at.rot[b] * plane.offset;
+                            glm::dvec3        onPlane = plane.planePoint;
+                            glm::dvec3        normal = plane.normal;
+                            if (plane.refBone >= 0) {
+                                const std::size_t ref = static_cast<std::size_t>(plane.refBone);
+                                onPlane = at.pos[ref] + at.rot[ref] * plane.planePoint;
+                                normal = at.rot[ref] * plane.normal;
+                            }
+                            const double depth = -glm::dot(point - onPlane, normal);
+                            static const bool kAllNear = std::getenv("IK_JS_TRIAL_PLANE_TRACE_NEAR") != nullptr; // ... and the rows within 5mm of their surface
+                            if (depth > 1.0e-4 || (kAllNear && depth > -5.0e-3)) {
+                                std::fprintf(stderr, "[trial-planes]   %s: bone %d (offset %.3f %.3f %.3f) against %d, %.2fmm through, weight %.3g\n", label, plane.bone,
+                                             plane.offset.x, plane.offset.y, plane.offset.z, plane.refBone, depth * 1000.0, plane.weight);
+                            }
+                        }
+                    };
+                    dump("the pose's rows, at the pose", planes, frames);
+                    dump("the pose's rows, at the trial", planes, trialFrames);
+                    dump("the trial's rows, at the trial", trialPlanes, trialFrames);
                 }
                 static const bool kRowTrace = std::getenv("IK_JS_ROW_TRACE") != nullptr;
                 static const bool kRowTraceFirst = std::getenv("IK_JS_ROW_TRACE_FIRST") != nullptr; // the FIRST rejected attempt, not the last
@@ -1057,6 +1111,7 @@ JointSolver::Result JointSolver::descend(Pose& pose, const Problem& problem, con
                     }
                     std::vector<double> rNow;
                     residuals(pose, frames, problem, planes, com, rNow);
+                    residuals(trial, trialFrames, problem, planes, com, rTrial); // (row for row with the model's: the linearization's planes)
                     for (std::size_t a = 0; a < rows && a < rTrial.size() && a < rNow.size(); ++a) {
                         double moved = 0.0;
                         for (std::size_t j = 0; j < nDof; ++j) {
@@ -1081,6 +1136,10 @@ JointSolver::Result JointSolver::descend(Pose& pose, const Problem& problem, con
                     cost0 = costTrial;
                     accepted = true;
                     appliedMax = maxApplied;
+                    if (judgedBy == &trialPlanes) {
+                        planes.swap(trialPlanes); // (the next linearization's: no second reading)
+                        planesArePoses = true;
+                    }
                     if (halving == 0) {
                         mu = std::max(mu * 0.2, 1e-6);
                     }

@@ -64,6 +64,22 @@ report posed_after
 shot 507_posed_after
 reset
 
+# 4b. Grounding is a POSE EDIT (the drop goes into the root's pose translation): Undo puts her back
+# in the air, and Reset Pose after a lift and a drop leaves her standing on the floor.
+lift 0.30
+ground
+wait 60
+expect meshlow > -1
+expect meshlow < 1
+undo
+expect meshlow > 295
+expect meshlow < 305
+ground
+wait 60
+reset
+expect meshlow > -1
+expect meshlow < 1
+
 # 5. NOT on her feet: kneeling, she lands on her knees and nothing bounces.
 view right
 press hip

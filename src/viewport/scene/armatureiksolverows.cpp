@@ -2957,7 +2957,7 @@ void Armature::ikPlaneRows(IkSolveScratch& s) {
                 const std::size_t ref = static_cast<std::size_t>(v.a);
                 const glm::dmat3 refInv = glm::transpose(f.rot[ref]);
                 const auto emit = [&](int bone, const glm::dvec3& offset, const glm::vec3& point,
-                                      const glm::vec3& onAxis, float radius) {
+                                      const glm::vec3& onAxis, float radius, double share = 1.0) {
                     const glm::vec3 away = point - onAxis;
                     const float dist = glm::length(away);
                     if (dist < 1e-5f || radius - dist < -static_cast<float>(kPlaneMargin)) {
@@ -2979,7 +2979,7 @@ void Armature::ikPlaneRows(IkSolveScratch& s) {
                     row.refBone = v.a;
                     row.planePoint = refInv * (surface - f.pos[ref]);
                     row.normal = refInv * nrm;
-                    row.weight = kPlaneWeight;
+                    row.weight = kPlaneWeight * share * share; // (the share is the DEPTH's: the row's residual goes as it)
                     out.push_back(row);
                 };
                 for (int i = 0; i < count; ++i) {
@@ -3015,11 +3015,25 @@ void Armature::ikPlaneRows(IkSolveScratch& s) {
                         float tPar = 0.0f;
                         closestSegmentPoints(pos(par), P, ax.A, ax.B, sPar, tPar);
                         if (sPar > 0.02f && sPar < 0.98f) { // the ends are the joint tests'
+                            // (... and the row COMES IN from each end over kSegmentRowRamp of the
+                            // segment, 2026-09-28: cut in at full strength 2% along, it made the
+                            // cost of a pose DISCONTINUOUS — an upper arm lying against the chest
+                            // with its closest point at the socket, whose joint the chest has no
+                            // row for, cost nothing, and a hair further along 19 (1.4mm through at
+                            // 1e7). Judged by its own rows (JointSolver: a trial is judged by the
+                            // rows it makes) no step across that line is downhill, however small:
+                            // the male rig's prone descent stood still for twelve ticks under a
+                            // leaving cursor and let go 13cm at once. IK_JS_SEGMENT_ROWS_CUT.)
+                            static const bool kSegmentRowsCut = std::getenv("IK_JS_SEGMENT_ROWS_CUT") != nullptr; // A/B probe
+                            const double ramp = kSegmentRowsCut
+                                                    ? 1.0
+                                                    : static_cast<double>(glm::smoothstep(0.02f, kSegmentRowRamp, sPar) *
+                                                                          (1.0f - glm::smoothstep(1.0f - kSegmentRowRamp, 0.98f, sPar)));
                             const glm::vec3 onSeg = glm::mix(pos(par), P, sPar);
                             const std::size_t pb = static_cast<std::size_t>(par);
                             emit(par, glm::transpose(f.rot[pb]) * (glm::dvec3(onSeg) - f.pos[pb]), onSeg,
                                  ax.A + ax.ab * tPar,
-                                 volumeRadiusAt(v, tPar) + std::max(kVolumeSegmentFlesh * segR, clearance));
+                                 volumeRadiusAt(v, tPar) + std::max(kVolumeSegmentFlesh * segR, clearance), ramp);
                         }
                     }
                 }
