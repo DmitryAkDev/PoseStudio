@@ -226,6 +226,13 @@ public:
     /// Translates model @p index along world Y — the animated ground drop addresses the model it
     /// STARTED on by index, since undo can switch the active figure mid-fall. No-op for a bad index.
     void translateModelY(int index, float dy);
+    /// THE LANDING BOUNCE of model @p index (Armature::beginLandingBounce: a figure dropped onto
+    /// her feet absorbs the landing, deeper the faster she came down) — addressed by index like
+    /// the drop it follows. begin: true when a bounce began (false: she did not land on her feet,
+    /// or the model is no figure); tick: false once it is over; end: the pose she landed in.
+    bool beginLandingBounce(int index, float impactSpeed);
+    bool landingBounceTick(int index, float seconds);
+    void endLandingBounce(int index);
 
     // --- Pose snapshot (for undo/redo) ---
     std::vector<std::pair<std::string, glm::vec3>> capturePose() const;

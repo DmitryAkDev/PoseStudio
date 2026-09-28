@@ -358,11 +358,12 @@ private:
     /// solving per mouse event made the damped dynamics mouse-polling-rate-dependent.
     bool issueIkTarget();
     /// A left press on the joint under @p localPos: selects it and begins the gesture — a plain
-    /// press the full-body-IK drag, @p scoped (Ctrl) the SCOPED drag of the grabbed chain alone
-    /// (IkScope::Chain: a limb up to the body, the head and neck to the chest, the spine over a
-    /// still pelvis, the hips with only their legs — nothing else moving) — and snapshots the pose
-    /// for undo. Returns false when no joint is under the cursor (the press is then the
-    /// orbit/click gesture).
+    /// press the full-body-IK drag, @p scoped (Ctrl) the Ctrl+drag (IkScope::Part, resolved by
+    /// the armature: the SCOPED drag of the grabbed chain alone for a limb or the head and neck,
+    /// the FIGURE MOVE — the whole figure as she is posed, off the floor's contacts — for a grab of
+    /// the body itself, the digit's own drag for a finger or a toe) — and snapshots the pose for
+    /// undo. Returns false when no joint is under the cursor (the press is then the orbit/click
+    /// gesture).
     bool beginJointGesture(const QPointF& localPos, bool scoped);
     /// Begins the IK drag of the selected joint (the drag plane anchored at its grab point) and
     /// starts the tick — the whole body's, or @p scoped the grabbed chain's alone. Returns false
@@ -434,12 +435,17 @@ private:
     /// button press — undo can switch the active figure mid-fall, and the remaining drop must
     /// still land on the one that started falling), the height still to fall, how much has
     /// fallen so far, and the real-time clock the free-fall curve is evaluated against.
+    /// ... and THE LANDING BOUNCE that follows a fall onto her feet (Armature::beginLandingBounce:
+    /// the legs absorb the landing, deeper the faster she came down): on the same timer and
+    /// clock, from the moment of the landing; finishGroundFall ends it like the fall.
     struct GroundFall {
         QTimer*       timer = nullptr;
         QElapsedTimer clock;
         float         height = 0.0f;
         float         dropped = 0.0f;
         int           figure = -1;
+        bool          bouncing = false;  ///< The fall has landed and the bounce is in flight.
+        float         landedAt = 0.0f;   ///< When it landed, seconds on the clock.
     };
     GroundFall m_fall;
 

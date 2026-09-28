@@ -230,6 +230,7 @@ bool Armature::dump(const std::string& path) const {
 void Armature::setBodyMesh(std::vector<BodyMeshPoint> mesh) {
     m_bodyMesh = std::move(mesh);
     m_ikRig.reset(); // rebuilt with the mesh on the next use (ensureIkRig)
+    m_boneClass.clear(); // (... and the bone classes with it)
 }
 
 bool Armature::loadDump(const std::string& path, std::vector<ArmatureBone>& out) {
@@ -405,7 +406,7 @@ void Armature::nudgeSelectedBone(const glm::vec3& deltaEulerDegrees) {
             applyBoneEuler(m_selectedBone);
         }
     }
-    if (m_ikRig && m_ikRig->dragActive()) {
+    if (m_digitDrag || m_figureMove || (m_ikRig && m_ikRig->dragActive())) {
         holdNudgedBoneThroughDrag(m_selectedBone); // the wheel during an IK drag (see armature.h)
     }
 }

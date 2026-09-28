@@ -194,6 +194,7 @@ void VulkanWindow::releaseVulkan() {
         m_fall.timer->stop(); // the figure is going away with the renderer
         m_fall.height = 0.0f;
         m_fall.dropped = 0.0f;
+        m_fall.bouncing = false; // (... and its landing bounce with it: nothing left to restore)
         m_fall.figure = -1;
     }
     if (m_ikTimer) {

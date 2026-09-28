@@ -41,7 +41,7 @@ A row of controls floats in the viewport's top-right corner:
 | **Shading picker** (reads *PBR Shaded* by default) | Chooses how the scene is drawn. See [Shading and Display](shading.md). |
 | **View picker** (reads *Home View* by default) | Snaps the camera to a named view; reads *Perspective View* once you orbit away from one. |
 | **Home** | Returns the camera to the default framing (also `5`). |
-| **Ground** | Drops the active figure so its lowest point rests on the floor. See [Posing](posing.md#the-ground-button). |
+| **Ground** | Drops the active figure so its lowest point rests on the floor; landing on her feet, she absorbs the drop with her knees. See [Posing](posing.md#the-ground-button). |
 | **Skeleton** | Toggles the bone overlay. Joints can be grabbed with it on or off. |
 
 While you hold `X`, `Y` or `Z` with a joint selected, a small badge appears under the strip showing the axis the mouse wheel will rotate the joint about.

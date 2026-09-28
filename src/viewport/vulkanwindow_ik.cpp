@@ -95,7 +95,10 @@ bool VulkanWindow::beginJointGesture(const QPointF& localPos, bool scoped) {
 bool VulkanWindow::beginIkDrag(bool scoped) {
     // (The plane passes through the point of the bone the user took hold of — the joint itself
     // for a click on the joint — and the targets are where that point should go.)
-    m_ik.dragging = scene().beginBoneIkDrag(scoped ? IkScope::Chain : IkScope::Body) &&
+    // (Ctrl asks for IkScope::Part, which the armature resolves by what was grabbed: the body
+    // itself -> the whole figure moved as she is posed, off the floor's contacts; a limb, the head
+    // -> its chain alone; a finger or a toe -> its digit.)
+    m_ik.dragging = scene().beginBoneIkDrag(scoped ? IkScope::Part : IkScope::Body) &&
                     scene().ikGrabPointWorld(m_ik.planePoint);
     if (m_ik.dragging) {
         m_ik.hasTarget = false;
@@ -232,12 +235,28 @@ void VulkanWindow::groundFigure() {
 }
 
 void VulkanWindow::onFallTick() {
-    if (!m_renderer || m_fall.height <= 0.0f) {
+    if (!m_renderer) {
+        m_fall.timer->stop();
+        return;
+    }
+    const float t = static_cast<float>(m_fall.clock.nsecsElapsed()) * 1e-9f;
+    if (m_fall.bouncing) {
+        // The landing bounce: the pose for this moment, until the bounce is over — then the
+        // pose she landed in, exactly.
+        if (!scene().landingBounceTick(m_fall.figure, t - m_fall.landedAt)) {
+            scene().endLandingBounce(m_fall.figure);
+            m_fall.timer->stop();
+            m_fall.bouncing = false;
+            m_fall.figure = -1;
+        }
+        requestUpdate();
+        return;
+    }
+    if (m_fall.height <= 0.0f) {
         m_fall.timer->stop();
         return;
     }
     constexpr float kGravity = 9.81f; // m/s², world units are metres
-    const float t = static_cast<float>(m_fall.clock.nsecsElapsed()) * 1e-9f;
     const float dropped = std::min(m_fall.height, 0.5f * kGravity * t * t);
     const float dy = dropped - m_fall.dropped;
     if (dy > 0.0f) {
@@ -246,9 +265,18 @@ void VulkanWindow::onFallTick() {
         requestUpdate();
     }
     if (dropped >= m_fall.height) {
-        m_fall.timer->stop(); // landed
+        // Landed — at sqrt(2 g h), which is what the legs now absorb if she came down on her
+        // feet (the bounce runs on from here, on this timer and clock); else the fall is over.
+        const float height = m_fall.height;
         m_fall.height = 0.0f;
-        m_fall.figure = -1;
+        m_fall.dropped = 0.0f;
+        if (scene().beginLandingBounce(m_fall.figure, std::sqrt(2.0f * kGravity * height))) {
+            m_fall.bouncing = true;
+            m_fall.landedAt = std::sqrt(2.0f * height / kGravity);
+        } else {
+            m_fall.timer->stop();
+            m_fall.figure = -1;
+        }
     }
 }
 
@@ -257,12 +285,17 @@ void VulkanWindow::finishGroundFall() {
         return;
     }
     m_fall.timer->stop();
-    if (m_renderer && m_fall.height > m_fall.dropped) {
+    if (m_renderer && m_fall.bouncing) {
+        scene().endLandingBounce(m_fall.figure); // (the pose she landed in: the bounce changes nothing)
+        requestUpdate();
+    } else if (m_renderer && m_fall.height > m_fall.dropped) {
+        // (Completed at once, the fall has no landing to absorb: no bounce.)
         scene().translateModelY(m_fall.figure, -(m_fall.height - m_fall.dropped));
         requestUpdate();
     }
     m_fall.height = 0.0f;
     m_fall.dropped = 0.0f;
+    m_fall.bouncing = false;
     m_fall.figure = -1;
 }
 

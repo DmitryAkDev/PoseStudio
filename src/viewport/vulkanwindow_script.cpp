@@ -136,13 +136,18 @@ void VulkanWindow::startScript() {
 bool VulkanWindow::scriptPixelOf(const QString& spec, QPointF& px) {
     const std::string bone = figureBoneName(scene().figureArmature(), spec.section(QLatin1Char('@'), 0, 0).toStdString());
     const QString     share = spec.section(QLatin1Char('@'), 1, 1);
-    if (scene().selectBoneByName(bone) < 0) {
+    const int named = scene().selectBoneByName(bone);
+    if (named < 0) {
         say("[ikscript] unknown bone '%s'\n", bone.c_str());
         return false;
     }
-    if (!share.isEmpty()) {
-        scene().setIkGrabOnSegment(share.toFloat());
+    if (share.isEmpty()) {
+        // (The NAMED bone's own joint — not the selection's: a bone of the face rig selects the head,
+        // and a click "at the eye" is a click at the eye's pixel.)
+        const Armature* arm = scene().figureArmature();
+        return arm != nullptr && projectToScreen(arm->boneWorldPosition(static_cast<std::size_t>(named)), px);
     }
+    scene().setIkGrabOnSegment(share.toFloat());
     glm::vec3 point(0.0f);
     return scene().ikGrabPointWorld(point) && projectToScreen(point, px);
 }
@@ -179,6 +184,17 @@ void VulkanWindow::scriptStep() {
             requestUpdate();
         } else if (cmd == QLatin1String("frame")) {
             frameSelected();
+        } else if (cmd == QLatin1String("closeup") && w.size() > 2) {
+            // closeup <bone> <radius m>: the camera framed on that joint — a hand, a foot, the face
+            // (what a user does with the wheel and a pan before posing a finger).
+            const Armature* arm = scene().figureArmature();
+            const int       bone = arm ? arm->boneIndex(figureBoneName(arm, w[1].toStdString())) : -1;
+            if (bone >= 0) {
+                m_renderer->camera().frame(arm->boneWorldPosition(static_cast<std::size_t>(bone)), std::max(0.02f, num(2)));
+                requestUpdate();
+            } else {
+                say("[ikscript]   unknown bone\n");
+            }
         } else if (cmd == QLatin1String("shade") && w.size() > 1) {
             setShadeMode(w[1].toInt());
         } else if (cmd == QLatin1String("pose") && w.size() > 1) {
@@ -191,6 +207,12 @@ void VulkanWindow::scriptStep() {
             undo();
         } else if (cmd == QLatin1String("ground")) {
             groundFigure();
+        } else if (cmd == QLatin1String("lift") && w.size() > 1) {
+            // lift <metres>: the active figure raised that far off the floor, as posed — what a pose
+            // that bends the knees, or a pose file, leaves a figure at. `ground` then drops her.
+            closeOpenPoseEdits();
+            scene().translateModelY(scene().activeFigureIndex(), num(1));
+            requestUpdate();
         } else if (cmd == QLatin1String("fk") && w.size() >= 5) {
             // fk <bone> <dx> <dy> <dz>: the joint turned by that many degrees, as Ctrl+drag or
             // the X/Y/Z wheel would (through the FK collision stop), as one undoable edit.
@@ -214,7 +236,7 @@ void VulkanWindow::scriptStep() {
                 const int picked = boneAt(px);
                 const Armature* found = scene().figureArmature();
                 const std::string name = figureBoneName(found, w[1].section(QLatin1Char('@'), 0, 0).toStdString());
-                const int wanted = found ? found->boneIndex(name) : -1;
+                const int wanted = found ? found->knownPosingBone(found->boneIndex(name)) : -1; // (a face-rig bone's name: the head)
                 if (wanted >= 0 && (picked < 0 || !found->sameRigidSegment(picked, wanted))) {
                     if (picked >= 0) {
                         say("[ikscript]   the pick found %s there, not %s: pinned by name instead\n",
@@ -241,7 +263,8 @@ void VulkanWindow::scriptStep() {
             }
         } else if ((cmd == QLatin1String("press") || cmd == QLatin1String("cpress")) && w.size() > 1) {
             // The real press: the picker at the pixel, then the press path (IK drag + undo snapshot).
-            // cpress is the Ctrl press: the SCOPED drag of the grabbed chain alone (IkScope::Chain).
+            // cpress is the Ctrl press (IkScope::Part): the SCOPED drag of the grabbed chain alone for
+            // a limb or the head, the FIGURE MOVE for a grab of the body itself.
             const bool scoped = cmd == QLatin1String("cpress");
             QPointF px;
             if (!scriptPixelOf(w[1], px)) {
@@ -261,9 +284,12 @@ void VulkanWindow::scriptStep() {
                 const Armature*   found = scene().figureArmature();
                 const std::string name = figureBoneName(found, w[1].section(QLatin1Char('@'), 0, 0).toStdString());
                 const QString     share = w[1].section(QLatin1Char('@'), 1, 1);
-                const int         wanted = found ? found->boneIndex(name) : -1;
+                const int         wanted = found ? found->knownPosingBone(found->boneIndex(name)) : -1; // (a face-rig bone's name: the head)
+                // (A DIGIT drag has no rig effector: what it drags is the selected digit's joint.)
+                const int         dragged = found && found->ikDigitDrag() ? found->selectedBone()
+                                            : found && found->ikRig() ? found->ikRig()->dragEffector() : -1;
                 if (began && found && wanted >= 0 && !found->sameRigidSegment(found->selectedBone(), wanted) && found->ikRig() &&
-                    found->ikRig()->dragEffector() != wanted) {
+                    dragged != wanted) {
                     const std::string other = found->boneName(static_cast<std::size_t>(found->selectedBone()));
                     abortIkDrag();
                     scene().selectBoneByName(name);

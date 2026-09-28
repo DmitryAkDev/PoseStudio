@@ -244,6 +244,12 @@ RunResult runScenario(const std::vector<ArmatureBone>& baseBones, const Scenario
         arm.setSelectedBone(r.grabIndex);
         if (sc.grabShare >= 0.0f) {
             arm.setIkGrabOnSegment(r.grabIndex, sc.grabShare);
+        } else if (glm::length(sc.grabOffset) > 0.0f) {
+            arm.setIkGrabPoint(r.grabIndex, arm.boneWorldPosition(static_cast<std::size_t>(r.grabIndex)) + sc.grabOffset);
+        } else if (arm.selectedBone() != r.grabIndex) {
+            // (A bone of the FACE RIG selects the head — Armature::posingBone: what the user has
+            // hold of is then the point where the named bone is, as a click on the face leaves it.)
+            arm.setIkGrabPoint(r.grabIndex, arm.boneWorldPosition(static_cast<std::size_t>(r.grabIndex)));
         }
     }
     if (r.grabIndex < 0) {
@@ -255,7 +261,7 @@ RunResult runScenario(const std::vector<ArmatureBone>& baseBones, const Scenario
     for (std::size_t i = 0; i < n; ++i) {
         r.startEuler[i] = arm.boneEuler(i);
     }
-    if (!arm.beginIkDrag(sc.scoped ? pose::IkScope::Chain : pose::IkScope::Body)) {
+    if (!arm.beginIkDrag(sc.scoped ? pose::IkScope::Part : pose::IkScope::Body)) {
         r.error = "beginIkDrag failed";
         return r;
     }
@@ -1125,6 +1131,9 @@ IdleMetrics runIdleMetrics(const std::vector<ArmatureBone>& baseBones, const Sce
     const int grab = resolveBone(arm, sc.grab);
     if (grab >= 0) {
         arm.setSelectedBone(grab);
+        if (arm.selectedBone() != grab) { // (a face-rig bone: the head, grabbed where the named bone is)
+            arm.setIkGrabPoint(grab, arm.boneWorldPosition(static_cast<std::size_t>(grab)));
+        }
     }
     if (grab < 0 || !arm.beginIkDrag()) {
         return m;

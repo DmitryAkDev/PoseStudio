@@ -7,10 +7,12 @@ Every control in one place. "Viewport focus" means you have clicked in the 3D vi
 | Gesture | Where | What it does |
 | --- | --- | --- |
 | Left-drag | on a joint | Full-body IK: the point you grabbed follows the cursor, the body follows anatomically. |
+| Left-drag | on a finger or a toe | That digit alone bends toward the cursor; the hand, the foot and the body stay (with or without Ctrl). |
 | Left-drag | on empty space or a model's body | Orbit the camera. |
-| Ctrl + left-drag | on a joint | Scoped IK: only the chain the joint belongs to follows — a limb up to the body, the head and neck, the spine over a still pelvis, the hips with only their legs. Nothing else moves. |
+| Ctrl + left-drag | on a limb or the head | Scoped IK: only the chain the joint belongs to follows — a limb up to the body, the head and neck. Nothing else moves. |
+| Ctrl + left-drag | on the body (hips, belly, chest) | Moves the whole figure as she is posed: nothing is anchored to the floor, no joint turns. Pinned joints stay where they are pinned. |
 | Left-click | on a model | Select it (blue outline); on empty space, deselect. |
-| Left-click | on a joint | Select the joint (and make its figure the active one). |
+| Left-click | on a joint | Select the joint (and make its figure the active one). A click on the face selects the head. |
 | Middle-drag | anywhere | Pan. |
 | Wheel | normally | Zoom. |
 | Wheel | during a left-drag of a joint | Move the grabbed point toward (scroll down) or away from (scroll up) the camera. |

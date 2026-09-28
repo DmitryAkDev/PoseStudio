@@ -1,0 +1,122 @@
+# DIGITS AND THE FACE (2026-09-28). A finger or a toe dragged moves ITS OWN DIGIT alone, up to where
+# it joins the hand or the foot — with or without Ctrl — and nothing else: the hand, the arm and the
+# body are asserted still (0.0mm: a bone none of the solve's unknowns move does not move at all).
+# The face rig is for expressions and is not posed: a click anywhere on the face selects the HEAD, and
+# a drag from there is the head's.
+#
+# In `view front` she faces the camera: screen-right is her LEFT. Her left hand hangs at her side,
+# its palm toward her thigh — screen-left of the hand.
+
+# 1. A fingertip curled toward the palm: the index finger bends, the hand stays.
+view front
+closeup lHand 0.16
+press lIndex3
+dragv -0.030 0.015 40 30
+report finger_curl
+expect grab < 10
+expect moved.lHand < 0.01
+expect moved.lForeArm < 0.01
+expect moved.lMid3 < 0.01
+expect hips < 0.01
+expect head < 0.01
+expect steps < 1
+expect jump < 15
+shot 401_front_finger_curl
+release
+
+# 2. The same finger pulled 40cm up, far beyond its reach: it points after the cursor as far as
+# its joints allow, and the arm does not come along.
+press lIndex3
+dragv 0 0.40 40 30
+report finger_far
+expect moved.lHand < 0.01
+expect moved.lShldr < 0.01
+expect hips < 0.01
+expect steps < 1
+expect jump < 40
+shot 402_front_finger_far
+release
+reset
+
+# 3. The thumb, by its tip.
+view front
+closeup lHand 0.16
+press lThumb3
+dragv -0.02 -0.02 40 30
+report thumb
+expect moved.lHand < 0.01
+expect moved.lIndex3 < 0.01
+expect hips < 0.01
+shot 403_front_thumb
+release
+reset
+
+# 4. Ctrl + drag on a finger is the same drag: the digit alone.
+view front
+closeup lHand 0.16
+cpress lMid3
+dragv -0.030 0.015 40 30
+report finger_ctrl
+expect moved.lHand < 0.01
+expect moved.lIndex3 < 0.01
+expect hips < 0.01
+shot 404_front_finger_ctrl
+release
+reset
+
+# 5. The back of the hand is the HAND's: the arm follows, the body's drag as ever.
+view front
+closeup lHand 0.30
+press lHand
+dragv 0.10 0.10 40 30
+report hand_itself
+expect grab < 5
+expect moved.lForeArm > 20
+shot 405_front_hand_itself
+release
+reset
+
+# 6. A toe raised: the big toe bends up, the foot and the body stay.
+view front
+closeup lFoot 0.16
+press lBigToe
+dragv 0 0.03 40 30
+report toe_up
+expect moved.lFoot < 0.01
+expect moved.rFoot < 0.01
+expect hips < 0.01
+expect steps < 1
+expect lowest > -2
+shot 406_front_toe_up
+release
+reset
+
+# 7. The FACE: clicks on the eye, the jaw, the nose and an ear each select the head.
+view front
+closeup head 0.22
+click lEye
+expect selected.head == 1
+click lowerJaw
+expect selected.head == 1
+click lEar
+expect selected.head == 1
+view right
+click head
+expect selected.head == 1
+
+# 8. ... and a drag that begins on the face is the head's drag: the head goes, the eye does not turn.
+view front
+closeup head 0.30
+press lEye
+dragv 0.06 0 40 30
+report face_drag
+expect selected.head == 1
+expect grab < 15
+expect head > 20
+expect euler.lEye.x == 0
+expect euler.lEye.y == 0
+expect euler.lowerJaw.x == 0
+expect steps < 1
+shot 407_front_face_drag
+release
+quit

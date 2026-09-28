@@ -173,9 +173,11 @@ Model::Model(VulkanContext& context, const ModelData& data, VkDescriptorSetLayou
     // and tore skinned frames). Each frame slot gets its own buffer + set-2 descriptor;
     // uploadJointsIfDirty() fills the current slot's buffer at record time, when that slot's
     // fence guarantees the GPU is done with it.
+    // (TWICE the joints: the second half carries, per joint, whether its flesh is lit with the
+    // selection — see m_highlightUploaded; mesh.vert reads the joint count off the buffer's length.)
     allocateDescriptorSets(device, m_descriptorPool.get(), poseSetLayout, kMaxFramesInFlight,
                            m_jointSets.data());
-    const VkDeviceSize jointBytes = m_jointCount * 2 * sizeof(glm::vec4);
+    const VkDeviceSize jointBytes = m_jointCount * 4 * sizeof(glm::vec4);
     for (int f = 0; f < kMaxFramesInFlight; ++f) {
         const auto slot = static_cast<std::size_t>(f);
         m_jointBuffers[slot] =
@@ -202,12 +204,25 @@ Model::~Model() = default;
 void Model::uploadJointsIfDirty(uint32_t frameIndex) {
     m_correctives.uploadIfDirty(frameIndex, m_armature); // the pose's other per-frame data
     const std::vector<glm::vec4>& quats = m_armature.skinDualQuats();
-    if (quats.empty() || frameIndex >= static_cast<uint32_t>(kMaxFramesInFlight) ||
-        m_jointUploaded[frameIndex] == m_armature.skinVersion()) {
+    if (quats.empty() || frameIndex >= static_cast<uint32_t>(kMaxFramesInFlight)) {
         return;
     }
     auto* dst = static_cast<glm::vec4*>(m_jointBuffers[frameIndex].mappedData());
     if (dst == nullptr) {
+        return;
+    }
+    // The buffer's second half: which joints' flesh is lit WITH the selection (the face rig under
+    // a selected head) — per slot, when the selection has changed since the slot was written.
+    const int selectionKey = m_armature.highlightBone() + 2;
+    if (m_highlightUploaded[frameIndex] != selectionKey) {
+        glm::vec4* lit = dst + std::size_t{2} * m_jointCount;
+        for (uint32_t j = 0; j < m_jointCount; ++j) {
+            lit[std::size_t{2} * j] = glm::vec4(m_armature.highlightedWithSelection(static_cast<int>(j)) ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+            lit[std::size_t{2} * j + 1] = glm::vec4(0.0f);
+        }
+        m_highlightUploaded[frameIndex] = selectionKey;
+    }
+    if (m_jointUploaded[frameIndex] == m_armature.skinVersion()) {
         return;
     }
     const std::size_t bytes =
@@ -248,7 +263,7 @@ void Model::recordShaded(VkCommandBuffer cmd, VkPipelineLayout layout, uint32_t 
     // the slot hasn't seen the pose (a no-op when the shadow pass already did this frame).
     bindPose(cmd, layout, 2, frameIndex);
     const glm::mat4& transform = m_armature.transform();
-    const int selected = m_armature.selectedBone();
+    const int selected = m_armature.highlightBone();
     const int twin = m_armature.selectedHighlightTwin();
     if (filter == MeshFilter::Opaque) {
         for (const Mesh* mesh : m_opaqueMeshes) {

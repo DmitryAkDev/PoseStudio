@@ -1,0 +1,79 @@
+# THE LANDING BOUNCE (2026-09-28): the Ground button drops a hovering figure, and one that comes
+# down ON HER FEET absorbs the landing — the hips dip over the planted feet, the knees folding, and
+# come back up — deeper the higher the drop. Purely aesthetic: the pose she ends in is the pose she
+# was dropped in, exactly. `lift <m>` raises the figure, `ground` is the button, `wait` counts 60 Hz
+# ticks: half a metre falls in 19 of them, and the dip is deepest some 8 later.
+
+# 1. Dropped half a metre: mid-fall, at the deepest of the dip, and after.
+view front
+orbit 35 -8
+lift 0.5
+ground
+wait 10
+shot 501_falling
+wait 17
+report dip_50cm
+expect euler.lShin.x > 20
+expect euler.rShin.x > 20
+expect meshlow > -3
+shot 502_dip_50cm
+wait 45
+report after_50cm
+expect euler.lShin.x == 0
+expect euler.lThigh.x == 0
+expect euler.lFoot.x == 0
+expect meshlow > -1
+expect meshlow < 1
+shot 503_after_50cm
+
+# 2. Dropped 5cm: a slight dip.
+lift 0.05
+ground
+wait 11
+report dip_5cm
+expect euler.lShin.x > 5
+expect euler.lShin.x < 30
+shot 504_dip_5cm
+wait 45
+expect euler.lShin.x == 0
+
+# 3. Dropped 2m: the deepest.
+lift 2.0
+ground
+wait 49
+report dip_2m
+expect euler.lShin.x > 45
+expect meshlow > -3
+shot 505_dip_2m
+wait 50
+expect euler.lShin.x == 0
+expect euler.lThigh.x == 0
+
+# 4. A posed figure keeps her pose through it: an arm raised, a knee a little bent.
+view front
+orbit 35 -8
+press lHand
+dragv 0.25 0.45 40 20
+release
+lift 0.5
+ground
+wait 27
+shot 506_posed_dip
+wait 45
+report posed_after
+shot 507_posed_after
+reset
+
+# 5. NOT on her feet: kneeling, she lands on her knees and nothing bounces.
+view right
+press hip
+dragv -0.22 -0.52 90 30
+release
+lift 0.5
+ground
+wait 27
+report kneeling_landed
+shot 508_side_kneeling_landed
+wait 40
+shot 509_side_kneeling_after
+quit

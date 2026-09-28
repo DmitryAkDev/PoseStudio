@@ -9,7 +9,9 @@ Move the pointer over the figure and **press the left button on the part you wan
 - What you see is what you get: the click lands on the **surface in front**, so a part hidden behind another is never selected through it. Clicking the chest takes the chest, not the shoulder or the arm behind it; to grab the far arm, orbit until you can see it.
 - Clicking a **joint** itself (a knee, an elbow, a wrist) takes hold of that joint.
 - Clicking **along a limb** takes hold of the point you clicked: the far end of the limb segment when you click nearer it (the knee for a thigh, the hand for a forearm), the near end otherwise.
-- A click on the **hips** takes hold of the pelvis; a click on the **chest** or the **head** takes hold of the trunk there. A click on the face picks a face bone, which a drag treats as the head.
+- A click on the **hips** takes hold of the pelvis; a click on the **chest** or the **head** takes hold of the trunk there.
+- A click anywhere on the **face** takes hold of the **head**, and the whole head lights up. The face's own bones — the eyes, the jaw, the lips, the brows, the ears — are there for expressions and are not posed: nothing on the face is selected by itself, and no drag turns one.
+- A click on a **finger** or a **toe** takes hold of that digit, at the point you clicked. See [Fingers and toes](#fingers-and-toes).
 - Joints stay clickable whether the [skeleton overlay](shading.md#the-skeleton-overlay) is on or off. Turn it on to see exactly where they are. A click just outside the body still takes the nearest joint, as long as nothing is in front of it.
 
 A left press that finds no joint orbits the camera instead, and a plain click selects or deselects the model.
@@ -48,16 +50,37 @@ Some joints have their own way of being dragged, because that is what a person m
 - **The hips** dragged sideways sway — the pelvis rolls and the chest stays level; dragged back they hinge so the head comes forward over the feet; dragged across the floor they walk.
 - **The head** dragged takes the body with it through the neck — it leans, steps, bows and crouches. To *turn* the head, rotate it instead (below).
 
+### Fingers and toes
+
+**A finger or a toe dragged moves that one digit and nothing else.** Every joint of the digit bends toward the cursor, up to where the digit joins the hand or the foot; the hand, the foot and the whole body stay exactly where they are. It makes no difference whether `Ctrl` is held.
+
+- Take hold of a **fingertip** to curl or straighten the finger; take hold nearer the knuckle to swing the finger from the knuckle.
+- Pulled beyond its reach, the digit points after the cursor as far as its joints allow and rests there. The joint limits and the floor still hold.
+- To move the **hand** or the **foot** itself, take hold of it, not of a digit: the back of the hand, the palm or the wrist; the instep, the heel or the ankle.
+- To turn a single finger joint about one axis, select it and use the `X`/`Y`/`Z` wheel (below).
+- Zoom in before posing fingers. From a view of the whole figure a finger is a few pixels wide, and it is easy to take hold of the hand instead.
+
 ## Posing one part: Ctrl + drag
 
-Sometimes you want to move one part and leave the rest exactly as it is. **Ctrl + left-drag** a joint and only the chain it belongs to follows the cursor:
+Sometimes you want to move one part and leave the rest exactly as it is. **Ctrl + left-drag** a limb or the head and only the chain it belongs to follows the cursor:
 
 - **A hand, elbow, foot or knee**: the limb moves, up to where it joins the body — the arm with its collar bone, the leg from the hip. The torso, the head and the other limbs stay where they were. A knee dragged this way swings over its planted foot, as it does in a plain drag.
 - **The head or neck**: the neck bends toward the cursor; the chest and everything below stay.
-- **The chest or a spine joint**: the spine bends from the pelvis; the pelvis and the legs stay, and the arms and head ride along.
-- **The hips**: the pelvis moves and only the legs adjust to keep the feet planted; the upper body rides along.
+- **A finger or a toe**: that digit alone, as in a plain drag ([Fingers and toes](#fingers-and-toes)).
 
 Nothing else happens in this mode: no balance, no step, no lift-off, and the arms and head are not re-posed for you. The joint limits, the floor and the body still hold, so the chain stops where it would collide. Pulled beyond the chain's reach, the part points toward the cursor and rests there. Each Ctrl-drag is one undo step, and the wheel's depth control works during it as in a plain drag.
+
+## Moving the whole figure: Ctrl + drag the body
+
+**Ctrl + left-drag the body itself** — the hips, the belly, the chest — and the whole figure follows the cursor exactly as she is posed. Nothing is anchored to the floor: her feet, or a knee or a hand she has on the floor, come along. No joint turns, she does not balance or step. Use it to lift a posed figure, carry her across the scene, or set her down somewhere else.
+
+- **Up and across**: she goes where the cursor goes; roll the wheel while dragging to move her toward or away from the camera.
+- **Down**: the floor stops her. She comes down until the lowest part of her pose rests on it and no further.
+- **Your pins hold.** A joint you pinned stays exactly where you pinned it, and its limb gives so that it can: pin a hand and move the body, and the arm bends or straightens to keep the hand in place. When the limb has no more to give, the pin stops the body there. A pin on the hips or the torso holds the whole figure where she is.
+- A figure left in the air stays in the air. Press the [Ground button](#the-ground-button) to drop her onto the floor.
+- The move is one undo step, like any drag.
+
+To *pose* the torso — lean, bow, crouch, walk — drag it without `Ctrl`.
 
 ## Rotating a joint: FK
 
@@ -79,7 +102,14 @@ A **pin** holds a joint exactly where it is through every later drag: a hand kep
 
 A pose that bends the knees lifts the feet off the floor, because the hips stayed where they were. The **Ground** button on the viewport strip drops the active figure so the lowest point of its current pose rests on the floor — animated as a real fall (a metre takes about half a second). A figure sunk below the floor is lifted out at once. Grounding is refused while you are dragging, and it is not on the undo history.
 
+**She lands like a person.** A figure that comes down on her feet absorbs the landing: her knees fold, her hips dip over her planted feet, and she comes back up — all in under half a second. The higher the drop, the deeper the dip: a few centimetres' drop barely bends the knees, a drop from a metre or more is a real knee bend. It is for the eye only. When it is over she stands in exactly the pose you dropped her in, so nothing about your pose has changed and there is nothing to undo.
+
+- There is no bounce when she lands on anything but her feet — her knees, her hands, her seat — or when her hips are [pinned](#joint-pins).
+- Clicking, pressing a key or starting any edit while she is still falling or dipping finishes it at once.
+
 Figures import standing on the floor, so you rarely need this after an IK drag: planted feet keep the figure on the ground.
+
+One thing to know: the Ground button moves the figure itself, not her pose. If you lift her with Ctrl + drag, ground her, and then use **Reset Pose**, the lift is taken back out of the pose and she ends up below the floor by that much. Press **Ground** again and she is lifted out at once.
 
 ## Reset and mirror
 
@@ -114,7 +144,7 @@ Everything the body does comes from the figure you imported, not from PoseStudio
 ## Tips
 
 - Orbit to a **side view** (`3`) before pushing a figure down onto the floor or forward onto her hands — you can see the depth, and the drag plane is the one you want.
-- To move a whole figure, drag the hips: they walk her across the floor.
+- To move a whole figure, drag the hips: they walk her across the floor. To move her without changing her pose, [Ctrl + drag the body](#moving-the-whole-figure-ctrl--drag-the-body).
 - If a drag does not go where you expect, look at where the feet are: a planted foot is an anchor, and a pull the body cannot follow without stepping ends in a lean. Take the hips there instead, or lift a foot first.
 - A figure left kneeling, sitting or lying starts the next drag from that pose — pull the hips or the chest up to get her up again (a kneeler's feet roll back onto their toes as she rises, and her knees come up with them).
 - Reset Pose is always one step away when a pose gets away from you.

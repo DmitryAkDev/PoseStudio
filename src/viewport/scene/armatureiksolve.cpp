@@ -379,9 +379,7 @@ void Armature::ikSolveTraces(IkSolveScratch& s) {
     }
 }
 
-bool Armature::dragIkTick(const glm::vec3& rawTarget) {
-    IkRig& rig = *m_ikRig;
-    const std::size_t n = m_bones.size();
+glm::vec3 Armature::followIkTarget(const glm::vec3& rawTarget) {
     // The damped FOLLOWER (see Armature::ikDamping): a critically damped spring from
     // the followed target to the raw one, integrated exactly over one tick (stable at any
     // stiffness). Seeded ON the first target: a drag starts at rest at its grab point.
@@ -400,7 +398,13 @@ bool Armature::dragIkTick(const glm::vec3& rawTarget) {
         m_jsFollowVel = (m_jsFollowVel - temp * omega) * decay;
         m_jsFollowPos = rawTarget + (offset + temp) * decay;
     }
-    const glm::vec3 target = m_jsFollowPos;
+    return m_jsFollowPos;
+}
+
+bool Armature::dragIkTick(const glm::vec3& rawTarget) {
+    IkRig& rig = *m_ikRig;
+    const std::size_t n = m_bones.size();
+    const glm::vec3 target = followIkTarget(rawTarget);
     const bool following = glm::length(rawTarget - target) > 1.0e-5f;
     // The pelvis's VERTICAL YIELD (see kRootYieldStiffness), from the followed target: down
     // always, up by the height the legs had left when the drag began.

@@ -80,16 +80,21 @@ void main() {
     // twist twin — the flesh that joint moves, fading out where the weights blend into the
     // neighbouring bones. material3.z packs kind + 8·(joint+1) + 8192·(twin+1) (exact below
     // 2^24); -1 (no selection, or a static mesh, which has nothing to select) yields 0 everywhere.
+    // ... and the joints lit WITH the selection: the FACE RIG under a selected head (the face is the
+    // head's — its bones are not selectable — and the head bone's own weights cover the scalp
+    // alone). The joint buffer's second half carries that per joint, in the .x of one more entry
+    // each (Model::uploadJointsIfDirty); the joint count is half the buffer's length.
     int packed = int(pc.material3.z + 0.5);
     int selJoint = ((packed >> 3) & 1023) - 1;
     int selTwin = (packed >> 13) - 1;
     float sel = 0.0;
     if (selJoint >= 0) {
         ivec4 j = ivec4(inJoints);
-        sel += (j.x == selJoint || j.x == selTwin) ? inWeights.x : 0.0;
-        sel += (j.y == selJoint || j.y == selTwin) ? inWeights.y : 0.0;
-        sel += (j.z == selJoint || j.z == selTwin) ? inWeights.z : 0.0;
-        sel += (j.w == selJoint || j.w == selTwin) ? inWeights.w : 0.0;
+        int   lit = joints.dq.length() / 2;
+        sel += inWeights.x * ((j.x == selJoint || j.x == selTwin) ? 1.0 : joints.dq[lit + j.x].real.x);
+        sel += inWeights.y * ((j.y == selJoint || j.y == selTwin) ? 1.0 : joints.dq[lit + j.y].real.x);
+        sel += inWeights.z * ((j.z == selJoint || j.z == selTwin) ? 1.0 : joints.dq[lit + j.z].real.x);
+        sel += inWeights.w * ((j.w == selJoint || j.w == selTwin) ? 1.0 : joints.dq[lit + j.w].real.x);
     }
     vSelect = sel;
     gl_Position = cam.viewProj * worldPos;

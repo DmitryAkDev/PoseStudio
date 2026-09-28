@@ -122,7 +122,7 @@ void LineOverlay::record(VkCommandBuffer cmd, const Camera& camera, VkDescriptor
     // pickable regardless, because picking (Scene::selectBoneAt) is independent of what's drawn
     // here.
     if (const Model* fig = activeFigure; fig && fig->boneCount() > 0) {
-        const int selected = fig->selectedBone();
+        const int selected = fig->highlightBone();
 
         // Skeleton as line segments (joint -> parent); the selected joint's segments are highlighted.
         if (m_showSkeleton) {

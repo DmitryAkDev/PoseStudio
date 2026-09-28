@@ -7,7 +7,8 @@
  * every gesture is gated by. Each is annotated with what it was measured against (the IK harness
  * on the eight reference rigs, the character sweep, the in-app galleries) — change one, and the
  * comment says which phases will tell you what it cost. Private to the solve: only
- * armatureiksolve*.cpp and armatureikpost.cpp include it. Qt-free (std + GLM).
+ * armatureiksolve*.cpp, armatureikpost.cpp, armatureikdigit.cpp and armaturelanding.cpp include it.
+ * Qt-free (std + GLM).
  */
 
 #ifndef ARMATURE_IK_SOLVE_TUNING_H
@@ -607,6 +608,53 @@ constexpr double kTiptoeDeg = 35.0;
 // from its socket, not the limb rise's kLimbReachShare (0.95): at 0.95 a hand that could reach
 // flat-footed (+86cm on the base rig, 0.04mm short) went 4.6cm onto its toes.
 constexpr float kTiptoeReachShare = 1.0f;
+// THE BONE CLASSES AND THE DIGIT DRAG (armatureikdigit.cpp; 2026-09-28, the user: "the face rig
+// joints are specifically for expressions and should not be part of the IK ... only the head itself
+// should be selectable ... IK in the fingers and toes should only apply to that digit, stopping at
+// the hand or foot"). A DIGIT's joint hangs below a wrist or an ankle and BENDS: its widest channel
+// LIMITED channel spans this much or more (degrees). A carpal's does not (7-20 degrees on the eight
+// reference rigs): it is the hand's own flesh, and a grab of one is the limb's. (The idle hands'
+// relax reads the same line between a finger and a carpal.)
+constexpr float kDigitMinRangeDeg = 30.0f;
+// ... and it stands OUT in its hand or foot: this share or more of the hand's or the foot's reach
+// (its farthest joint from the wrist or the ankle, at bind) from that wrist or ankle. The range
+// alone took the helper bones at the ankle for toes — a mid-foot bone 3-9mm from the ankle with
+// 45-60 degrees of range, a heel bone — 0.02-0.05 of the foot's reach out; a thumb's base, the
+// digit joint nearest its limb's end, stands 0.15-0.17 out on every generation.
+constexpr float kDigitMinReachShare = 0.10f;
+// ... and a digit's joint is FOOT-CLASS where it is a toe's: low at bind (the rig's kFootBindHeight,
+// figure-scaled), with a foot-class parent — the ankle is the foot's most proximal such joint.
+constexpr float kDigitFootHeight = 0.20f;
+// THE LANDING BOUNCE (armaturelanding.cpp; 2026-09-28, the user: "if she lands on her feet ... add
+// a natural bounce to her legs ... greater the more acceleration there is in the drop ... purely
+// aesthetic"). A figure the Ground button dropped onto her FEET absorbs the landing: the hips dip
+// over the planted feet, the knees folding, and come back up. The DIP is the impact speed's:
+// kLandingDipPerSpeed metres for every m/s the fall landed at (sqrt(2 g h): 6cm for half a metre's
+// drop, 2cm for 5cm), saturating toward kLandingDipMax of the figure's scale (a quarter squat:
+// tanh, so a higher drop always dips deeper), and under kLandingDipMin there is no bounce at all
+// (a drop of a millimetre). (0.030 first: a 5cm drop then folded the knees 30 degrees — near
+// straight a leg's height goes as the SQUARE of the knee's angle, so a shallow dip is a deep bend.)
+constexpr float kLandingDipPerSpeed = 0.020f;
+constexpr float kLandingDipMax = 0.20f;
+constexpr float kLandingDipMin = 0.003f;
+// ... its SHAPE: down over the first kLandingDownShare of its time (sin^2: deepest a third of
+// the way in, a landing's absorption) and back up over the rest (cos^2), so the dip begins and
+// ends as the SQUARE of the time — and the knee, whose angle goes as the dip's square root,
+// starts and stops at a steady pace. A damped spring's half wave, e^(-zeta omega t) sin(omega_d
+// t), was the first shape: it starts at full speed, and the knee of a straight leg then travelled
+// 8-12cm in the landing's second tick (28mm of dip is 28 degrees of knee). And it LASTS
+// kLandingSeconds for a dip at the cap, kLandingShortest of that for a slight one: a harder
+// landing takes longer to absorb.
+constexpr float kLandingSeconds = 0.50f;
+constexpr float kLandingShortest = 0.70f;
+constexpr float kLandingDownShare = 0.32f;
+// ... and over the last of it the pose is BLENDED back to the pose she landed in (from this share
+// of the duration, smoothstep to 1 at its end), which the bounce's end restores exactly: what the
+// solve leaves different at a dip of zero — a foot the rig healed flat, a heel brought down — eases
+// home instead of snapping there. Only the LAST of it, where the dip is a tenth of itself and the
+// two poses all but one: a blend of poses in joint space slides planted feet (from 0.6 of the
+// duration the toes slid 4mm on the floor under a 50cm drop's bounce, 7 under a 2m drop's).
+constexpr float kLandingBlendFrom = 0.85f;
 /// ... and the pace a LIFTED body comes up to its cursor at (see dragIkTick): per tick.
 constexpr float kLiftRiseStep = 0.025f;
 inline const bool kNoLiftEase = std::getenv("IK_JS_NO_LIFT_EASE") != nullptr; // A/B probe

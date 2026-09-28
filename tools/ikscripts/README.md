@@ -45,7 +45,9 @@ The scripts:
 | `session_poses.txt` | Whole poses built from several drags in a row (a walk, a sit with a hand to the knee, a high reach, picking something up), shot from a three-quarter view. |
 | `check_returns.txt` | Numbers only: out-and-home in one drag, a bow undone in a second drag, a walking drag let go of mid-step, a posed head. |
 | `gallery_hands.txt` | Hands laid on the body: a hand on the hip, both hands on the hips, on the heart, on top of the head, on the belly, behind the back, seated on the knee, and a hand laid and taken away — with `palm.<bone>` asserted. |
-| `gallery_scoped.txt` | Ctrl + drag, the SCOPED drag: a hand, a foot, a knee, the head and the chest each moved with only their own chain, the rest of the body asserted still (`movedxz.<bone>`, `moved.<bone>`). |
+| `gallery_scoped.txt` | Ctrl + drag. On a limb or the head, the SCOPED drag: a hand, a knee and the head each moved with only their own chain, the rest of the body asserted still (`movedxz.<bone>`, `moved.<bone>`). On the body itself, the FIGURE MOVE: the chest lifted and the hips carried with the whole figure going along as posed (no channel turned, the feet travelling with the grab), the Ground button bringing her back down, the floor stopping a push down, and a pinned hand staying where it is pinned while the body moves. |
+| `gallery_digits.txt` | Fingers, toes and the face, in close-up: a fingertip curled, a finger pulled far beyond its reach, the thumb, a Ctrl-drag of a finger, a toe raised — each with the hand, the foot and the body asserted still (`moved.<bone>` under 0.01mm) — the back of the hand still dragging the arm, and clicks on the eye, the jaw and an ear each selecting the head (`selected.head`), a drag from the face moving the head with the face's bones untouched. |
+| `gallery_landing.txt` | The Ground button's landing bounce: a figure lifted and dropped 5cm, 50cm and 2m, shot falling, at the deepest of the dip and after — the knees' fold asserted deeper for the higher drop, the pose afterwards asserted exactly the pose she was dropped in, the skin on the floor — a posed figure keeping her pose through it, and a kneeling one landing with no bounce. |
 | `check_picking.txt` | Numbers only: what a click selects (`selected.<bone>`) — hidden parts are never selected through the part in front, a click on a joint's own pixel takes that joint (the hip's, though its skin is the pelvis bone's). |
 
 Useful beside it: `QT_LOGGING_TO_CONSOLE=1` (the `[ikscript]` lines reach a redirected stderr),
@@ -70,14 +72,16 @@ along the bone's limb segment — the flesh, where a user clicks — instead of 
 | `view front\|back\|left\|right\|top\|bottom\|home` | The view keys. In `right` the camera looks from +X: screen-right is the figure's back. |
 | `orbit <yaw°> <pitch°>` | An orbit drag, in degrees (back to perspective, like one). |
 | `frame` | Frame the selection. |
+| `closeup <bone> <radius m>` | Frame the camera on that joint, the given radius filling the view — a hand, a foot, the face, before posing a finger. |
 | `shade <row>` | Shade mode, a row of the picker. |
 | `pose <file>` / `reset` / `undo` / `ground` | Load a pose file, Reset Pose, Undo, the Ground button. |
+| `lift <metres>` | Raise the active figure that far off the floor, as posed; `ground` then drops her. The fall and the landing bounce run on the app's own timer: `wait` through them (half a metre falls in 19 ticks, the bounce lasts 21-30). |
 | `fk <bone> <dx°> <dy°> <dz°>` | Turn a joint, as the X/Y/Z wheel would (through the FK collision stop). |
 | `pin <bone>[@share]` / `unpinall` | Click there and press P; drop every pin. Like `press`, when the pick lands on another part of the body (the hanging hand covers the hip from the side) the named bone is pinned instead, and the log says `pinned by name instead`. |
-| `click <bone>[@share]` | The real pick at that pixel; prints what it found. |
+| `click <bone>[@share]` | The real pick at that pixel; prints what it found. The pixel is the NAMED bone's joint's, whatever a selection of it selects: `click lEye` clicks at the eye, and finds the head. |
 | `pick2d on\|off` | The A/B: the 2D pick alone, as before 2026-09-26 (every joint and bone body projected to the screen, the nearest within 32px taken, no occlusion check) — a hidden part CAN be selected through another. `POSESTUDIO_PICK_2D=1` does the same for a whole run. |
 | `press <bone>[@share]` | The real press: the pick at the bone's pixel, then the press path (an IK drag begins). The pick is honest — what it finds is what is under that pixel — and on another body that can be another limb (a broad character's hanging arm covers her chest from the side, one hand covers the other). When the rig would then drag a different joint than the one named, the bone is grabbed by name at the same point instead, and the log says `the pick found <other> there`. A small bone OF the named one (a pectoral for the chest) is what a user's click finds too, and stands. |
-| `cpress <bone>[@share]` | The Ctrl press: the same pick and press path, beginning a SCOPED drag — the grabbed chain alone moves (a limb up to the body, the head and neck to the chest, the spine over a still pelvis, the hips with only their legs). |
+| `cpress <bone>[@share]` | The Ctrl press: the same pick and press path, beginning the Ctrl + drag — a SCOPED drag for a limb or the head (the grabbed chain alone moves), the FIGURE MOVE for the body itself (the hips, the abdomen, the chest: the whole figure as posed, nothing planted, the user's pins holding), the digit's own drag for a finger or a toe. |
 | `drag <dxPx> <dyPx> <moveTicks> <holdTicks>` | Move the cursor in screen pixels (+y down), then hold. |
 | `dragv <right m> <up m> <moveTicks> <holdTicks>` | The same, given in metres along the view's right/up axes at the grab's depth. |
 | `dragw <dx> <dy> <dz> <moveTicks> <holdTicks>` | Move the cursor's *world* target (the harness's gestures, for parity). |

@@ -91,6 +91,23 @@ void Scene::translateModelY(int index, float dy) {
     }
 }
 
+bool Scene::beginLandingBounce(int index, float impactSpeed) {
+    return index >= 0 && static_cast<std::size_t>(index) < m_models.size() &&
+           m_models[static_cast<std::size_t>(index)]->hasSkeleton() &&
+           m_models[static_cast<std::size_t>(index)]->beginLandingBounce(impactSpeed);
+}
+
+bool Scene::landingBounceTick(int index, float seconds) {
+    return index >= 0 && static_cast<std::size_t>(index) < m_models.size() &&
+           m_models[static_cast<std::size_t>(index)]->landingBounceTick(seconds);
+}
+
+void Scene::endLandingBounce(int index) {
+    if (index >= 0 && static_cast<std::size_t>(index) < m_models.size()) {
+        m_models[static_cast<std::size_t>(index)]->endLandingBounce();
+    }
+}
+
 bool Scene::togglePinSelectedBone() {
     Model* fig = figureModel();
     return fig && fig->togglePinSelectedBone();

@@ -90,6 +90,7 @@ bool Armature::ensureIkRig() {
         m_ikRig->build(rigBones, m_bodyMesh.empty() ? nullptr : &m_bodyMesh);
         m_ikBindPos = std::move(bindPos);
         buildJointSolver();
+        classifyBones(); // (the face rig and the digits: found with the rig, by structure)
     }
     return true;
 }
@@ -272,6 +273,7 @@ bool Armature::footLyingExempt(int node) const {
 }
 
 void Armature::setIkGrabPoint(int bone, const glm::vec3& worldPoint) {
+    bone = posingBone(bone); // (a point of the face is a point of the HEAD: the face rig is not posed)
     if (bone < 0 || bone >= static_cast<int>(m_bones.size())) {
         m_ikGrabBone = -1;
         return;
@@ -313,6 +315,21 @@ bool Armature::beginIkDrag(IkScope scope) {
     }
     if (!ensureIkRig()) {
         return false;
+    }
+    // A finger's or a toe's joint: THE DIGIT DRAG (armatureikdigit.cpp) — the digit alone answers
+    // the cursor, whatever the scope; the rig begins no drag, so nothing is planted, stepped or
+    // balanced, and no other bone is an unknown.
+    m_digitDrag = false;
+    m_figureMove = false;
+    if (boneClass(m_selectedBone) == BoneClass::Digit) {
+        return beginDigitDrag();
+    }
+    // IkScope::Part (the app's Ctrl+drag) is resolved by what the rig's drag turns out to have hold
+    // of, below: the BODY itself -> the figure is moved as she is posed (Figure); anything else ->
+    // the grabbed chain alone (Chain).
+    const bool part = scope == IkScope::Part;
+    if (part) {
+        scope = IkScope::Chain;
     }
     // Current model-space joint positions, plus the ground contacts (detected by WORLD height —
     // the model transform may have grounded/translated the figure). Thresholds scale with the
@@ -371,7 +388,14 @@ bool Armature::beginIkDrag(IkScope scope) {
     }
     const bool grabbedBody = m_ikGrabBone == m_selectedBone &&
                              (glm::length(m_ikGrabLocal) > 1.0e-4f || isTwistBone(m_selectedBone));
-    if (grabbedBody && rigidSegment(m_selectedBone, m_ikSegmentNear, m_ikSegmentFar)) {
+    // (The HEAD is no segment: what hangs below it is the face rig, whose joints are not the IK's —
+    // a point of the head or the face is dragged by the head's own joint, its offset measured.)
+    const bool segment = grabbedBody && rigidSegment(m_selectedBone, m_ikSegmentNear, m_ikSegmentFar) &&
+                         boneClass(m_ikSegmentFar) != BoneClass::Face;
+    if (!segment) {
+        m_ikSegmentNear = m_ikSegmentFar = -1;
+    }
+    if (segment) {
         const glm::vec3 point(m_poseGlobal[static_cast<std::size_t>(m_selectedBone)] * glm::vec4(m_ikGrabLocal, 1.0f));
         const glm::vec3& from = positions[static_cast<std::size_t>(m_ikSegmentNear)];
         const glm::vec3 along = positions[static_cast<std::size_t>(m_ikSegmentFar)] - from;
@@ -416,6 +440,11 @@ bool Armature::beginIkDrag(IkScope scope) {
     }
     if (!m_ikRig->beginDrag(grabNode, positions, contacts, groundOffsetY, &userPins)) {
         return false;
+    }
+    static const bool kNoFigureMove = std::getenv("POSESTUDIO_NO_FIGURE_MOVE") != nullptr; // A/B probe: the scoped chain, as before 2026-09-28
+    if (part && !kNoFigureMove && isBodyGrab(m_ikRig->dragEffector())) {
+        m_ikRig->endDrag(); // (the rig has no part in a figure move: nothing is planted)
+        return beginFigureMove();
     }
     m_ikScope = scope;
     m_ikRig->setScoped(scope == IkScope::Chain); // (no intent, no suspension, no step under a scoped drag)
@@ -744,6 +773,12 @@ bool Armature::beginIkDrag(IkScope scope) {
 }
 
 bool Armature::dragIkTo(const glm::vec3& targetWorld) {
+    if (m_digitDrag) {
+        return dragDigitTo(targetWorld); // (a finger's or a toe's joint: the digit alone)
+    }
+    if (m_figureMove) {
+        return dragFigureTo(targetWorld); // (Ctrl + the body itself: the figure, moved as she is posed)
+    }
     if (!m_ikRig || !m_ikRig->dragActive() || m_bones.empty()) {
         return false;
     }
@@ -859,6 +894,9 @@ bool Armature::dragIkTo(const glm::vec3& targetWorld) {
 }
 
 bool Armature::settleIkTick() {
+    if (m_digitDrag || m_figureMove) {
+        return false; // (nothing to land: neither has a contact pin, and the pose is the solve's)
+    }
     if (!m_ikRig || !m_ikRig->dragActive() || m_bones.empty() || m_ikRig->pins().empty()) {
         return false;
     }
@@ -881,9 +919,16 @@ void Armature::endIkDrag() {
         m_ikRig->endDrag();
     }
     m_ikScope = IkScope::Body;
+    m_digitDrag = false;
+    m_figureMove = false;
 }
 
 void Armature::holdNudgedBoneThroughDrag(int bone) {
+    if ((m_digitDrag || m_figureMove) && bone >= 0 && static_cast<std::size_t>(bone) < m_ikStartEuler.size()) {
+        // (A digit drag, a figure move: the user's rotation is the posture their solve eases toward.)
+        m_ikStartEuler[static_cast<std::size_t>(bone)] = m_boneEuler[static_cast<std::size_t>(bone)];
+        return;
+    }
     if (!m_ikRig || !m_ikRig->dragActive() || bone < 0 ||
         bone >= static_cast<int>(m_bones.size())) {
         return;
@@ -937,7 +982,7 @@ void Armature::unpinAllBones() {
 
 std::vector<int> Armature::activeContactPins() const {
     std::vector<int> out;
-    if (m_ikRig && m_ikRig->dragActive()) {
+    if (m_ikRig && m_ikRig->dragActive() && !m_landing.active) { // (a landing bounce is no drag of the user's: no markers)
         const std::vector<IkEffector>& pins = m_ikRig->pins();
         for (std::size_t p = 0; p < pins.size(); ++p) {
             if (!m_ikRig->pinIsUser(p)) {

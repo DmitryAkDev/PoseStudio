@@ -34,6 +34,7 @@ namespace pose {
 
 class IkRig;
 class JointSolver;
+struct JointSolverDof;
 
 /// One bone of an armature, as the importer (or a skeleton dump) describes it. Rest transforms
 /// are TRANSLATION-ONLY (the figure format's convention: a bone's rest frame is axis-aligned with
@@ -72,7 +73,27 @@ struct IkSolveScratch; // the per-tick solve's shared stage state (armatureiksol
 /// and nothing else: no root translation or rotation, no balance, no step, no lift-off, no arm hang
 /// or head righting. A pelvis grab moves the pelvis and only what keeps the planted contacts planted
 /// (the legs; a planted hand's arm). The limits, the floor and the body volumes hold as ever.
-enum class IkScope { Body, Chain };
+///
+/// Figure (2026-09-28): THE FIGURE, MOVED AS SHE IS POSED — the whole body follows the cursor as one
+/// rigid piece (the solve root's pose translation), lifted off the floor or carried across it: no
+/// floor contact is planted, nothing balances or steps, and no joint turns. USER PINS HOLD: a
+/// pinned limb's chain gives to keep its joint where it is pinned (and when it runs out, the body
+/// stops); a pin on the trunk holds the figure where she is. The floor itself still stops her on
+/// the way down. See armatureikfigure.cpp.
+///
+/// Part: what the app's Ctrl+drag ASKS for — resolved at the press by what was grabbed: Figure for
+/// a grab of the BODY itself (the hips, the abdomen, the chest: Armature::isBodyGrab), Chain for
+/// anything else (a limb, the head and neck), and a digit's own drag for a finger or a toe.
+/// Armature::ikScope() reads the resolved scope while the drag is in flight.
+enum class IkScope { Body, Chain, Figure, Part };
+
+/// WHAT a bone is to the posing UI (2026-09-28; Armature::boneClass). Body: a joint of the body —
+/// selectable, dragged by the whole-body or the scoped solve. Face: a bone of the FACE RIG — every
+/// bone below the head (the jaw, the lips, the brows, the eyes, the ears, the tongue): they are for
+/// expressions, none of the IK's business, and not selectable — a click on the face selects the
+/// HEAD (Armature::posingBone). Digit: a joint of a finger or a toe — dragged, it moves its own
+/// digit alone, up to where the digit joins the hand or the foot (the DIGIT DRAG, armatureikdigit.cpp).
+enum class BoneClass { Body, Face, Digit };
 
 class Armature {
 public:
@@ -165,24 +186,51 @@ public:
 
     // --- Selection (the posing UI's current joint) ---
     int  selectedBone() const { return m_selectedBone; }
+    /// The joint the selection HIGHLIGHT shows (the tinted flesh, the skeleton overlay's hot
+    /// segments): the selected joint — the USER's through a landing bounce, which drags the hips
+    /// by the solve's own machinery and must not light them up for its half second.
+    int highlightBone() const { return m_landing.active ? m_landing.selected : m_selectedBone; }
+    /// Selects bone @p index (-1: nothing) — or, for a bone of the face rig, the HEAD (posingBone).
     void setSelectedBone(int index) {
-        m_selectedBone = index;
+        m_selectedBone = posingBone(index);
         m_ikGrabBone = -1; // (a grab point is the pick's that made the selection: Scene::selectBoneAt sets it after)
     }
-    /// Selects the bone named @p name (diagnostics / the IK benchmark); its index, or -1.
+    /// Selects the bone named @p name (diagnostics / the IK benchmark; a face-rig bone's name
+    /// selects the head); the index of the bone NAMED, or -1.
     int selectBoneByName(const std::string& name) {
         const int index = boneIndex(name);
         if (index >= 0) {
-            m_selectedBone = index;
+            m_selectedBone = posingBone(index);
             m_ikGrabBone = -1;
         }
         return index;
     }
-    /// The selected joint's highlight twin (see m_highlightTwin), or -1 without a selection or twin.
+    /// What @p bone is to the posing UI (see BoneClass). Found by STRUCTURE with the IK rig, which
+    /// this builds on first use: the face rig is what hangs below the rig's head; a digit's joint
+    /// hangs below a wrist (ensureHandMaps) or below an ankle (the most proximal joint of a foot),
+    /// BENDS (its widest limited channel spans kDigitMinRangeDeg or more: a carpal's does not),
+    /// stands OUT in its hand or foot (kDigitMinReachShare of the limb end's reach: a heel bone or
+    /// a mid-foot bone at the ankle does not) and carries ONE digit at most (the ball of the foot
+    /// the toes fan from is the foot's, a carpal with two fingers the hand's). Body for a boneless
+    /// model. POSESTUDIO_POSE_ALL_BONES makes every bone Body (the A/B probe: the face rig
+    /// selectable and a digit grab the limb's, as before 2026-09-28); POSESTUDIO_BONE_CLASS_TRACE
+    /// prints what was found.
+    BoneClass boneClass(int bone);
+    /// The bone a selection of @p bone selects: the HEAD for a bone of the face rig, else itself.
+    int posingBone(int bone);
+    /// posingBone() as the classes stand, without building the rig (@p bone itself until it is
+    /// built): for read-only callers — the scripted test asks what a name's selection IS.
+    int knownPosingBone(int bone) const;
+    /// True when @p bone's flesh is LIT with the selection though the bone is neither the selected
+    /// joint nor its twin: a bone of the FACE RIG while the head is selected — the face is the
+    /// head's, and lit by the head bone's own skin weights alone a click on a cheek lit the scalp.
+    /// (Reads the classes as they stand: false until the rig has been built.)
+    bool highlightedWithSelection(int bone) const;
+    /// The highlighted joint's twin (see m_highlightTwin), or -1 without a selection or twin.
     int selectedHighlightTwin() const {
-        return (m_selectedBone >= 0 && m_selectedBone < static_cast<int>(m_highlightTwin.size()))
-                   ? m_highlightTwin[static_cast<std::size_t>(m_selectedBone)]
-                   : -1;
+        const int bone = highlightBone();
+        return (bone >= 0 && bone < static_cast<int>(m_highlightTwin.size())) ? m_highlightTwin[static_cast<std::size_t>(bone)]
+                                                                              : -1;
     }
 
     // --- Forward-kinematic posing ---
@@ -249,6 +297,12 @@ public:
     bool beginIkDrag(IkScope scope = IkScope::Body);
     /// The scope of the drag in flight (IkScope::Body between drags).
     IkScope ikScope() const { return m_ikScope; }
+    /// True while the drag in flight is a DIGIT drag (beginIkDrag on a finger's or a toe's joint):
+    /// the digit alone moves, whatever the scope asked for, and the rig has no drag of its own.
+    bool ikDigitDrag() const { return m_digitDrag; }
+    /// True while the drag in flight MOVES THE FIGURE as she is posed (IkScope::Figure: the app's
+    /// Ctrl+drag of the body itself); the rig has no drag of its own.
+    bool ikFigureMove() const { return m_figureMove; }
     /// One FBIK drag tick: the whole body is SOLVED, to convergence, so the selected joint sits
     /// on @p targetWorld with every pin, the floor, the body volumes and balance honoured, directly
     /// in the pose's own unknowns (the Euler channels inside their authored limits + the root's
@@ -305,6 +359,25 @@ public:
     /// The rig's CONTACT pins (ground-detected, not user pins) while an IK drag is active — for
     /// the overlay's "which feet are planted" markers. Empty outside a drag.
     std::vector<int> activeContactPins() const;
+    // --- THE LANDING BOUNCE (armaturelanding.cpp): the Ground button's fall, landed on her feet ---
+    /// Begins the landing's absorption for a figure that has just come down at @p impactSpeed (m/s,
+    /// the fall's speed at the floor): the hips will dip over the planted feet, the legs folding
+    /// under them, and come back up — a pelvis drag made by the solve's own machinery (the scoped
+    /// one: the pelvis and the legs alone, no balance, no step, nothing re-posed), its depth the
+    /// speed's (kLandingDip* in the tuning header). True when a bounce began. False — and nothing
+    /// changed — when she did NOT land on her feet (a knee, a hand, the seat or the head on the
+    /// floor; no foot on it; a pinned pelvis), when the dip would be imperceptible, without a
+    /// skeleton, or while a drag owns the pose. PURELY AESTHETIC: the pose the bounce ends in is
+    /// the pose it began in, exactly (endLandingBounce), so it is no pose edit and no undo entry.
+    bool beginLandingBounce(float impactSpeed);
+    /// The bounce @p seconds after the landing: the pose for that moment. False once it is over
+    /// (or none is in flight): the caller then calls endLandingBounce().
+    bool landingBounceTick(float seconds);
+    /// Ends the bounce, wherever it is: the pose she landed in, exactly, and the user's selection.
+    void endLandingBounce();
+    bool landingBounceActive() const { return m_landing.active; }
+    /// The dip the bounce in flight was given (m; 0 without one): the harness and the scripts.
+    float landingBounceDip() const { return m_landing.active ? m_landing.dip : 0.0f; }
     /// True for a joint whose floor clearance stands down because its foot LIES on its top behind a
     /// planted knee (the ankle and the mid-foot: their clearances are the standing foot's bind
     /// heights, and a lying ankle sits at the shin's radius) — the harness's penetration measure
@@ -752,6 +825,70 @@ private:
     /// depth crouched, negative hovering.
     float                         m_jsRootRiseRoom = 0.0f;
     bool                          m_jsHoldValid = false;
+    // --- THE LANDING BOUNCE (armaturelanding.cpp) ---
+    /// The bounce in flight: its depth and how long it lasts, where the hips stood when she landed
+    /// (world), the pose she landed in (what the bounce blends back to and ends in), and the
+    /// user's selection and grab point, which the bounce's pelvis drag borrows the selection from.
+    struct LandingBounce {
+        bool                   active = false;
+        float                  dip = 0.0f;
+        float                  seconds = 0.0f;
+        glm::vec3              hipStart{0.0f};
+        std::vector<glm::vec3> euler;
+        std::vector<glm::vec3> translation;
+        int                    selected = -1;
+        int                    grabBone = -1;
+        glm::vec3              grabLocal{0.0f};
+    };
+    LandingBounce                 m_landing;
+    // --- The bone classes and THE DIGIT DRAG (armatureikdigit.cpp) ---
+    /// Per bone: its BoneClass (classifyBones, with the rig: empty until then).
+    std::vector<char>             m_boneClass;
+    void classifyBones();
+    /// The digit drag in flight: the grabbed bone and the grabbed point in its frame (the joint
+    /// itself without a grab point), and the bones whose channels answer the cursor — the digit's,
+    /// parents first: the grabbed bone (when the point is off its joint: its own channels turn it)
+    /// and the digit's bones above it, up to where the digit joins the hand or the foot.
+    bool                          m_digitDrag = false;
+    int                           m_digitBone = -1;
+    glm::vec3                     m_digitLocal{0.0f};
+    std::vector<int>              m_digitChain;
+    bool beginDigitDrag();
+    bool dragDigitTo(const glm::vec3& targetWorld);
+    /// The unknowns a LOCAL solve (the digit drag, the figure move's pinned limbs) has in @p bone:
+    /// its unlocked channels, each pulled toward its drag-start value at 1 / range^2 (the limb's
+    /// price), a fold channel bounded at straight — the body solve's own posture model
+    /// (ikPostureModel), for the few bones there are. Appended to @p out.
+    void localChannelDofs(int bone, std::vector<JointSolverDof>& out) const;
+    // --- THE FIGURE MOVE (armatureikfigure.cpp; IkScope::Figure) ---
+    /// True when a drag that has hold of @p effector (the rig's, after its promotions) has hold of
+    /// the BODY itself: the solve root (a pelvis-girdle grab is promoted to it) or a bone of the
+    /// spine — not a leg's, an arm's, the neck's or the head's.
+    bool isBodyGrab(int effector) const;
+    /// The move in flight: the grabbed bone and the grabbed point in its frame; the user pins it
+    /// holds (the joint, its place and rotation at the press, model space) and the bones whose
+    /// channels give for them; whether a pin on the trunk holds the whole figure where she is;
+    /// and, per joint that rides the body, the height it may come down to (its floor clearance —
+    /// or where it stood at the press, when that was lower: a pose's own penetration is not pushed
+    /// out by a move) — 1e9 for a joint of a pinned limb, which goes where its pin holds it.
+    struct HeldPin {
+        int       bone = -1;
+        glm::vec3 place{0.0f};
+        glm::mat3 rotation{1.0f};
+    };
+    bool                          m_figureMove = false;
+    int                           m_moveBone = -1;
+    glm::vec3                     m_moveLocal{0.0f};
+    std::vector<HeldPin>          m_movePins;
+    std::vector<int>              m_moveLimbs;
+    bool                          m_moveHeld = false;
+    std::vector<float>            m_moveFloor;
+    bool beginFigureMove();
+    bool dragFigureTo(const glm::vec3& targetWorld);
+    /// The damped FOLLOWER (see ikDamping): advances the followed target one tick toward @p raw
+    /// and returns it (m_jsFollowPos); a drag's first tick seeds it ON the target, and records
+    /// the drag's first target (m_jsStartTarget).
+    glm::vec3 followIkTarget(const glm::vec3& raw);
     void buildJointSolver();
     /// One solve of the current drag's tasks, applied in full: toward @p dragTarget (a drag
     /// tick), or with the released joint held at @p holdTarget / free (the release). Returns

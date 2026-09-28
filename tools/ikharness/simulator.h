@@ -60,7 +60,12 @@ struct Scenario {
     /// it belongs to (Armature::setIkGrabOnSegment) — the cursor path starts at that point and
     /// every grab metric reads it.
     float                 grabShare = -1.0f;
-    /// The measured drag is SCOPED (Armature's IkScope::Chain — the app's Ctrl+drag): the grabbed
+    /// Non-zero: the grab is of a point on the bone's own body, this far (m, world axes) from its
+    /// joint in the pose the drag begins in (Armature::setIkGrabPoint) — a fingertip's pad, a
+    /// toe's tip: where a click on a LEAF bone lands, which has no segment to take a share of.
+    glm::vec3             grabOffset{0.0f};
+    /// The measured drag is the app's CTRL+DRAG (Armature's IkScope::Part): a grab of the body
+    /// itself moves the whole figure as she is posed; anything else is SCOPED — the grabbed
     /// chain alone moves. The preludes stay whole-body drags.
     bool                  scoped = false;
     std::vector<PreludeDrag> before;            // drags made and released before the measured one

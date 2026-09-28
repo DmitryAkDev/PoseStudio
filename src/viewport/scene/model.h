@@ -132,10 +132,16 @@ public:
     int              boneParent(std::size_t i) const { return m_armature.boneParent(i); }
 
     int  selectedBone() const { return m_armature.selectedBone(); }
+    /// The joint the selection highlight shows (Armature::highlightBone: the selected joint, the
+    /// user's through a landing bounce).
+    int  highlightBone() const { return m_armature.highlightBone(); }
     /// The runtime skeleton, read-only (diagnostics: the scripted posing test reads joint
     /// positions, channels and the rig's step count from it).
     const Armature& armature() const { return m_armature; }
     void setSelectedBone(int index) { m_armature.setSelectedBone(index); }
+    /// What bone @p index is to the posing UI (Armature::boneClass: a joint of the body, a bone of
+    /// the face rig — which selects the head — or a finger's or a toe's joint).
+    BoneClass boneClass(int index) { return m_armature.boneClass(index); }
     /// The selected joint's highlight twin (a bend bone's twist child and vice versa; see
     /// Armature), or -1 — the second joint the selected-part highlight tints.
     int selectedHighlightTwin() const { return m_armature.selectedHighlightTwin(); }
@@ -155,6 +161,14 @@ public:
     bool settleIkTick() { return m_armature.settleIkTick(); }
     /// Ends the FBIK drag (the solved pose stays; the caller refreshes the correctives).
     void endIkDrag() { m_armature.endIkDrag(); }
+    // --- The landing bounce (see Armature): the Ground button's fall, landed on her feet ---
+    bool beginLandingBounce(float impactSpeed) { return m_armature.beginLandingBounce(impactSpeed); }
+    bool landingBounceTick(float seconds) { return m_armature.landingBounceTick(seconds); }
+    /// Ends the bounce: the pose she landed in, exactly, and its correctives.
+    void endLandingBounce() {
+        m_armature.endLandingBounce();
+        refreshCorrectives();
+    }
     // --- User joint pins (see Armature) ---
     bool togglePinSelectedBone() { return m_armature.togglePinSelectedBone(); }
     bool isBonePinned(std::size_t index) const { return m_armature.isBonePinned(index); }
@@ -256,6 +270,11 @@ private:
     std::array<VulkanBuffer, kMaxFramesInFlight>    m_jointBuffers;
     std::array<VkDescriptorSet, kMaxFramesInFlight> m_jointSets{}; // set 2; from m_descriptorPool
     std::array<std::uint64_t, kMaxFramesInFlight>   m_jointUploaded{}; // last skin version per slot
+    // The joint buffer's SECOND HALF: per joint, whether its flesh is lit WITH the selection
+    // (Armature::highlightedWithSelection — the face rig under a selected head), as the .x of one
+    // more entry per joint; written per slot when the selection changes (the key is the selected
+    // bone + 2, so that 0 — the array's initial value — is "never written").
+    std::array<int, kMaxFramesInFlight>             m_highlightUploaded{};
     uint32_t                                        m_jointCount = 1;
 
     // Pose correctives, blended on the GPU (set 2 bindings 1 + 2 — see correctiveset.h).

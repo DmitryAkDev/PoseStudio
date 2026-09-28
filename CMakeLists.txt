@@ -353,6 +353,9 @@ add_executable(
     src/viewport/scene/armatureiksolvestate.h     # ... the per-tick scratch the stages share
     src/viewport/scene/armatureiksolvetuning.h    # ... every tuning constant, with its reasoning
     src/viewport/scene/armatureikpost.cpp   # the drag tick's post-steps: the idle arms' hang, the head's righting
+    src/viewport/scene/armatureikdigit.cpp  # the bone classes (body / face rig / digit) and the digit drag
+    src/viewport/scene/armaturelanding.cpp  # the landing bounce: a figure dropped onto her feet absorbs the landing
+    src/viewport/scene/armatureikfigure.cpp # the figure move: Ctrl + the body itself moves the figure as she is posed
     src/viewport/scene/shadowpass.cpp    # the key light's depth-only pass: map, pipeline, frustum fit
     src/viewport/scene/shadowpass.h
     src/viewport/scene/outlinepass.cpp   # the selection-outline mask pass
@@ -578,6 +581,9 @@ add_executable(PoseStudioIkHarness
     src/viewport/scene/armatureiksolveposture.cpp
     src/viewport/scene/armatureiksolverows.cpp
     src/viewport/scene/armatureikpost.cpp
+    src/viewport/scene/armatureikdigit.cpp
+    src/viewport/scene/armaturelanding.cpp
+    src/viewport/scene/armatureikfigure.cpp
     src/viewport/scene/ik/ikmath.cpp
     src/viewport/scene/ik/skeletongraph.cpp
     src/viewport/scene/ik/bonealiases.cpp

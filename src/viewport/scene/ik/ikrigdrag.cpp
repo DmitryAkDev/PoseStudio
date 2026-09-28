@@ -113,6 +113,10 @@ bool IkRig::beginDrag(int effectorNode, const std::vector<glm::vec3>& positions,
     // per-drag RIGIDIFIED finger edges still equilibrated ~25cm short — the fingertip goal
     // under-recruited the collar (14° vs the hand-drag's 35° shrug), and no stiffness or prior
     // variant closed that gap. Driving the limb's real end joint IS the verified arm-raise path.
+    // (Since 2026-09-28 a finger's or a toe's grab never reaches the rig — it is the Armature's
+    // DIGIT DRAG, the digit alone — and a bone of the face rig selects the head: what is promoted
+    // here is what is left, the small bones that are the limb's own flesh — a carpal, a mid-foot
+    // bone, the ball of the foot, a pectoral on the chest. See Armature::boneClass.)
     while (m_effector != m_pelvis) {
         const int p = m_parents[static_cast<std::size_t>(m_effector)];
         if (p < 0 || m_masses[static_cast<std::size_t>(m_effector)] >= kTokenBoneMass ||

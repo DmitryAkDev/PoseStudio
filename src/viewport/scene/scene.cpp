@@ -288,7 +288,7 @@ void Scene::record(VkCommandBuffer cmd, const Camera& camera, uint32_t frameInde
                     bound = draw.model;
                 }
                 draw.mesh->record(cmd, layout, draw.model->transform(), MeshDrawKind::Transparent,
-                                  draw.model->selectedBone(), draw.model->selectedHighlightTwin());
+                                  draw.model->highlightBone(), draw.model->selectedHighlightTwin());
             }
         } else if (spec.fill == FillKind::HiddenLine) {
             // Depth only (colour writes masked): the surface hides what's behind it and shows the
@@ -420,7 +420,16 @@ int Scene::selectBoneAt(float px, float py, float vpW, float vpH, const Camera& 
             }
         }
     }
-    if (pickedBone >= 0) {
+    // WHAT the hit bone is to the posing UI (Armature::boneClass, 2026-09-28). A bone of the FACE RIG
+    // is for expressions and is not posed: the click is on the HEAD (the selection below maps it),
+    // at the point it hit. A finger's or a toe's joint is dragged by the point the cursor is ON —
+    // its drag moves the digit alone, and a point AT a joint has no lever on the bone it belongs
+    // to. Neither snaps to a joint, and no joint of either is a snap candidate for a hit beside it
+    // (a click on the back of the hand is the hand's, not the knuckle's 10px away).
+    const auto classOf = [&](int model, int bone) {
+        return m_models[static_cast<std::size_t>(model)]->boneClass(bone);
+    };
+    if (pickedBone >= 0 && classOf(pickedModel, pickedBone) == BoneClass::Body) {
         // The joint snap: a joint of the hit bone's OWN body that projects within kJointSnapPx of
         // the click — the near and far joints of its rigid segment (or its own joint, for a leaf),
         // the joints its CHILDREN hang from (where its flesh ends) and its PARENT's joint. The
@@ -482,6 +491,7 @@ int Scene::selectBoneAt(float px, float py, float vpW, float vpH, const Camera& 
         for (const Candidate& c : candidates) {
             glm::vec2 at(0.0f);
             if (c.joint < 0 || static_cast<std::size_t>(c.joint) >= fig.boneCount() ||
+                classOf(pickedModel, c.joint) != BoneClass::Body || // (a face-rig bone's or a digit's joint: see above)
                 !screenOf(fig.boneWorldPosition(static_cast<std::size_t>(c.joint)), at)) {
                 continue;
             }
@@ -506,7 +516,7 @@ int Scene::selectBoneAt(float px, float py, float vpW, float vpH, const Camera& 
                 grab = fig.boneWorldPosition(static_cast<std::size_t>(c.joint));
             }
         }
-    } else {
+    } else if (pickedBone < 0) {
         const BonePick pick = pickBone(m_models, px, py, vpW, vpH, camera);
         if (pick.bone < 0) {
             return -1;
@@ -552,9 +562,9 @@ int Scene::selectBoneAt(float px, float py, float vpW, float vpH, const Camera& 
     }
     setActiveFigure(pickedModel);
     Model& figure = *m_models[static_cast<std::size_t>(pickedModel)];
-    figure.setSelectedBone(pickedBone);
+    figure.setSelectedBone(pickedBone); // (a bone of the face rig selects the HEAD: Armature::posingBone)
     figure.setIkGrabPoint(pickedBone, grab);
-    return pickedBone;
+    return figure.selectedBone();
 }
 
 } // namespace pose
