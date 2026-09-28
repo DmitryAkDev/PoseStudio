@@ -1,4 +1,4 @@
-// correctives.glsl — the per-model pose-corrective (JCM) buffers and their per-vertex blend.
+// correctives.glsl — the per-model pose-corrective buffers and their per-vertex blend.
 //
 // Pose correctives are blended BEFORE skinning: each vertex carries a packed range into the
 // model's corrective-delta buffer (binding 2 — entries sorted per vertex), and the per-frame

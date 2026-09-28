@@ -374,7 +374,7 @@ void CorrectiveSet::refresh(const Armature& armature) {
     evaluateWeights(armature);
     m_evalSkinVersion = armature.skinVersion();
     // Diagnostic hook: POSESTUDIO_DUMP_CORRECTIVES=1 prints every corrective whose weight is
-    // non-zero when a pose settles — which JCMs fire, and how hard. No-op unless set.
+    // non-zero when a pose settles — which correctives fire, and how hard. No-op unless set.
     static const bool dump = std::getenv("POSESTUDIO_DUMP_CORRECTIVES") != nullptr;
     if (dump) {
         std::fprintf(stderr, "[correctives] active after pose change:\n");

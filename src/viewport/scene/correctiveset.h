@@ -1,6 +1,6 @@
 /**
  * @file correctiveset.h
- * @brief A model's pose correctives (joint-driven corrective morphs, JCMs) as the GPU blends
+ * @brief A model's pose correctives (joint-driven corrective morphs) as the GPU blends
  *        them: the resolved driver formulas, the static per-vertex delta table, and the per-frame
  *        weight buffers.
  *

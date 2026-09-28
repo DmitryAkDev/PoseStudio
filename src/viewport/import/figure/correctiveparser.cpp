@@ -187,7 +187,7 @@ bool parseCorrective(const nlohmann::json& modifier, const CorrectiveContext& ct
     for (const auto& formula : *formulas) {
         // Only formulas whose OUTPUT is this modifier's own `?value` channel belong to its
         // weight. Base corrective packs carry exactly that one driver formula, but vendor
-        // character JCM files bundle DOZENS of others in the same modifier — joint-center /
+        // character corrective files bundle DOZENS of others in the same modifier — joint-center /
         // orientation / end-point adjustments driven BY the morph, and cross-drivers of sibling
         // morphs. Summing those into the weight produced garbage (and their gate stages zeroed
         // it); they are simply skipped here (per-morph bone adjustments are transient, tiny, and

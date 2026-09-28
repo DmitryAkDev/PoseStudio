@@ -8,7 +8,7 @@
 //
 // Why dual quaternions, not linear matrix blending: the figure format authors its skin weights
 // AND its pose correctives against dual quaternions (skin_settings.general_map_mode = DualQuat).
-// LBS collapses deep bends (a 155° knee folded into a shapeless blob) and the JCMs — sculpted as
+// LBS collapses deep bends (a 155° knee folded into a shapeless blob) and the pose correctives — sculpted as
 // corrections on top of DQS — made the collapse worse instead of fixing it. Static meshes bind a
 // single identity joint and default to weight (1,0,0,0), so the same path leaves them untouched.
 

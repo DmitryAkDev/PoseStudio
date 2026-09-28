@@ -182,7 +182,7 @@ public:
     /// 0.5·(0,t)·real carrying the translation — recomputed by every pose update. The shaders
     /// blend THESE, not matrices: the figure format authors its weights (and every pose
     /// corrective) against dual-quaternion skinning, and linear matrix blending collapses deep
-    /// bends (a 155° knee folded into a shapeless blob that the JCMs made worse).
+    /// bends (a 155° knee folded into a shapeless blob that the pose correctives made worse).
     const std::vector<glm::vec4>& skinDualQuats() const { return m_skinDualQuats; }
     /// Bumped by every pose update; the GPU layer uploads per frame in flight when it changes.
     std::uint64_t skinVersion() const { return m_skinVersion; }

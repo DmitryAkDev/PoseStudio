@@ -6,12 +6,12 @@
 // and the per-frame camera view-projection. DQS, not linear matrix blending, because the figure
 // format authors its skin weights AND its pose correctives against dual quaternions
 // (skin_settings.general_map_mode = DualQuat): LBS collapses deep bends (a 155° knee folded into
-// a shapeless blob) and the JCMs — sculpted as corrections on top of DQS — made the collapse
+// a shapeless blob) and the pose correctives — sculpted as corrections on top of DQS — made the collapse
 // worse instead of fixing it. Static meshes bind a single identity joint and default to weight
 // (1,0,0,0), so this same path leaves them untransformed. Passes a world-space normal, UV, and
 // world position (the last feeds the specular view vector) to the fragment.
 //
-// POSE CORRECTIVES (JCMs) are blended here too, BEFORE skinning (correctives.glsl): each vertex
+// POSE CORRECTIVES are blended here too, BEFORE skinning (correctives.glsl): each vertex
 // carries a packed range into the model's corrective-delta buffer (set 2, binding 2 — sorted per
 // vertex), and the per-frame corrective weights (set 2, binding 1) scale those deltas. The
 // corrected bind mesh is then skinned, exactly what the CPU re-morph used to produce — but a
