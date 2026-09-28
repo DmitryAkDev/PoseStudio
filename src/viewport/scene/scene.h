@@ -103,6 +103,9 @@ public:
     /// is idle first (the model's buffers/descriptors may be referenced by in-flight frames) —
     /// VulkanRenderer::deleteModel() does this.
     void removeModel(std::size_t index);
+    /// Removes EVERY model, resetting the selection and the active figure — File → New and Open
+    /// start from this (the renderer's own delete pass runs first, as for removeModel).
+    void clearModels();
 
     /// Records the key light's depth-only shadow pass (its own render pass on the shadow map).
     /// Call BEFORE the main render pass each frame — it is also where this frame's key-light

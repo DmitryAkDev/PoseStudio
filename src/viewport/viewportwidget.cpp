@@ -101,6 +101,10 @@ void ViewportWidget::deleteSelectedObject() {
     withWindow([](VulkanWindow& w) { w.deleteSelectedObject(); });
 }
 
+void ViewportWidget::resetToEmptyScene() {
+    withWindow([](VulkanWindow& w) { w.resetToEmptyScene(); });
+}
+
 void ViewportWidget::resetSelectedJoint() {
     withWindow([](VulkanWindow& w) { w.resetSelectedJoint(); });
 }

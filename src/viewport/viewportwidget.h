@@ -70,6 +70,10 @@ public:
     /// Deletes the selected (outlined) object — Edit → Delete; the viewport's own Delete key
     /// handling reaches the same place. No-op without a selection or if the viewport degraded.
     void deleteSelectedObject();
+    /// Resets the scene to a fresh launch (File → New, and the base of Open): models, camera,
+    /// lighting / HDRI, shade mode, skeleton and history back to startup defaults. No-op if the
+    /// viewport degraded.
+    void resetToEmptyScene();
 
     /// Pose utilities (Edit menu), all undoable pose edits on the active figure; no-ops without
     /// a figure/selection or if the viewport degraded. "Limb" = the selected joint and

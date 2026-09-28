@@ -2,13 +2,13 @@
  * @file menumanager.cpp
  * @brief Builds the application's top menu bar (File / Edit / View / Help).
  *
- * Live today: File → Import (.OBJ meshes and .DUF character figures), Save/Load Pose and Quit;
+ * Live today: File → New (a fresh launch), Import (.OBJ meshes and .DUF character figures),
  * Edit → Undo/Redo (the viewport's unified pose + lighting stack), Delete Selected Object, the
  * pose utilities (reset joint/limb/pose, mirror pose/limb) and Preferences; the whole View menu
  * (Show Skeleton, the axis views, Flip, Frame Selected and Home View — all with app-wide
  * shortcuts in Blender's numpad convention); Help → the User Manual (F1), the release notes, the
  * website link and About. The remaining
- * entries (New/Open/Save, the other import formats, Export, clipboard, docs) are disabled
+ * entries (Open/Save, the other import formats, Export, clipboard, docs) are disabled
  * placeholders that establish the menu structure and icon conventions those features will slot
  * into — enabling one means replacing its disabled entry with a real handler here.
  */
@@ -17,11 +17,13 @@
 #include "splashoverlay.h"
 #include "preferencesdialog.h"
 #include "assetmanagerwidget.h"
+#include "environmentpanel.h"
 #include "preferencesmanager.h"
 #include "constants.h"
 #include "updatecheck.h"
 #include "helpwindow.h"
 #include "viewport/viewportwidget.h"
+#include "scene/shademode.h" // kDefaultShadeMode (File → New's picker reset)
 #include <QMenu>
 #include <QMenuBar>
 #include <QAction>
@@ -64,7 +66,11 @@ void MenuManager::setupMenus() {
     // =========================================================================
     QMenu *fileMenu = mainWindow->menuBar()->addMenu("File");
 
-    fileMenu->addAction(loadDualStateIcon("new"), "New...")->setEnabled(false);
+    // File → New: a fresh launch — the scene, its lighting and the Environment tab all go back to
+    // the startup defaults (see newScene). Ctrl+N, window-level like Quit's Ctrl+Q.
+    QAction *newSceneAction = fileMenu->addAction(loadDualStateIcon("new"), "New");
+    newSceneAction->setShortcut(QKeySequence::New);
+    QObject::connect(newSceneAction, &QAction::triggered, mainWindow, [this]() { newScene(); });
     fileMenu->addAction(loadDualStateIcon("open"), "Open...")->setEnabled(false);
     fileMenu->addAction("Open Recent...")->setEnabled(false);
     fileMenu->addSeparator();
@@ -334,6 +340,27 @@ void MenuManager::setViewportWidget(pose::ViewportWidget *viewport) {
         m_showSkeletonAction->setChecked(visible);
         m_showSkeletonAction->blockSignals(false);
     });
+}
+
+void MenuManager::newScene() {
+    if (!viewportWidget) return;
+    // 1. The two picker mirrors first — the panel's restore gesture below does not touch them, and
+    //    these go through the sync signals (pss-shade-mode-sync), so the shader picker and the
+    //    View → Show Skeleton check mark land on their defaults too.
+    viewportWidget->setShowSkeleton(false);
+    viewportWidget->setShadeMode(pose::kDefaultShadeMode);
+    // 2. The Environment tab: dials / backdrop mode back to the startup values, and the HDRI
+    //    caption to the stock panorama (its environmentChosen re-bakes it; resetToEmptyScene's own
+    //    bake supersedes it if it lands later — the request id discards the stale one).
+    if (environmentPanel) {
+        environmentPanel->resetToStartupDefaults();
+    }
+    // 3. The scene itself: models, camera home, deferred state to startup defaults, history cleared.
+    viewportWidget->resetToEmptyScene();
+}
+
+void MenuManager::setEnvironmentPanel(pose::EnvironmentPanel *panel) {
+    environmentPanel = panel;
 }
 
 void MenuManager::importObjFile() {

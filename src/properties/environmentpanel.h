@@ -50,6 +50,11 @@ public:
     /// @param viewport The viewport this panel controls (its lighting/environment). Not owned.
     explicit EnvironmentPanel(ViewportWidget* viewport, QWidget* parent = nullptr);
 
+    /// Resets the WHOLE panel to the startup defaults — every dial/toggle/backdrop mode through
+    /// the restore-all gesture, and the HDRI caption back to the stock panorama (its
+    /// environmentChosen re-bakes it). File → New calls this so the panel matches the reset scene.
+    void resetToStartupDefaults();
+
 private:
     void buildUi();
     void buildEnvironmentRow(QFormLayout* form); // the HDRI selector + its restore button

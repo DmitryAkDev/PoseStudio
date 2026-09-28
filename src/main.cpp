@@ -90,10 +90,12 @@ int main(int argc, char *argv[]) {
     AssetManagerWidget *assetsTab = new AssetManagerWidget();
     sidePanel->addTab(assetsTab, QStringLiteral("Asset Manager"));
     // The Environment tab: live image-based-lighting controls for the viewport (see EnvironmentPanel).
-    sidePanel->addTab(new pose::EnvironmentPanel(viewport), QStringLiteral("Environment"));
+    pose::EnvironmentPanel *environmentTab = new pose::EnvironmentPanel(viewport);
+    sidePanel->addTab(environmentTab, QStringLiteral("Environment"));
 
     menuManager->setAssetManagerWidget(assetsTab);
     menuManager->setViewportWidget(viewport);
+    menuManager->setEnvironmentPanel(environmentTab);
 
     // Double-clicking an asset in the grid imports it into the viewport — the same entry points the
     // menu and command-line "open with" use: an .obj as a static model, a character figure (.duf/.dsf)

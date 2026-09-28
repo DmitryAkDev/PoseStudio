@@ -127,6 +127,34 @@ void VulkanWindow::deleteModel(int index) {
     requestUpdate();
 }
 
+void VulkanWindow::resetToEmptyScene() {
+    if (!m_renderer) {
+        return; // no renderer yet: a fresh launch already IS the empty scene
+    }
+    // 1. Close open pose edits FIRST — a settle/fall/axis-hold would otherwise keep ticking past
+    //    the reset and retarget at already-deleted models (the deleteModel bug).
+    closeOpenPoseEdits();
+    // 2. Every model + selection + active figure (the device-wait guard lives in the renderer,
+    //    as for deleteModel).
+    m_renderer->clearModels();
+    // 3. Camera → home framing (camera.reset + noteView(Home), the Home View / numpad 5 path).
+    resetView();
+    // 4. Deferred state → startup defaults: shade mode, skeleton, lighting dials, environment
+    //    path, the import queue and the pending pose all drop.
+    m_deferred = DeferredSceneState{};
+    // 5. The startup HDRI (default panorama, or the procedural studio) — off-thread, and with
+    //    autoAimKey=false so the AUTHORED default dials win over a key light aimed at whatever
+    //    environment was up before the New (design D2).
+    beginEnvironmentBake(defaultEnvironmentPath(), /*autoAimKey=*/false);
+    // 6. Push the deferred defaults into the scene's UBOs (shade mode / skeleton / lighting).
+    m_deferred.applyTo(*m_renderer);
+    // 7. History cleared LAST — nothing inside New registers an entry (the pre-edit bracket is
+    //    closed at step 1), and Ctrl+Z must not undo a New.
+    m_undoStack.clear();
+    m_redoStack.clear();
+    requestUpdate();
+}
+
 bool VulkanWindow::savePose(const QString& path) {
     closeOpenPoseEdits(); // serialize the LANDED pose, not a transient mid-settle/mid-fall frame
     return m_renderer && scene().savePose(path.toStdString());

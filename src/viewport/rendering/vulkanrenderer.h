@@ -98,6 +98,9 @@ public:
     /// Removes the model at @p index from the scene, waiting for the GPU to go idle first so its
     /// buffers/descriptors aren't freed while an in-flight frame still references them.
     void deleteModel(std::size_t index);
+    /// Removes EVERY model (selection + active figure reset), with the same device-wait policy as
+    /// deleteModel — File → New and Open start from this.
+    void clearModels();
 
     /// The scene: selection, picking, shade mode, lighting dials, and the whole posing API
     /// (joints, full-body IK, pins, pose snapshots and files) are called on it directly — the
