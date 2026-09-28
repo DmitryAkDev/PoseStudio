@@ -15,7 +15,19 @@
 #include "vulkanwindow.h"
 
 #include "rendering/vulkanrenderer.h"
+#include "scene/armature.h"
+#include "scene/model.h"
 #include "scene/scene.h"
+
+#include <QFileInfo>
+
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
+
+// decompose() lives in the experimental gtx set — this TU opts in (it only feeds the .pss
+// save path, so the flag's blast radius is one translation unit).
+#define GLM_ENABLE_EXPERIMENTAL
+#include <glm/gtx/matrix_decompose.hpp>
 
 #include <utility>
 
@@ -45,6 +57,7 @@ void VulkanWindow::commitPoseUndo() {
         entry.figure = scene().activeFigureIndex();
         m_undoStack.push_back(std::move(entry));
         m_redoStack.clear();
+        markProjectDirty(); // a committed pose edit is a document change
     }
 }
 
@@ -125,6 +138,7 @@ void VulkanWindow::deleteModel(int index) {
     m_undoStack.clear();
     m_redoStack.clear();
     requestUpdate();
+    markProjectDirty(); // the scene's contents changed
 }
 
 void VulkanWindow::resetToEmptyScene() {
@@ -181,12 +195,177 @@ bool VulkanWindow::loadPose(const QString& path) {
     return true;
 }
 
+bool VulkanWindow::captureProjectDocument(ProjectDocument& out) const {
+    if (!m_renderer) {
+        return false;
+    }
+    out = ProjectDocument{};
+
+    Scene& scn = scene();
+    for (std::size_t i = 0; i < scn.modelCount(); ++i) {
+        const Model* model = scn.modelAt(i);
+        if (!model) {
+            continue;
+        }
+        ProjectFigure fig;
+        fig.source = model->sourcePath();
+
+        // Split the snapshot rows: rotations -> pose, @trans: -> root translation, @pin: -> pins.
+        glm::vec3 rootTranslation(0.0f);
+        std::string rootBone;
+        for (const auto& [name, value] : model->capturePose()) {
+            if (name.compare(0, sizeof(kPosePinPrefix) - 1, kPosePinPrefix) == 0) {
+                fig.pins.push_back(name.substr(sizeof(kPosePinPrefix) - 1));
+            } else if (name.compare(0, sizeof(kPoseTranslationPrefix) - 1,
+                           kPoseTranslationPrefix) == 0) {
+                rootBone = name.substr(sizeof(kPoseTranslationPrefix) - 1);
+                rootTranslation = value;
+            } else {
+                fig.pose.emplace_back(name, value);
+            }
+        }
+        if (!rootBone.empty()) {
+            fig.rootBone = std::move(rootBone);
+            fig.rootTranslation = rootTranslation;
+        }
+
+        // Decompose the model matrix into TRS (the document stores it channel-wise).
+        glm::quat rotation;
+        glm::vec3 skew;
+        glm::vec4 perspective;
+        if (glm::decompose(model->transform(), fig.scale, rotation, fig.translation, skew, perspective)) {
+            fig.rotation = glm::vec4(rotation.x, rotation.y, rotation.z, rotation.w);
+        }
+        out.figures.push_back(std::move(fig));
+    }
+
+    out.environment.hdri = m_deferred.environmentPath.toStdString();
+    out.environment.settings = m_deferred.lighting;
+
+    const Camera& cam = m_renderer->camera();
+    out.camera.target = cam.target();
+    out.camera.yaw = cam.yaw();
+    out.camera.pitch = cam.pitch();
+    out.camera.distance = cam.distance();
+    out.camera.ortho = cam.orthographic();
+    return true;
+}
+
+bool VulkanWindow::saveProjectFile(const QString& path) {
+    ProjectDocument doc;
+    if (!captureProjectDocument(doc)) {
+        return false;
+    }
+    return writeProjectFile(path.toStdString(), doc);
+}
+
+int VulkanWindow::loadProjectFile(const QString& path,
+                                  const std::map<std::string, std::string>& recovered,
+                                  std::vector<std::string>& missing, std::string& error) {
+    if (!m_renderer) {
+        error = "no renderer yet";
+        return -1;
+    }
+    if (dragInFlight()) {
+        error = "a drag is in flight; release the mouse first";
+        return -1;
+    }
+
+    // 1. VALIDATE FIRST — the scene is untouched until the whole document has parsed.
+    ProjectDocument doc;
+    if (!readProjectFile(path.toStdString(), doc, error)) {
+        return -1;
+    }
+
+    // 2. LINK RECOVERY PRE-FLIGHT — every figure's source must exist on disk (after applying the
+    //    caller's re-pointed paths). Anything still missing is reported and the scene is left
+    //    exactly as it was.
+    auto resolve = [&recovered](const ProjectFigure& fig) -> std::string {
+        const auto it = recovered.find(fig.source);
+        return it != recovered.end() ? it->second : fig.source;
+    };
+    for (const ProjectFigure& fig : doc.figures) {
+        if (!QFileInfo::exists(QString::fromStdString(resolve(fig)))) {
+            missing.push_back(fig.source);
+        }
+    }
+    if (!missing.empty()) {
+        return 1;
+    }
+
+    // 3. RESET — a fresh scene to import into (New's body: models, camera home, deferred state,
+    //    startup HDRI, history cleared).
+    resetToEmptyScene();
+
+    // 4. IMPORT + RESTORE in document order (the order the user had them).
+    for (const ProjectFigure& fig : doc.figures) {
+        const std::string src = resolve(fig);
+        PendingImport import;
+        import.kind = QString::fromStdString(src).endsWith(QStringLiteral(".obj"), Qt::CaseInsensitive)
+                          ? PendingImport::Kind::Obj
+                          : PendingImport::Kind::Figure;
+        import.path = QString::fromStdString(src);
+        if (!runImport(import, /*showProgress=*/true)) {
+            error = "import failed: " + src;
+            return -1;
+        }
+
+        Model* model = scene().modelAt(scene().modelCount() - 1);
+        // Rebuild the saved TRS (translation · quaternion rotation · scale) and restore the pose
+        // (rotations + root translation + pins).
+        const glm::mat4 transform = glm::translate(glm::mat4(1.0f), fig.translation)
+                                * glm::mat4_cast(glm::quat(fig.rotation.x, fig.rotation.y, fig.rotation.z,
+                                                  fig.rotation.w))
+                                * glm::scale(glm::mat4(1.0f), fig.scale);
+        model->setTransform(transform);
+
+        PoseSnapshot rows;
+        for (const auto& [name, value] : fig.pose) {
+            rows.emplace_back(name, value);
+        }
+        if (!fig.rootBone.empty()) {
+            rows.emplace_back(std::string(kPoseTranslationPrefix) + fig.rootBone, fig.rootTranslation);
+        }
+        for (const std::string& pin : fig.pins) {
+            rows.emplace_back(std::string(kPosePinPrefix) + pin, glm::vec3(1.0f, 0.0f, 0.0f));
+        }
+        model->applyPose(rows);
+    }
+
+    // 5. ENVIRONMENT — the saved dials + HDRI (a no-op path keeps the startup bake).
+    m_deferred.lighting = doc.environment.settings;
+    if (!doc.environment.hdri.empty()) {
+        m_deferred.environmentPath = QString::fromStdString(doc.environment.hdri);
+        beginEnvironmentBake(m_deferred.environmentPath, /*autoAimKey=*/false);
+    }
+    m_deferred.applyTo(*m_renderer);
+
+    // 6. CAMERA — the saved framing (target + orbit angles + distance + projection).
+    m_renderer->camera().restoreFraming(doc.camera.target, doc.camera.yaw, doc.camera.pitch,
+                                       doc.camera.distance);
+    m_renderer->camera().setOrthographic(doc.camera.ortho);
+    noteView(ViewPreset::Free);
+
+    setProjectPath(path);
+    setProjectClean();
+    requestUpdate();
+    return 0;
+}
+
+QString VulkanWindow::projectPath() const { return m_projectPath; }
+void VulkanWindow::setProjectPath(const QString& path) { m_projectPath = path; }
+
+bool VulkanWindow::isProjectDirty() const { return m_projectDirty; }
+void VulkanWindow::markProjectDirty() { m_projectDirty = true; }
+void VulkanWindow::setProjectClean() { m_projectDirty = false; }
+
 void VulkanWindow::registerLightingUndo(const LightingSettings& preEdit) {
     UndoEntry entry;
     entry.kind = UndoEntry::Kind::Lighting;
     entry.lighting = preEdit;
     m_undoStack.push_back(std::move(entry));
     m_redoStack.clear(); // a fresh edit invalidates the redo branch, same as a pose edit
+    markProjectDirty(); // the environment settings are part of the document
 }
 
 void VulkanWindow::swapUndoEntry(std::vector<UndoEntry>& from, std::vector<UndoEntry>& to) {
@@ -214,6 +393,7 @@ void VulkanWindow::swapUndoEntry(std::vector<UndoEntry>& from, std::vector<UndoE
     }
     to.push_back(std::move(counter));
     requestUpdate();
+    markProjectDirty(); // undo/redo changes the scene
 }
 
 void VulkanWindow::undo() {

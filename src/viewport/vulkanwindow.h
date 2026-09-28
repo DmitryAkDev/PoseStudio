@@ -44,6 +44,7 @@
 #include "scene/camera.h"           // AxisView (the view hotkeys), Ray
 #include "scene/ik/cursorfilter.h"  // IkCursorFilter (the drag target low-pass)
 #include "scene/lightingsettings.h" // stored by value; applied to the renderer once it exists
+#include "scene/projectfile.h"      // ProjectDocument (the .pss save/load state)
 #include "scene/shademode.h"        // kDefaultShadeMode
 #include "viewpreset.h"
 
@@ -54,6 +55,7 @@
 #include <glm/glm.hpp>
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <string>
 #include <utility>
@@ -107,6 +109,35 @@ public:
     /// queued and applied after the queued figure (open-with a .pose).
     bool savePose(const QString& path);
     bool loadPose(const QString& path);
+
+    /// Gathers the live scene state into a .pss project document (File → Save): every model's
+    /// pose snapshot + world transform, the lighting dials + selected HDRI path, and the camera
+    /// framing. False without a renderer.
+    bool captureProjectDocument(ProjectDocument& out) const;
+
+    /// Writes the live scene state to @p path as a .pss project file (File → Save / Save As).
+    /// False without a renderer or if the file can't be written.
+    bool saveProjectFile(const QString& path);
+
+    /// Loads a .pss project file (File → Open): validates it atomically — the scene is only
+    /// touched once the whole document has parsed — then resets the scene, re-imports every
+    /// figure by its source path and restores pose + transform in document order, and applies
+    /// environment + camera. @p recovered maps a missing source path to the caller's re-pointed
+    /// replacement (link recovery); any source still absent lands in @p missing and the load is
+    /// refused with the scene untouched. Returns 0 on success, 1 when sources are missing,
+    /// -1 on failure with a human-readable @p error.
+    int loadProjectFile(const QString& path, const std::map<std::string, std::string>& recovered,
+                        std::vector<std::string>& missing, std::string& error);
+
+    /// The .pss document this window last saved/opened ("" = unsaved).
+    QString projectPath() const;
+    void setProjectPath(const QString& path);
+
+    /// Whether the scene has changed since the last save/open. Set by every scene-mutating
+    /// gesture, cleared by a successful save (the close prompt and Save's no-op hint read it).
+    bool isProjectDirty() const;
+    void markProjectDirty();
+    void setProjectClean();
 
     /// Sets the viewport shade mode (an index into the picker's table, scene/shademode.h).
     /// Remembered and applied once the renderer exists if it isn't built yet.
@@ -287,6 +318,9 @@ private:
     std::unique_ptr<VulkanRenderer> m_renderer;
     DeferredSceneState              m_deferred;
     int                            m_announcedShadeMode = kDefaultShadeMode; // last value announced via shadeModeChanged
+
+    QString m_projectPath;      // the .pss document last saved/opened ("" = unsaved)
+    bool    m_projectDirty = false; // scene changed since the last save/open
 
     // =========================================================================================
     // Environment (vulkanwindow_environment.cpp)

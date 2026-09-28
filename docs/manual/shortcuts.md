@@ -48,6 +48,9 @@ Edit → Reset Selected Joint, Reset Limb, Reset Pose, Mirror Pose and Mirror Li
 | --- | --- |
 | `F1` | Open this manual |
 | `Ctrl+N` | File → New — reset the scene to a fresh launch |
+| `Ctrl+O` | File → Open — load a `.pss` project |
+| `Ctrl+S` | File → Save — save the scene to its `.pss` file (asks for a place first if it has none) |
+| `Ctrl+Shift+S` | File → Save As… — save the scene under a new `.pss` name |
 | `Ctrl+Q` | Quit |
 
 ## Asset Manager

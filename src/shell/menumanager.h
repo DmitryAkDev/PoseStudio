@@ -58,6 +58,11 @@ public:
     /// Asset Manager's "Manage Asset Folders" context menu action).
     void openPreferencesDialog(const QString &initialTab = QString());
 
+    /// The shared unsaved-changes gate before replacing the scene (New / Open / importing over a
+    /// dirty scene, and window close): Save / Don't save / Cancel. True = proceed, false =
+    /// cancelled. Public because main.cpp's close guard calls it.
+    bool confirmDiscardChanges();
+
 private:
     /// File → New: a fresh launch — picker mirrors synced via signals, the Environment tab reset,
     /// then the scene itself (models / camera / lighting / HDRI / history) to startup defaults.
@@ -72,6 +77,16 @@ private:
     /// Saves / loads the current figure's pose to/from a `.pose` file via a file dialog.
     void savePoseFile();
     void loadPoseFile();
+
+    /// File → Save / Save As: writes the whole scene (figures + poses, transforms, environment,
+    /// camera) as a .pss project. Save reuses the document's path — falling back to Save As when
+    /// there is none; both remember the last project folder.
+    void saveProject();
+    void saveProjectAs();
+
+    /// File → Open: loads a .pss project — atomic parse first, link recovery for missing figure
+    /// sources (per-row re-point pickers), then import + restore in document order.
+    void openProjectFile();
 
     QMainWindow *mainWindow;
     AssetManagerWidget *assetManagerWidget = nullptr;

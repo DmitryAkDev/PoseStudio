@@ -29,6 +29,7 @@ void VulkanWindow::resetView() {
         r.camera().reset();
         noteView(ViewPreset::Home);
     });
+    markProjectDirty(); // the framing is part of the document
 }
 
 void VulkanWindow::setAxisView(AxisView view) {
@@ -43,6 +44,7 @@ void VulkanWindow::setAxisView(AxisView view) {
         case AxisView::Bottom: noteView(ViewPreset::Bottom); break;
         }
     });
+    markProjectDirty(); // the framing is part of the document
 }
 
 void VulkanWindow::flipView() {
@@ -60,11 +62,13 @@ void VulkanWindow::flipView() {
         default: noteView(ViewPreset::Free); break;
         }
     });
+    markProjectDirty(); // the framing is part of the document
 }
 
 void VulkanWindow::frameSelected() {
     if (m_renderer && m_renderer->frameSelected()) {
         requestUpdate();
+        markProjectDirty(); // the framing is part of the document
     }
 }
 

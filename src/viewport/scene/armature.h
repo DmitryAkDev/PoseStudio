@@ -32,6 +32,13 @@
 
 namespace pose {
 
+// Pose-snapshot row prefixes (Armature::capturePose/applyPose): a bone's pose TRANSLATION is a
+// "@trans:<boneName>" row and the user's joint PINS are "@pin:<boneName>" rows (value unused,
+// written 1 0 0). Shared with the .pss project codec, which splits a snapshot into pose / pins
+// + root translation — and with the IK harness, which reads the same rows.
+inline constexpr char kPoseTranslationPrefix[] = "@trans:";
+inline constexpr char kPosePinPrefix[]         = "@pin:";
+
 class IkRig;
 class JointSolver;
 
@@ -121,6 +128,10 @@ public:
     /// Translates the figure by @p dy along world Y (the animated ground drop applies its
     /// per-frame fall increments through this) and refreshes the bone world positions.
     void translateY(float dy);
+
+    /// Replaces the model's world transform (the .pss load path restores a saved TRS here)
+    /// and refreshes the transform-dependent bone world positions, like translateY().
+    void setTransform(const glm::mat4& transform);
 
     // --- Pose state ---
     /// Current world-space position of each joint (updated whenever the pose changes).

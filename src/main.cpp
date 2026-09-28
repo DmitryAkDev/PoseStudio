@@ -28,6 +28,30 @@
 #include <QSplitter>
 #include <QTimer>
 #include <QTabWidget>
+#include <QCloseEvent>
+
+/**
+ * @brief Vetoed window close while the scene has unsaved changes.
+ *
+ * The prompt and the Save path live in MenuManager (which owns the dirty flag's UI); a
+ * declined close is vetoed, an accepted one proceeds.
+ */
+class CloseGuard : public QObject {
+public:
+    explicit CloseGuard(MenuManager* menus) : m_menus(menus) {}
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if (event->type() == QEvent::Close && m_menus && !m_menus->confirmDiscardChanges()) {
+            event->ignore(); // the user cancelled: stay open
+            return true;
+        }
+        return false;
+    }
+
+private:
+    MenuManager* m_menus;
+};
 
 int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
@@ -76,6 +100,9 @@ int main(int argc, char *argv[]) {
 
     MenuManager *menuManager = new MenuManager(&mainWindow);
     menuManager->setupMenus();
+
+    // Unsaved-changes gate on window close (Save / Don't save / Cancel).
+    mainWindow.installEventFilter(new CloseGuard(menuManager));
 
     QSplitter *mainSplitter = new QSplitter(Qt::Horizontal, &mainWindow);
 

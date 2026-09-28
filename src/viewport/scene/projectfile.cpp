@@ -54,7 +54,29 @@ bool readVec3Degrees(const json& j, glm::vec3& out) {
     return true;
 }
 
-/// Reads one lighting dial by field name. Absent keeps the struct's default (a file written by an
+/// Reads @p j's [x, y, z, w] into a unit quaternion @p out. False if it isn't a four-number array,
+/// any value is non-finite, or the length is zero (a degenerate rotation can't be normalized).
+bool readQuat(const json& j, glm::vec4& out) {
+    if (!j.is_array() || j.size() != 4) {
+        return false;
+    }
+    float v[4];
+    for (int i = 0; i < 4; ++i) {
+        if (!j[static_cast<std::size_t>(i)].is_number()) {
+            return false;
+        }
+        v[i] = j[static_cast<std::size_t>(i)].get<float>();
+    }
+    const glm::vec4 q(v[0], v[1], v[2], v[3]);
+    const float len = glm::length(q);
+    if (!std::isfinite(len) || len <= 0.0f) {
+        return false;
+    }
+    out = q / len; // normalize: a hand-edited file may carry a slightly off length
+    return true;
+}
+
+/// Reads one lighting dial by field name.
 /// older build simply lacks the new dial); present but non-numeric or non-finite rejects the file.
 template <class T>
 bool readSetting(const json& j, const char* field, T& out) {
@@ -154,6 +176,14 @@ bool readFigure(const json& j, ProjectFigure& fig) {
         }
     }
 
+    const auto rootBoneIt = j.find("rootBone");
+    if (rootBoneIt != j.end()) {
+        if (!rootBoneIt->is_string()) {
+            return false;
+        }
+        fig.rootBone = rootBoneIt->get<std::string>();
+    }
+
     const auto transIt = j.find("rootTranslation");
     if (transIt != j.end() && !readVec3(*transIt, fig.rootTranslation)) {
         return false;
@@ -170,7 +200,7 @@ bool readFigure(const json& j, ProjectFigure& fig) {
             return false;
         }
         const auto ro = t.find("rotation");
-        if (ro != t.end() && !readVec3Degrees(*ro, fig.rotation)) {
+        if (ro != t.end() && !readQuat(*ro, fig.rotation)) {
             return false;
         }
         const auto sc = t.find("scale");
@@ -254,11 +284,12 @@ bool writeProjectFile(const std::string& path, const ProjectDocument& doc) {
         }
         entry["pins"] = std::move(pins);
 
+        entry["rootBone"] = fig.rootBone;
         entry["rootTranslation"] = json::array({fig.rootTranslation.x, fig.rootTranslation.y,
                                                 fig.rootTranslation.z});
         entry["transform"] = {
             {"translation", json::array({fig.translation.x, fig.translation.y, fig.translation.z})},
-            {"rotation",    json::array({fig.rotation.x, fig.rotation.y, fig.rotation.z})},
+            {"rotation",    json::array({fig.rotation.x, fig.rotation.y, fig.rotation.z, fig.rotation.w})},
             {"scale",       json::array({fig.scale.x, fig.scale.y, fig.scale.z})},
         };
         figures.push_back(std::move(entry));

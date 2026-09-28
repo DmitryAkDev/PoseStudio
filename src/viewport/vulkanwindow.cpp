@@ -212,13 +212,19 @@ bool VulkanWindow::runImport(const PendingImport& import, bool showProgress) {
     // import services, keeping both the importers and the renderer core Qt-free. The skeleton
     // overlay stays hidden after a figure import; a drag on a joint still grabs it (full-body
     // IK — picking is independent of the overlay).
+    bool ok = false;
     switch (import.kind) {
     case PendingImport::Kind::Obj:
-        return ModelImportService::importInto(*m_renderer, import.path, showProgress);
+        ok = ModelImportService::importInto(*m_renderer, import.path, showProgress);
+        break;
     case PendingImport::Kind::Figure:
-        return FigureImportService::importInto(*m_renderer, import.path, showProgress);
+        ok = FigureImportService::importInto(*m_renderer, import.path, showProgress);
+        break;
     }
-    return false;
+    if (ok) {
+        markProjectDirty(); // a new model is a document change
+    }
+    return ok;
 }
 
 void VulkanWindow::importOrQueue(PendingImport import) {

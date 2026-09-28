@@ -93,6 +93,32 @@ bool ViewportWidget::loadPose(const QString& path) {
     return m_window && m_window->loadPose(path);
 }
 
+bool ViewportWidget::saveProjectFile(const QString& path) {
+    return m_window && m_window->saveProjectFile(path);
+}
+
+int ViewportWidget::loadProjectFile(const QString& path,
+                                    const std::map<std::string, std::string>& recovered,
+                                    std::vector<std::string>& missing, std::string& error) {
+    if (!m_window) {
+        error = "no viewport (Vulkan unavailable)";
+        return -1;
+    }
+    return m_window->loadProjectFile(path, recovered, missing, error);
+}
+
+QString ViewportWidget::projectPath() const {
+    return m_window ? m_window->projectPath() : QString();
+}
+
+bool ViewportWidget::isProjectDirty() const {
+    return m_window && m_window->isProjectDirty();
+}
+
+void ViewportWidget::setProjectClean() {
+    withWindow([](VulkanWindow& w) { w.setProjectClean(); });
+}
+
 void ViewportWidget::setShadeMode(int mode) {
     withWindow([mode](VulkanWindow& w) { w.setShadeMode(mode); });
 }

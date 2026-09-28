@@ -25,13 +25,8 @@ namespace {
 // "@trans:<boneName>" — flowing through the existing (name, vec3) snapshot/undo/.pose-file
 // machinery unchanged (bone names never contain '@', and readers ignore unknown names, so old
 // files load and old builds skip the rows). Written by FBIK for the skeleton root: rotations
-// alone can't move it, and a feet-pinned crouch must drop the hip.
-constexpr char kPoseTranslationPrefix[] = "@trans:";
-// Likewise "@pin:<boneName>" rows carry the user's joint PINS (value unused, written as 1 0 0):
-// a pin is part of the pose snapshot, so pin toggles are undoable, a drag's undo restores the
-// pins of that moment, and a .pose file reproduces its pins. Old builds skip the rows; a file
-// without them loads with no pins.
-constexpr char kPosePinPrefix[] = "@pin:";
+// alone can't move it, and a feet-pinned crouch must drop the hip. (The prefixes live in
+// armature.h — shared with the .pss project codec.)
 
 } // namespace
 
@@ -294,6 +289,11 @@ bool Armature::loadDump(const std::string& path, std::vector<ArmatureBone>& out)
 
 void Armature::translateY(float dy) {
     m_transform = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, dy, 0.0f)) * m_transform;
+    computeSkinMatrices(); // refresh the transform-dependent bone world positions (picking/markers)
+}
+
+void Armature::setTransform(const glm::mat4& transform) {
+    m_transform = transform;
     computeSkinMatrices(); // refresh the transform-dependent bone world positions (picking/markers)
 }
 

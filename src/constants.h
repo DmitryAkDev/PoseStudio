@@ -51,6 +51,10 @@ namespace Constants {
     // here next time (a pose library lives somewhere specific; Documents every time was a chore).
     inline constexpr const char* PREF_LAST_POSE_DIR = "LastPoseDir";
 
+    // Folder of the most recently saved or opened .pss project — File → Save / Save As / Open
+    // start here next time (a project's figures live somewhere specific, same as its pose files).
+    inline constexpr const char* PREF_LAST_PROJECT_DIR = "LastProjectDir";
+
     // Newline-separated list of content-root folders (each directly containing a "data/"
     // subfolder). The figure importer resolves a preset's cross-file references (geometry, morphs,
     // skin, UVs) against these, in addition to auto-detecting the root from the imported file's own

@@ -23,7 +23,10 @@
 #include <QStringList>
 #include <QWidget>
 
+#include <map>
 #include <memory>
+#include <string>
+#include <vector>
 
 class QVulkanInstance;
 class QShowEvent;
@@ -63,6 +66,20 @@ public:
     bool savePose(const QString& path);
     bool loadPose(const QString& path);
 
+    /// Saves the whole scene to @p path as a .pss project file (File → Save / Save As). False on
+    /// failure (no renderer, or the file can't be written).
+    bool saveProjectFile(const QString& path);
+    /// Loads a .pss project (File → Open): atomic — the scene is only touched once the whole
+    /// document has parsed and every figure's source exists. @p recovered maps a missing source
+    /// to its re-pointed replacement (link recovery). Returns 0 on success, 1 when sources are
+    /// still missing (@p missing receives them), -1 on failure with a human-readable @p error.
+    int loadProjectFile(const QString& path, const std::map<std::string, std::string>& recovered,
+                        std::vector<std::string>& missing, std::string& error);
+    /// The .pss document this viewport last saved/opened ("" = unsaved) and whether the scene has
+    /// changed since (the close prompt and Save's no-op hint read it).
+    QString projectPath() const;
+    bool isProjectDirty() const;
+    void setProjectClean();
     /// Sets the viewport shade mode by index into the picker's table (scene/shademode.h — the
     /// order shaderModeNames() lists). No-op if the viewport degraded.
     void setShadeMode(int mode);

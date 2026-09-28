@@ -32,9 +32,10 @@ struct ProjectFigure {
     std::string          source;   ///< Absolute path of the imported file (`.duf`/`.dsf`/`.obj`).
     PoseRows             pose;     ///< The pose snapshot's rotation rows: (bone name, Euler degrees).
     std::vector<std::string> pins; ///< The user's pinned bone names (the snapshot's @pin: rows).
+    std::string          rootBone; ///< The bone carrying the saved pose translation ("" = none).
     glm::vec3            rootTranslation{0.0f}; ///< The skeleton root's pose translation (@trans: row).
     glm::vec3            translation{0.0f};     ///< The model transform's translation part.
-    glm::vec3            rotation;              ///< ...rotation part (Euler degrees, XYZ order).
+    glm::vec4            rotation{0.0f, 0.0f, 0.0f, 1.0f}; ///< ...rotation part (a unit quaternion x,y,z,w).
     glm::vec3            scale{1.0f};           ///< ...scale part.
 };
 
