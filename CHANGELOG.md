@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+* **The shader picker follows programmatic shade-mode changes.** `VulkanWindow` now emits `shadeModeChanged(int)` whenever the active shade mode changes through any path (menu, strip, code), and the viewport strip mirrors it into its shader picker — so a picker that shows Matcap can no longer outlive the mode it describes. The signal deduplicates on the last announced mode, which keeps user clicks from looping back.
+
 ## [0.3.15] - 2026-09-24
 
 The posing release. Full-body IK runs on a new joint-space solver — no trembling, no lag, the grabbed
