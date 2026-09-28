@@ -252,8 +252,13 @@ bool VulkanWindow::hasPosableFigure() const {
 }
 
 void VulkanWindow::setShadeMode(int mode) {
+    if (m_announcedShadeMode == mode) {
+        return; // only a real change is announced (the strip mirrors the signal)
+    }
     m_deferred.shadeMode = mode; // remembered so a mode chosen before first expose still applies
     withRenderer([mode](VulkanRenderer& r) { r.scene().setShadeMode(mode); });
+    m_announcedShadeMode = mode;
+    emit shadeModeChanged(mode);
 }
 
 void VulkanWindow::setShowSkeleton(bool on) {

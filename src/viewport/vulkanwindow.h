@@ -181,6 +181,10 @@ signals:
     /// Emitted whenever the camera enters or leaves a named view (an axis view, Home, a flip, or
     /// an orbit drag away from one) — the View picker's button follows it.
     void viewPresetChanged(ViewPreset view);
+    /// Emitted when the shade mode changes (a picker-table index, scene/shademode.h) — only a
+    /// real change is announced (setShadeMode de-duplicates against m_announcedShadeMode). The
+    /// viewport strip mirrors it into its shader picker.
+    void shadeModeChanged(int mode);
     /// Emitted when an axis-rotate key hold begins (@p axis 0/1/2 = X/Y/Z: while held, the mouse
     /// wheel rotates the selected joint about that channel) and when it ends (-1). The viewport
     /// strip shows an axis badge for the duration.
@@ -276,6 +280,7 @@ private:
     std::unique_ptr<VulkanContext>  m_context;
     std::unique_ptr<VulkanRenderer> m_renderer;
     DeferredSceneState              m_deferred;
+    int           m_announcedShadeMode = kDefaultShadeMode; // last value announced via shadeModeChanged
 
     // =========================================================================================
     // Environment (vulkanwindow_environment.cpp)

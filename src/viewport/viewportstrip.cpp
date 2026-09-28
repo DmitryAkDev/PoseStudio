@@ -230,6 +230,10 @@ void ViewportStrip::setViewPreset(ViewPreset view) {
     m_viewPicker->setDetachedCaption(tr("Perspective View")); // Free: no named view
 }
 
+void ViewportStrip::setShadeMode(int mode) {
+    m_shaderPicker->setCurrentIndex(mode); // mirrors the window; setCurrentIndex emits nothing
+}
+
 void ViewportStrip::setSkeletonChecked(bool on) {
     if (m_skeletonButton->isChecked() == on) {
         return;
