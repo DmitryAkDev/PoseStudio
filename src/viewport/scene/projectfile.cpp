@@ -128,7 +128,7 @@ bool readLightingSettings(const json& j, LightingSettings& s) {
            readSetting(j, "backdropBlur",           s.backdropBlur) &&
            readSetting(j, "backdropBrightness",     s.backdropBrightness) &&
            readSetting(j, "domeRadius",             s.domeRadius) &&
-           readSetting(j, "shadowsEnabled",         s.shadowsEnabled) &&
+           readBoolSetting(j, "shadowsEnabled",   s.shadowsEnabled) &&
            readSetting(j, "shadowIntensity",        s.shadowIntensity) &&
            readSetting(j, "shadowSoftness",         s.shadowSoftness) &&
            readSetting(j, "shadowReach",            s.shadowReach);
@@ -155,8 +155,10 @@ bool readFigure(const json& j, ProjectFigure& fig) {
             if (!row.is_array() || row.size() != 4 || !row[0].is_string()) {
                 return false;
             }
+            // The row is [name, rx, ry, rz] — the angle triple is the last three cells.
+            const json angles = json::array({row[1], row[2], row[3]});
             glm::vec3 v;
-            if (!readVec3Degrees(row, v)) {
+            if (!readVec3Degrees(angles, v)) {
                 return false;
             }
             fig.pose.emplace_back(row[0].get<std::string>(), v);
