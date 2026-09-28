@@ -207,9 +207,9 @@ void ViewportWidget::createStrip() {
     connect(m_strip, &ViewportStrip::groundClicked, this, &ViewportWidget::groundFigure);
     connect(m_strip, &ViewportStrip::skeletonToggled, this, &ViewportWidget::setShowSkeleton);
 
-    // Window -> strip: the view caption follows the camera (keys, View menu, orbit), the badge
-    // follows the X/Y/Z hold, and the Skeleton button follows the overlay state whoever changed
-    // it (the signal is the single source of truth).
+    // Window -> strip: the view caption follows the camera (keys, View menu, orbit), the shader
+    // picker follows the shade mode, the badge follows the X/Y/Z hold, and the Skeleton button
+    // follows the overlay state whoever changed it (the signal is the single source of truth).
     connect(m_window, &VulkanWindow::viewPresetChanged, m_strip, &ViewportStrip::setViewPreset);
     connect(m_window, &VulkanWindow::shadeModeChanged, m_strip, &ViewportStrip::setShadeMode);
     connect(m_window, &VulkanWindow::axisRotateKeyChanged, m_strip, &ViewportStrip::setAxisBadge);
