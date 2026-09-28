@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+* **File → New (Ctrl+N) starts a fresh scene.** The File menu's `New` entry is live: it removes every model from the scene, returns the camera to home, restores the startup lighting and HDRI, resets the shader picker to PBR Shaded and the skeleton overlay off, and clears the undo history — so Ctrl+Z after New does not bring a figure back. (The dirty-scene guard ships with the project-file work.)
 * **The shader picker follows programmatic shade-mode changes.** `VulkanWindow` now emits `shadeModeChanged(int)` whenever the active shade mode changes through any path (menu, strip, code), and the viewport strip mirrors it into its shader picker — so a picker that shows Matcap can no longer outlive the mode it describes. The signal deduplicates on the last announced mode, which keeps user clicks from looping back.
 
 ## [0.3.15] - 2026-09-24

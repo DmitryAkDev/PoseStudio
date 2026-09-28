@@ -8,10 +8,11 @@ The viewport sits on the left and the side panel on the right, separated by a dr
 
 ## The menu bar
 
-**File** — importing models and figures, saving and loading poses, and quitting. The greyed entries — New, Open, Open Recent, Save, Save As, Save Copy, Export and the other import formats — are placeholders for planned features: there is no scene file yet.
+**File** — starting a new scene, importing models and figures, saving and loading poses, and quitting. The greyed entries — Open, Open Recent, Save, Save As, Save Copy, Export and the other import formats — are placeholders for planned features: there is no scene file yet.
 
 | Entry | What it does |
 | --- | --- |
+| New (`Ctrl+N`) | Resets the scene to a fresh launch: removes every model, returns the camera to home, restores the startup lighting and HDRI, the default shade mode and the skeleton overlay off, and clears the undo history. Nothing is saved first — there is no scene file yet. |
 | Import → .OBJ (Wavefront) | Imports a static mesh. See [Importing Content](importing.md#static-models-obj). |
 | Import → .DUF (DUF File) | Imports a rigged character figure. See [Importing Content](importing.md#character-figures-duf-dsf). |
 | Save Pose… | Writes the active figure's pose to a `.pose` file. |

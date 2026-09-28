@@ -47,6 +47,7 @@ Edit → Reset Selected Joint, Reset Limb, Reset Pose, Mirror Pose and Mirror Li
 | Key | Action |
 | --- | --- |
 | `F1` | Open this manual |
+| `Ctrl+N` | File → New — reset the scene to a fresh launch |
 | `Ctrl+Q` | Quit |
 
 ## Asset Manager
