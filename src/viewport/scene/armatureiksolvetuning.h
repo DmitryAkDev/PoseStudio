@@ -549,6 +549,10 @@ constexpr double kRiseHomeStiffness = 0.2;
 /// the drag began (m, figure-scaled). See the live-contact block in solveIk.
 constexpr float  kHandCeilingDownFrom = 0.02f;
 constexpr float  kHandCeilingDownFull = 0.08f;
+/// ... by RISING: the ceiling stands this far over the planted height (m, figure-scaled) at the
+/// last of that travel, and is gone from there. A hard row is let go of through its slack, never
+/// its weight (the hip hinge's lesson): faded by weight it let the hand go all at once.
+constexpr float  kHandCeilingSlack = 0.06f;
 constexpr float  kRootYieldDownFrom = 0.05f;
 constexpr float  kRootYieldDownFull = 0.20f;
 constexpr float  kRootYieldShareFrom = 0.60f;

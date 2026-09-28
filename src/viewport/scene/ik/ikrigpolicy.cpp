@@ -197,7 +197,14 @@ void IkRig::updateStepPolicy(const glm::vec3& target, const std::vector<glm::vec
     // planted foot's joint is still ABOVE its target — a hover being pulled down; a foot lying on
     // its top behind a planted knee sits BELOW its standing target and is no hover (2026-09-26: a
     // chest pulled up out of a flat kneel could never step under its leaning body).
+    // (... and a hover is a foot OFF THE FLOOR, 2026-09-28 — its lowest part, not its ankle:
+    // on a heavy character the lying ankle rests 13mm OVER its standing height (a thicker foot
+    // under it), the flag stood from the press, the foot then came up onto its toes and stayed
+    // there — the ankle 37mm up, the toes on the floor — and no step ever came under a body
+    // pulled up out of a kneel: she stood on tiptoe, her chest 13mm short, where her base
+    // figure takes two steps and arrives. IK_HEALING_BY_ANKLE is the A/B.)
     static const bool kHealingSticks = std::getenv("IK_HEALING_STICKS") != nullptr; // A/B probe: the flag for the whole drag, as before
+    static const bool kHealingByAnkle = std::getenv("IK_HEALING_BY_ANKLE") != nullptr; // A/B probe: the ankle's height alone
     if (m_healing && !kHealingSticks) {
         bool still = false;
         for (std::size_t p = 0; p < m_pins.size() && !still; ++p) {
@@ -205,7 +212,8 @@ void IkRig::updateStepPolicy(const glm::vec3& target, const std::vector<glm::vec
             if (node < 0 || (p < m_pinLive.size() && m_pinLive[p]) || (p < m_pinUser.size() && m_pinUser[p])) {
                 continue;
             }
-            still = positions[static_cast<std::size_t>(node)].y - m_pins[p].target.y > 0.01f * m_sizeScale;
+            still = positions[static_cast<std::size_t>(node)].y - m_pins[p].target.y > 0.01f * m_sizeScale &&
+                    (kHealingByAnkle || contactHeight(node, positions) > 0.01f * m_sizeScale);
         }
         m_healing = still;
     }

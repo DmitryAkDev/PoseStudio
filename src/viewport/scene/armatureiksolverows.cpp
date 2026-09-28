@@ -764,10 +764,25 @@ void Armature::ikPinRows(IkSolveScratch& s, std::size_t p) {
                 // the rearing trunk and let go, a 41cm collapse; what keeps such a body from
                 // collapsing is the rig holding its contacts under a descent — no lift-off,
                 // IkRig::updateContacts.)
+                // (LET GO OF THROUGH ITS SLACK, NOT ITS WEIGHT, 2026-09-28; IK_JS_HAND_CEILING_FADES
+                // is the weight's fade, as it was: the ceiling RISES with the target's descent,
+                // kHandCeilingSlack at the last of it, and is gone once it stands that high. A hard
+                // row barely reads its weight until the rest of the cost rivals it — at a
+                // sixteenth of 1e7 this one still held a wrist 12mm under where it was going, 85
+                // of a solve's cost of 135 — and the last of the fade let the hand go at once: on
+                // one character the freed arm turned 28 degrees at the shoulder in that tick,
+                // 130mm at a fingertip. Under a rising ceiling the wrist comes up at the
+                // ceiling's pace.)
                 static const bool kCeilingAlways = std::getenv("IK_JS_HAND_CEILING_ALWAYS") != nullptr; // A/B probe
-                const float ceilingShare = kCeilingAlways ? 1.0f : 1.0f - m_jsTargetDown;
-                if (ceilingShare > 1.0e-3f) {
-                    handCeilings.emplace_back(pin.node, pin.target.y, ceilingShare);
+                static const bool kCeilingFades = std::getenv("IK_JS_HAND_CEILING_FADES") != nullptr;   // A/B probe
+                if (kCeilingAlways) {
+                    handCeilings.emplace_back(pin.node, pin.target.y, 1.0f);
+                } else if (kCeilingFades) {
+                    if (1.0f - m_jsTargetDown > 1.0e-3f) {
+                        handCeilings.emplace_back(pin.node, pin.target.y, 1.0f - m_jsTargetDown);
+                    }
+                } else if (m_jsTargetDown < 0.999f) {
+                    handCeilings.emplace_back(pin.node, pin.target.y + kHandCeilingSlack * rig.sizeScale() * m_jsTargetDown, 1.0f);
                 }
                 // (Tried and taken out the same day, 2026-09-26: the held arm's posture references
                 // FOLLOWING the pose while the ceiling holds, so that the arm would not spring back
@@ -1252,8 +1267,45 @@ void Armature::ikPinRows(IkSolveScratch& s, std::size_t p) {
             if (flat > 0.0f) {
                 const float rollDone = glm::smoothstep(0.5f, 1.0f, rollProgress); // (1 for a foot found lying)
                 const float lyingY = glm::mix(m_jsFlatRollStartY[node], m_jsFlatLyingY[node], rollDone);
-                const glm::dvec3 lying(pin.target.x, lyingY, pin.target.z);
+                glm::dvec3 lying(pin.target.x, lyingY, pin.target.z);
+                // THE LYING ANKLE'S PLACE IS ON ITS SHIN'S REACH OF THE PLANTED KNEE (2026-09-28;
+                // IK_JS_LYING_ANKLE_AT_SPOT is the A/B): toward the spot the foot stood on, a shin's
+                // length from where the knee landed, at the height asked. It was the spot itself —
+                // which a lying shin does not reach: the knee comes down over a foot standing on
+                // its tucked toes, the ankle up over its ball, a palm ahead of where it stood, and
+                // the drag that MAKES a kneel ended with the row 2-9cm from its target on every
+                // rig (23mm on the base, 87 on the oldest). A soft row that can never be met is a
+                // standing pull on the leg, through a hold the solve creeps under: on two
+                // long-footed characters both shins went from one side-bend limit to the other in
+                // one tick of the still hold, the thighs twisting 5 degrees — 34-38mm at a toe.
+                static const bool kLyingAtSpot = std::getenv("IK_JS_LYING_ANKLE_AT_SPOT") != nullptr; // A/B probe
+                if (!kLyingAtSpot && toLying && m_jsFootKnee[node] >= 0) {
+                    const std::size_t kneeNode = static_cast<std::size_t>(m_jsFootKnee[node]);
+                    for (std::size_t q = 0; q < pins.size(); ++q) {
+                        if (pins[q].node != static_cast<int>(kneeNode) || !rig.pinIsLive(q) || rig.pinIsShadow(q)) {
+                            continue;
+                        }
+                        const glm::dvec3 knee(pins[q].target);
+                        const double     shin = static_cast<double>(glm::length(m_ikBindPos[node] - m_ikBindPos[kneeNode]));
+                        const double     rise = static_cast<double>(lyingY) - knee.y;
+                        const double     reach = std::sqrt(std::max(shin * shin - rise * rise, 0.0));
+                        const glm::dvec2 toSpot(static_cast<double>(pin.target.x) - knee.x, static_cast<double>(pin.target.z) - knee.z);
+                        const double     away = glm::length(toSpot);
+                        if (away > 1.0e-4 && reach > 1.0e-4) {
+                            lying.x = knee.x + toSpot.x / away * reach;
+                            lying.z = knee.z + toSpot.y / away * reach;
+                        }
+                        break;
+                    }
+                }
                 problem.positions[heelTask].target = glm::mix(problem.positions[heelTask].target, lying, static_cast<double>(flat));
+                if (kKneelFlatTrace) {
+                    const glm::dvec3& t = problem.positions[heelTask].target;
+                    std::fprintf(stderr, "[kneel-flat]   %s lies at (%.3f %.3f %.3f), asked to (%.3f %.3f %.3f): %.1fmm, the spot it stood on (%.3f %.3f)", m_boneNames[node].c_str(),
+                                 m_poseGlobal[node][3].x, m_poseGlobal[node][3].y, m_poseGlobal[node][3].z, t.x, t.y, t.z,
+                                 glm::length(t - glm::dvec3(glm::vec3(m_poseGlobal[node][3]))) * 1000.0, pin.target.x, pin.target.z);
+                    std::fputc(10, stderr);
+                }
             }
         }
         // THE TIPTOE (dragIkTick, m_jsTiptoe): a hand pulled up beyond its reach lifts the heels.
