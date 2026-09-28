@@ -604,6 +604,22 @@ target_compile_definitions(PoseStudioIkHarness PRIVATE
 )
 enable_testing()
 add_test(NAME ik-harness COMMAND PoseStudioIkHarness)
+
+# The .pss project codec's round-trip guard (tools/projectfile): writes a fully-populated
+# ProjectDocument and reads it back field-by-field, then the reader's rejection cases and a
+# forward-compatibility document. Links only scene/projectfile.cpp — no Qt, no Vulkan; its
+# scratch files live in the OS temp dir, so it runs on every platform the app builds for.
+add_executable(PoseStudioProjectFileCheck
+    tools/projectfile/roundtrip.cpp
+    src/viewport/scene/projectfile.cpp
+)
+target_include_directories(PoseStudioProjectFileCheck PRIVATE
+    src/viewport/scene
+    ${glm_SOURCE_DIR}
+    ${nlohmann_json_SOURCE_DIR}/single_include
+)
+add_test(NAME project-file-check COMMAND PoseStudioProjectFileCheck)
+
 # The user manual's checker (docs/manual/README.md): the manifest, the pages, every link, and a
 # warning per menu action the manual does not mention. Needs only Python.
 find_package(Python3 COMPONENTS Interpreter QUIET)
