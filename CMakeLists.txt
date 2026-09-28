@@ -343,6 +343,8 @@ add_executable(
     src/viewport/scene/bonepicker.h
     src/viewport/scene/posefile.cpp      # the plain-text .pose file reader/writer
     src/viewport/scene/posefile.h
+    src/viewport/scene/projectfile.cpp   # the versioned-JSON .pss project file reader/writer (nlohmann)
+    src/viewport/scene/projectfile.h
     src/viewport/scene/armature.cpp   # the runtime skeleton + pose + FK + pins (Vulkan-free)
     src/viewport/scene/armature.h
     src/viewport/scene/armatureik.cpp # the Armature's FBIK drag lifecycle (rig build, begin/drag/settle/end, pins)
