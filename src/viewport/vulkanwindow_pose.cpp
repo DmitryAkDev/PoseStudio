@@ -169,7 +169,7 @@ void VulkanWindow::resetToEmptyScene() {
     // 8. Document identity: a new scene has no .pss path and nothing unsaved — Save must offer
     //    Save As (not silently overwrite the file that was open before), and the close prompt
     //    stays quiet. Last, so the camera reset above can't re-dirty it.
-    m_projectPath.clear();
+    setProjectPath(QString());
     setProjectClean();
     requestUpdate();
 }
@@ -357,12 +357,12 @@ int VulkanWindow::loadProjectFile(const QString& path,
     return 0;
 }
 
-QString VulkanWindow::projectPath() const { return m_projectPath; }
-void VulkanWindow::setProjectPath(const QString& path) { m_projectPath = path; }
+QString VulkanWindow::projectPath() const { return m_project.path(); }
+void VulkanWindow::setProjectPath(const QString& path) { m_project.setPath(path); }
 
-bool VulkanWindow::isProjectDirty() const { return m_projectDirty; }
-void VulkanWindow::markProjectDirty() { m_projectDirty = true; }
-void VulkanWindow::setProjectClean() { m_projectDirty = false; }
+bool VulkanWindow::isProjectDirty() const { return m_project.dirty(); }
+void VulkanWindow::markProjectDirty() { m_project.markDirty(); }
+void VulkanWindow::setProjectClean() { m_project.setClean(); }
 
 void VulkanWindow::registerLightingUndo(const LightingSettings& preEdit) {
     UndoEntry entry;

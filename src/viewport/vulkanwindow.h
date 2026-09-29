@@ -46,6 +46,7 @@
 #include "scene/lightingsettings.h" // stored by value; applied to the renderer once it exists
 #include "scene/projectfile.h"      // ProjectDocument (the .pss save/load state)
 #include "scene/shademode.h"        // kDefaultShadeMode
+#include "projectstate.h"           // ProjectState (the .pss document's runtime state)
 #include "viewpreset.h"
 
 #include <QElapsedTimer>
@@ -226,6 +227,10 @@ signals:
     /// wheel rotates the selected joint about that channel) and when it ends (-1). The viewport
     /// strip shows an axis badge for the duration.
     void axisRotateKeyChanged(int axis);
+    /// Emitted when the .pss document's state changes (a path was adopted, or the dirty flag
+    /// transitioned) — ProjectState de-duplicates, so a pose edit on an already-dirty scene is
+    /// not re-announced. ViewportWidget re-emits it for the window-title update.
+    void documentChanged();
 
 protected:
     void exposeEvent(QExposeEvent* event) override;
@@ -319,8 +324,7 @@ private:
     DeferredSceneState              m_deferred;
     int                            m_announcedShadeMode = kDefaultShadeMode; // last value announced via shadeModeChanged
 
-    QString m_projectPath;      // the .pss document last saved/opened ("" = unsaved)
-    bool    m_projectDirty = false; // scene changed since the last save/open
+    ProjectState m_project;      // the .pss document's runtime state (path + dirty, change signal)
 
     // =========================================================================================
     // Environment (vulkanwindow_environment.cpp)

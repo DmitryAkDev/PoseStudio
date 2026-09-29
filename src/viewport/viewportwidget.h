@@ -155,6 +155,10 @@ signals:
     /// button or the View menu), so the two controls stay in sync. The renderer state is already
     /// updated by the time this fires.
     void skeletonVisibilityChanged(bool visible);
+    /// Re-emitted from the viewport when the .pss document's state changes (path adopted, dirty
+    /// flag transitioned), so the main window can keep its title in sync. The window-title update
+    /// listens to this; the state itself is read back through projectPath() / isProjectDirty().
+    void documentChanged();
 
 protected:
     // The control strip is a *top-level* window floating over the native viewport (a child widget

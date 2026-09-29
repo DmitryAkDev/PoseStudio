@@ -209,6 +209,8 @@ add_executable(
     src/viewport/axisrotatebadge.h
     src/viewport/vulkanwindow.cpp         # VulkanWindow lifecycle (one class, seven TUs - see vulkanwindow.h)
     src/viewport/vulkanwindow.h
+    src/viewport/projectstate.cpp      # the .pss document's runtime state (path + dirty, change signal)
+    src/viewport/projectstate.h
     src/viewport/vulkanwindow_environment.cpp # the HDRI: default path, off-thread IBL bake, lighting dials
     src/viewport/vulkanwindow_input.cpp   # mouse/wheel/key routing + the object context menu
     src/viewport/vulkanwindow_camera.cpp  # named views, Blender-convention view hotkeys

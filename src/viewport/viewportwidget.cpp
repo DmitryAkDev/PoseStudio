@@ -66,6 +66,8 @@ ViewportWidget::ViewportWidget(QWidget* parent) : QWidget(parent) {
     // Signal-to-signal forward: undo/redo restoring a lighting state surfaces on the facade,
     // where the Environment panel listens.
     connect(m_window, &VulkanWindow::lightingRestored, this, &ViewportWidget::lightingRestored);
+    // Same forward for the document state: the main window's title listens on the facade.
+    connect(m_window, &VulkanWindow::documentChanged, this, &ViewportWidget::documentChanged);
     m_container = QWidget::createWindowContainer(m_window, this);
     m_container->setFocusPolicy(Qt::StrongFocus); // so the viewport can receive wheel/keys
     layout->addWidget(m_container);

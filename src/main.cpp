@@ -29,6 +29,8 @@
 #include <QTimer>
 #include <QTabWidget>
 #include <QCloseEvent>
+#include <QFileInfo>
+#include <QString>
 
 /**
  * @brief Vetoed window close while the scene has unsaved changes.
@@ -52,6 +54,26 @@ protected:
 private:
     MenuManager* m_menus;
 };
+
+/**
+ * @brief The main window's title for a given document state.
+ *
+ * A saved/opened project is named by FILE NAME only — its folder would be truncated in the
+ * taskbar and adds nothing (the path stays visible in the Save/Open dialogs); unsaved changes
+ * earn an asterisk prefix; a new/empty project shows the plain application title. Unoptimized
+ * builds keep their marker as the tail of the string: a Debug build is ~5x slower at figure
+ * import (MSVC debug-STL overhead), which has been mistaken for a real performance regression
+ * when a Debug window was benchmarked against other applications' shipped binaries.
+ */
+static QString windowTitleFor(const QString& path, bool dirty) {
+    QString title = QStringLiteral("%1 %2").arg(Constants::APP_NAME, Constants::APP_VERSION);
+#ifndef NDEBUG
+    title += QStringLiteral(" [Debug build — slow imports]");
+#endif
+    if (path.isEmpty()) return title;
+    const QString name = QFileInfo(path).fileName();
+    return (dirty ? QStringLiteral("*") : QString()) + name + QStringLiteral(" — ") + title;
+}
 
 int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
@@ -77,15 +99,9 @@ int main(int argc, char *argv[]) {
 
     // --- 3. Main window layout ---
     QMainWindow mainWindow;
-#ifdef NDEBUG
-    mainWindow.setWindowTitle(QStringLiteral("%1 %2").arg(Constants::APP_NAME, Constants::APP_VERSION));
-#else
-    // Mark unoptimized builds in the title: a Debug build is ~5x slower at figure import (MSVC
-    // debug-STL overhead), which has been mistaken for a real performance regression when a Debug
-    // window was benchmarked against other applications' shipped binaries.
-    mainWindow.setWindowTitle(QStringLiteral("%1 %2 [Debug build — slow imports]")
-                                  .arg(Constants::APP_NAME, Constants::APP_VERSION));
-#endif
+    // The title tracks the current document (file name, a * for unsaved changes); at startup
+    // there is no document yet, so it starts as the plain application title.
+    mainWindow.setWindowTitle(windowTitleFor(QString(), /*dirty=*/false));
 
     // Size the window relative to the screen rather than using a fixed pixel size,
     // so it's usable on both small laptop displays and large monitors. The height-derived
@@ -110,6 +126,14 @@ int main(int argc, char *argv[]) {
     // related lives behind this facade (see src/viewport/). If Vulkan is unavailable it
     // degrades to an inline message rather than failing to launch.
     pose::ViewportWidget *viewport = new pose::ViewportWidget(mainSplitter);
+
+    // Document state changes (save/open/new, dirty transitions) re-title the window — the
+    // facade's signal is the only wiring point, per its contract.
+    QObject::connect(viewport, &pose::ViewportWidget::documentChanged, &mainWindow,
+                     [&mainWindow, viewport]() {
+                         mainWindow.setWindowTitle(windowTitleFor(viewport->projectPath(),
+                                                                  viewport->isProjectDirty()));
+                     });
 
     QTabWidget *sidePanel = new QTabWidget(mainSplitter);
     sidePanel->setTabPosition(QTabWidget::West);

@@ -69,6 +69,10 @@ VulkanWindow::VulkanWindow(QVulkanInstance* instance, uint32_t apiVersion, QStri
 
     m_diag = IkDiagnostics::fromEnvironment(); // null unless POSESTUDIO_IK_PERF / _BENCH is set
     m_script = IkScript::fromEnvironment();    // null unless POSESTUDIO_IK_SCRIPT is set
+
+    // The document state's transitions surface as documentChanged (signal-to-signal forward; the
+    // facade re-emits it for the window-title update).
+    connect(&m_project, &ProjectState::changed, this, &VulkanWindow::documentChanged);
 }
 
 VulkanWindow::~VulkanWindow() {
