@@ -475,6 +475,7 @@ void MenuManager::saveProjectAs() {
                              QStringLiteral("Could not write the project file."));
         return;
     }
+    viewportWidget->setProjectPath(path); // Save As adopts the document path: plain Save now writes here
     viewportWidget->setProjectClean(); // a successful save is what clears the dirty flag
 }
 

@@ -78,6 +78,7 @@ public:
     /// The .pss document this viewport last saved/opened ("" = unsaved) and whether the scene has
     /// changed since (the close prompt and Save's no-op hint read it).
     QString projectPath() const;
+    void setProjectPath(const QString& path);
     bool isProjectDirty() const;
     void setProjectClean();
     /// Sets the viewport shade mode by index into the picker's table (scene/shademode.h — the

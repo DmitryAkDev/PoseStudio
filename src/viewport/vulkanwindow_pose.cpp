@@ -166,6 +166,11 @@ void VulkanWindow::resetToEmptyScene() {
     //    closed at step 1), and Ctrl+Z must not undo a New.
     m_undoStack.clear();
     m_redoStack.clear();
+    // 8. Document identity: a new scene has no .pss path and nothing unsaved — Save must offer
+    //    Save As (not silently overwrite the file that was open before), and the close prompt
+    //    stays quiet. Last, so the camera reset above can't re-dirty it.
+    m_projectPath.clear();
+    setProjectClean();
     requestUpdate();
 }
 

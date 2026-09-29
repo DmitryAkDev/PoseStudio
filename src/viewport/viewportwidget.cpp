@@ -111,6 +111,10 @@ QString ViewportWidget::projectPath() const {
     return m_window ? m_window->projectPath() : QString();
 }
 
+void ViewportWidget::setProjectPath(const QString& path) {
+    withWindow([path](VulkanWindow& w) { w.setProjectPath(path); });
+}
+
 bool ViewportWidget::isProjectDirty() const {
     return m_window && m_window->isProjectDirty();
 }
