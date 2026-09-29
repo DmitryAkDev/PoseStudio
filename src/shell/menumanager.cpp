@@ -500,15 +500,25 @@ bool MenuManager::confirmDiscardChanges() {
     if (!viewportWidget || !viewportWidget->isProjectDirty()) {
         return true; // nothing to lose
     }
-    const QMessageBox::StandardButton button = QMessageBox::question(
-        mainWindow, QStringLiteral("Unsaved Changes"),
-        QStringLiteral("The current scene has unsaved changes."),
-        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
-    if (button == QMessageBox::Save) {
+    // Explicit button labels: the platform theme's stock text for Discard is a long sentence
+    // that the message box truncates ("lose without..."). Custom buttons keep the wording ours.
+    QMessageBox box(mainWindow);
+    box.setIcon(QMessageBox::Question);
+    box.setWindowTitle(QStringLiteral("Unsaved Changes"));
+    box.setText(QStringLiteral("The current scene has unsaved changes."));
+    QAbstractButton *save = box.addButton(QStringLiteral("Save"), QMessageBox::AcceptRole);
+    QAbstractButton *discard = box.addButton(QStringLiteral("Discard Changes"),
+                                            QMessageBox::DestructiveRole);
+    // The box sizes itself to the text line, which is narrower than the button row needs;
+    // guarantee the full label stays visible.
+    discard->setMinimumWidth(150);
+    box.addButton(QStringLiteral("Cancel"), QMessageBox::RejectRole);
+    box.exec();
+    if (box.clickedButton() == save) {
         saveProject(); // its own dialog; a failed write leaves the flag up, so proceed anyway —
         return true;  // the user explicitly chose to save, and Save already asked nothing more
     }
-    return button == QMessageBox::Discard;
+    return box.clickedButton() == discard;
 }
 
 void MenuManager::openProjectFile() {
