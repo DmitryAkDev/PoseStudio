@@ -379,6 +379,10 @@ private:
 
     /// Records the named view the camera is now in and emits viewPresetChanged if it changed.
     void noteView(ViewPreset view);
+    /// Marks the project dirty for a camera move — ONLY when the "camera changes count as unsaved"
+    /// preference is on (default off: framing is saved into the document, but fiddling with the
+    /// view must not trip the close/New prompt). Every camera gesture funnels through this.
+    void noteCameraChange();
     /// The in-viewport fallback for the View menu's app-wide shortcuts (Blender's numpad
     /// convention, number row + keypad with either NumLock state): true if @p event was a view
     /// key and was handled.

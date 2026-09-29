@@ -13,6 +13,9 @@
 
 #include "rendering/vulkanrenderer.h"
 
+#include "constants.h"
+#include "preferencesmanager.h"
+
 #include <QKeyEvent>
 
 namespace pose {
@@ -24,12 +27,19 @@ void VulkanWindow::noteView(ViewPreset view) {
     }
 }
 
+void VulkanWindow::noteCameraChange() {
+    if (PreferencesManager::instance().getValue(Constants::PREF_CAMERA_CHANGES_MARK_DIRTY,
+                                              false).toBool()) {
+        markProjectDirty(); // the framing is part of the document
+    }
+}
+
 void VulkanWindow::resetView() {
     withRenderer([this](VulkanRenderer& r) {
         r.camera().reset();
         noteView(ViewPreset::Home);
     });
-    markProjectDirty(); // the framing is part of the document
+    noteCameraChange();
 }
 
 void VulkanWindow::setAxisView(AxisView view) {
@@ -44,7 +54,7 @@ void VulkanWindow::setAxisView(AxisView view) {
         case AxisView::Bottom: noteView(ViewPreset::Bottom); break;
         }
     });
-    markProjectDirty(); // the framing is part of the document
+    noteCameraChange();
 }
 
 void VulkanWindow::flipView() {
@@ -62,13 +72,13 @@ void VulkanWindow::flipView() {
         default: noteView(ViewPreset::Free); break;
         }
     });
-    markProjectDirty(); // the framing is part of the document
+    noteCameraChange();
 }
 
 void VulkanWindow::frameSelected() {
     if (m_renderer && m_renderer->frameSelected()) {
         requestUpdate();
-        markProjectDirty(); // the framing is part of the document
+        noteCameraChange();
     }
 }
 

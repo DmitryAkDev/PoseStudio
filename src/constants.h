@@ -62,6 +62,10 @@ namespace Constants {
     // still find its geometry. Populated by the on-import "locate content folder" recovery prompt.
     inline constexpr const char* PREF_FIGURE_CONTENT_ROOTS = "FigureContentRoots";
 
+    // "1"/"0" — whether camera moves (orbit/pan/dolly, the view hotkeys, Home) count as unsaved
+    // changes for the close/New prompt. Absent = off: the framing is still saved into the .pss
+    // document, but fiddling with the view alone must not trip the prompt.
+    inline constexpr const char* PREF_CAMERA_CHANGES_MARK_DIRTY = "CameraChangesMarkDirty";
     // --- Anonymous install ping (src/core/installping.h) ---
     // Random per-installation UUID the ping carries; created on first use. A Factory Reset wipes
     // the Preferences table, so a reset install counts as a new one — acceptable.
