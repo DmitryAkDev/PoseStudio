@@ -620,6 +620,66 @@ target_include_directories(PoseStudioProjectFileCheck PRIVATE
 )
 add_test(NAME project-file-check COMMAND PoseStudioProjectFileCheck)
 
+# Temporary .pss save/restore diagnostic (see probe.cpp): runs the real import + scene classes
+# headless and prints which document fields diverge across a save/load round-trip.
+file(GLOB PSS_PROBE_RENDERING src/viewport/rendering/*.cpp)
+file(GLOB PSS_PROBE_SCENE src/viewport/scene/*.cpp src/viewport/scene/ik/*.cpp)
+file(GLOB PSS_PROBE_FIGURE src/viewport/import/figure/*.cpp)
+add_executable(PoseStudioPssProbe
+    tools/projectfile/probe.cpp
+    src/core/preferencesmanager.cpp
+    src/core/database.cpp
+    src/viewport/figureimportservice.cpp
+    src/viewport/modelimportservice.cpp
+    src/viewport/import/aobaker.cpp
+    src/viewport/import/tangentgen.cpp
+    src/viewport/import/texturegutters.cpp
+    src/viewport/import/importerregistry.cpp
+    src/viewport/import/obj/objimporter.cpp
+    ${PSS_PROBE_FIGURE}
+    ${PSS_PROBE_RENDERING}
+    ${PSS_PROBE_SCENE}
+)
+target_sources(PoseStudioPssProbe PRIVATE
+    ${miniz_SOURCE_DIR}/miniz.c
+    ${miniz_SOURCE_DIR}/miniz_tinfl.c
+    ${miniz_SOURCE_DIR}/miniz_tdef.c
+    ${miniz_SOURCE_DIR}/miniz_zip.c
+)
+target_include_directories(PoseStudioPssProbe PRIVATE
+    src
+    src/core
+    src/viewport
+    src/viewport/util
+    src/viewport/rendering
+    src/viewport/scene
+    src/viewport/scene/ik
+    src/viewport/import
+    src/viewport/import/obj
+    src/viewport/import/figure
+    ${glm_SOURCE_DIR}
+    ${vma_SOURCE_DIR}/include
+    ${tinyobjloader_SOURCE_DIR}
+    ${nlohmann_json_SOURCE_DIR}/single_include
+    ${miniz_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/cmake/miniz-shim
+    ${stb_SOURCE_DIR}
+    ${tinyexr_SOURCE_DIR}
+)
+target_compile_definitions(PoseStudioPssProbe PRIVATE
+    GLM_FORCE_RADIANS
+    GLM_FORCE_DEPTH_ZERO_TO_ONE
+    POSESTUDIO_VERSION="0.0.0"
+)
+target_link_libraries(PoseStudioPssProbe PRIVATE
+    Qt6::Widgets
+    Qt6::Gui
+    Qt6::Sql
+    Qt6::Concurrent
+    Vulkan::Vulkan
+)
+add_dependencies(PoseStudioPssProbe PoseStudioShaders)
+
 # The user manual's checker (docs/manual/README.md): the manifest, the pages, every link, and a
 # warning per menu action the manual does not mention. Needs only Python.
 find_package(Python3 COMPONENTS Interpreter QUIET)
