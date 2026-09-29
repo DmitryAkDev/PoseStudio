@@ -22,10 +22,10 @@ The scene you had stays untouched until every referenced file is found or explic
 
 ## Unsaved changes
 
-PoseStudio tracks whether the scene has changed since the last save — posing, moving a figure, importing, deleting, changing the environment or the camera all count. When there are unsaved changes, **New**, **Open**, importing into a non-empty scene, and closing the window ask first:
+PoseStudio tracks whether the scene has changed since the last save — posing, moving a figure, importing, deleting, and changing the environment all count; moving the camera does not (see [Preferences](preferences.md) to make it count). When there are unsaved changes, **New**, **Open**, importing into a non-empty scene, and closing the window ask first:
 
 - **Save** writes the project and continues;
-- **Don't save** discards the changes and continues;
+- **Discard Changes** discards the changes and continues;
 - **Cancel** keeps you where you are.
 
 ## The file format
