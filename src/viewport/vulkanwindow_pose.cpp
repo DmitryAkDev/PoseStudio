@@ -314,8 +314,8 @@ int VulkanWindow::loadProjectFile(const QString& path,
         // Rebuild the saved TRS (translation · quaternion rotation · scale) and restore the pose
         // (rotations + root translation + pins).
         const glm::mat4 transform = glm::translate(glm::mat4(1.0f), fig.translation)
-                                * glm::mat4_cast(glm::quat(fig.rotation.x, fig.rotation.y, fig.rotation.z,
-                                                  fig.rotation.w))
+                                * glm::mat4_cast(glm::quat(fig.rotation.w, fig.rotation.x, fig.rotation.y,
+                                                  fig.rotation.z))
                                 * glm::scale(glm::mat4(1.0f), fig.scale);
         model->setTransform(transform);
 
