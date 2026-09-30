@@ -8,7 +8,7 @@ This manual describes everything that works in the version you are running. It o
 
 - **Imports** static models (`.obj`) and fully rigged, morphable character figures from their native scene format (`.duf` presets with `.dsf` data files), complete with materials, textures, skin weights, joint limits and pose correctives.
 - **Renders** them in a Vulkan-based viewport with image-based lighting from HDR panoramas, a photoreal PBR mode with skin shading, soft shadows, bloom and anti-aliasing — plus seventeen other shading modes for form studies, wireframes and diagnostic views.
-- **Poses** figures with full-body inverse kinematics: drag any joint and the whole body answers, with planted feet, balance, stepping, joint limits, self-collision, joint pins and a complete undo history. Poses save to plain-text `.pose` files.
+- **Poses** figures with full-body inverse kinematics: drag any joint and the whole body answers, with planted feet, balance, stepping, joint limits, self-collision, joint pins and a complete undo history — by dragging, with the `B` / `S` / `T` keys, or by number on the Transform tab. Poses save to plain-text `.pose` files, and the whole scene — figures, poses, lighting and camera — to a `.pss` project file.
 - **Organises** your content with the Asset Manager: browse any number of asset folders, search them, and file assets into Favorites and nested Collections.
 
 ## What it does not do yet

@@ -33,7 +33,8 @@ PoseStudio renders with Vulkan, which needs a graphics driver that provides it. 
 - **She will not go lower / will not stand up**: a kneeling body is stopped by its thighs over the planted knees — drag the hips *back* to sit onto the heels. To get up from a kneel or a sit, drag the hips or the chest *up*.
 - **A pinned joint holds a drag back**: unpin it (`P`, or *Unpin All Joints* in the context menu). Orange markers show the pins.
 - **Delete or P does nothing**: the viewport needs keyboard focus — click in it first.
-- **Undo is empty after deleting an object**: deleting clears the whole undo history.
+- **Undo is empty after deleting an object**: deleting clears the whole undo history. File → New clears it too.
+- **Opening a project says a figure file is missing**: the project names each figure by the path it was imported from; if the file moved, choose it again in the dialog, or skip it to open the rest. See [Project Files](project-files.md#if-a-figure-file-has-moved).
 
 ## Assets do not appear
 

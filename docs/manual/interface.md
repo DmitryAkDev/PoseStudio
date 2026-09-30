@@ -1,30 +1,33 @@
 # The Interface
 
-PoseStudio has one main window: a menu bar, the 3D viewport with its floating control strip, and a side panel with two tabs. Everything else — Preferences, the manual, the import progress dialogs — opens on top of it.
+PoseStudio has one main window: a menu bar, the 3D viewport with its floating control strip, and a side panel with three tabs. Everything else — Preferences, the manual, the import progress dialogs — opens on top of it.
 
 ## The main window
 
-The viewport sits on the left and the side panel on the right, separated by a draggable divider. The window title shows the version you are running. The window opens at a comfortable size for your screen; there is no saved layout yet, so it opens the same way every time.
+The viewport sits on the left and the side panel on the right, separated by a draggable divider. The window title shows the version you are running and, once the scene is saved or opened as a project, the project's file name — with a `*` in front while there are unsaved changes. The window opens at a comfortable size for your screen; there is no saved layout yet, so it opens the same way every time.
 
 ## The menu bar
 
-**File** — starting a new scene, importing models and figures, saving and loading poses, and quitting. The greyed entries — Open, Open Recent, Save, Save As, Save Copy, Export and the other import formats — are placeholders for planned features: there is no scene file yet.
+**File** — starting a new scene, opening and saving the scene as a `.pss` project, importing models and figures, saving and loading poses, and quitting. The greyed entries — Open Recent, Save Copy, Export and the other import formats — are placeholders for planned features.
 
 | Entry | What it does |
 | --- | --- |
-| New (`Ctrl+N`) | Resets the scene to a fresh launch: removes every model, returns the camera to home, restores the startup lighting and HDRI, the default shade mode and the skeleton overlay off, and clears the undo history. Nothing is saved first — there is no scene file yet. |
+| New (`Ctrl+N`) | Resets the scene to a fresh launch: removes every model, returns the camera to home, restores the startup lighting and HDRI, the default shade mode and the skeleton overlay off, and clears the undo history. With unsaved changes it asks first: Save, Discard Changes or Cancel. |
+| Open… (`Ctrl+O`) | Opens a `.pss` project — the whole scene. See [Project Files](project-files.md). |
+| Save (`Ctrl+S`) / Save As… (`Ctrl+Shift+S`) | Saves the whole scene as a `.pss` project. See [Project Files](project-files.md). |
 | Import → .OBJ (Wavefront) | Imports a static mesh. See [Importing Content](importing.md#static-models-obj). |
 | Import → .DUF (DUF File) | Imports a rigged character figure. See [Importing Content](importing.md#character-figures-duf-dsf). |
 | Save Pose… | Writes the active figure's pose to a `.pose` file. |
 | Load Pose… | Applies a `.pose` file to the active figure (undoable). |
-| Quit (`Ctrl+Q`) | Closes PoseStudio. There is no scene file yet, so there is nothing to save first — save a pose if you want to keep it. |
+| Quit (`Ctrl+Q`) | Closes PoseStudio. With unsaved changes it asks first: Save, Discard Changes or Cancel. |
 
-**Edit** — the undo history and the pose utilities.
+**Edit** — the undo history, the pose utilities, and the keys that turn a joint with the mouse.
 
 | Entry | What it does |
 | --- | --- |
 | Undo (`Ctrl+Z`) / Redo (`Ctrl+Y`) | One history for pose edits and lighting edits alike. See [Posing](posing.md#undo-and-redo). |
 | Delete Selected Object | Removes the outlined model from the scene. The `Delete` key does the same while the viewport has focus. Deleting an object also clears the undo history. |
+| Turn Joint with Mouse → Bend (`B`) / Side-Side (`S`) / Twist (`T`) | Turns the selected joint by moving the mouse; see [Posing](posing.md#turning-a-joint-with-the-mouse-b-s-t). |
 | Reset Selected Joint / Reset Limb / Reset Pose | Return the selected joint, the joint and everything below it, or the whole figure to the rest pose. |
 | Mirror Pose / Mirror Limb to Other Side | Swap the pose's sides, or copy the selected limb's pose to the other side. |
 | Preferences | Opens the Preferences dialog. |

@@ -13,6 +13,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.16] - 2026-09-30
+
+Project files and joint-by-joint posing. The whole scene — every figure with its pose, the
+lighting and the camera — saves and opens as a `.pss` project (File → New / Open / Save, with an
+unsaved-changes prompt and the project's name in the title bar — contributed by @DmitryAkDev). A joint is turned on its own two new ways: the **Transform** tab's Bend /
+Side-Side / Twist dials, and the `B` / `S` / `T` keys that turn it with the mouse the way Blender
+does — the X/Y/Z wheel is gone. Underneath, every joint now bends about its true axes: the bones'
+orientation frames had been composed in the wrong order since the importer was written, which
+folded thumbs sideways. And the posing rounds since 0.3.15: fingers and toes move alone, the face
+selects the head, Ctrl + drag moves the whole figure, a dropped figure lands with a knee bend,
+the Ground button is a pose edit, a kneel settles cleanly on any body.
+
 ### Added
 * **Project files (`.pss`) — Save / Save As / Open the whole scene.** File → Save (`Ctrl+S`), File → Save As (`Ctrl+Shift+S`) and File → Open (`Ctrl+O`) now persist and restore a complete scene: every figure's source file, its pose (rotations, root translation, joint pins), its transform, the environment (HDRI + all lighting dials) and the camera framing. A save is tiny — kilobytes, not megabytes, because geometry and textures are never embedded; opening re-imports the referenced files and restores everything on top. A corrupt file is rejected whole with an error, so the current scene is never half-replaced. If a referenced figure file has moved, Open offers to locate it again (per missing file: Choose / Skip / Cancel) — skipped files are named in a warning and the rest of the project still loads. The scene is dirty-tracked: New, Open and closing the window ask Save / Discard Changes / Cancel when there are unsaved changes; camera moves do not count (toggleable in Preferences → General). (Developer: versioned JSON codec `ProjectDocument` in `src/viewport/scene/projectfile.{h,cpp}` — format marker + version, unknown fields ignored; figure and panorama paths are stored absolute, so a project moved to another computer asks where its files are.) (#32 — thanks @DmitryAkDev)
 * **File → New (Ctrl+N) starts a fresh scene.** The File menu's `New` entry is live: it removes every model from the scene, returns the camera to home, restores the startup lighting and HDRI, resets the shader picker to PBR Shaded and the skeleton overlay off, and clears the undo history — so Ctrl+Z after New does not bring a figure back. A new scene also detaches from its saved file, so a later Save asks where to save. (#31 — thanks @DmitryAkDev)

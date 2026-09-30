@@ -41,7 +41,7 @@ A few seconds after every launch the application sends an anonymous "this instal
 2. **Look around.** Drag on empty space to orbit, drag with the middle button to pan, roll the wheel to zoom. Press `1`, `3` or `7` for the front, right and top views, `5` to come back to the default view.
 3. **Pose.** Drag any part of the body. Grab a hand and pull it up — the arm raises and the body leans; pull further and she rises on her toes. Grab the hips and pull them down — she crouches. Take the hips back and she steps. Release, and the pose is kept; `Ctrl+Z` undoes it. [Posing](posing.md) explains everything the body does, and [Poses Step by Step](poses.md) shows how to make a kneel, a sit, a lie-down, all fours and more.
 4. **Light it.** Open the **Environment** tab, pick an HDRI from the list, and adjust exposure and the key light. The picture updates live.
-5. **Save the pose.** **File → Save Pose…** writes a `.pose` file you can load onto the figure later; see [Pose Files](pose-files.md).
+5. **Save your work.** **File → Save** (`Ctrl+S`) writes the whole scene — the figure, its pose, the lighting and the camera — to a `.pss` project file you can open again with **File → Open**; see [Project Files](project-files.md). **File → Save Pose…** writes just the figure's pose to a `.pose` file you can load onto any figure later; see [Pose Files](pose-files.md).
 
 ## Where things live
 
@@ -51,6 +51,6 @@ A few seconds after every launch the application sends an anonymous "this instal
 | Your content library (assets you add, HDR environments) | `Documents\My PoseStudio Library` |
 | HDR environments | `Documents\My PoseStudio Library\hdri` (subfolders become categories) |
 | The built-in sample library ("Maquettes") | Next to the executable |
-| Poses you save | Wherever you choose; the last folder is remembered |
+| Poses and projects you save | Wherever you choose; the last folder of each is remembered |
 
 Nothing you import is copied or modified: PoseStudio reads your files where they are.
