@@ -72,6 +72,8 @@ PoseStudio is early in development, but the foundations are real and usable now:
 * **Wavefront OBJ import** with materials and textures.
 * An **Asset Manager** for browsing library folders, plus virtual Collections and Favorites with drag-to-reorder, thumbnails, and search.
 * A live **Environment panel** — HDRI selection with thumbnails, exposure/key-light/shadow/backdrop dials, and a ground-projected dome mode.
+* **File → New (`Ctrl+N`)** — resets the scene to a fresh launch: no models, home camera, startup lighting and HDRI, default shade mode, skeleton off, cleared history.
+* **Project files (`.pss`)** — File → Save / Save As / Open persist the whole scene as a small versioned document: every figure's source file, pose and transform, the environment (HDRI + lighting dials) and the camera framing. Opening re-imports the referenced files and restores everything; a moved figure file can be located again, and unsaved changes are confirmed before New / Open / import / close.
 
 The animation/timeline systems and final-frame rendering described below are roadmap — they don't exist in code yet.
 

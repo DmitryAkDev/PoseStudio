@@ -38,6 +38,10 @@ public:
     /// starts at. The projection is left alone: aspect/fov are viewport properties, not framing.
     void reset();
 
+    /// Restores an ABSOLUTE framing (the .pss load path puts back a saved camera): target + orbit
+    /// angles (radians) + distance. Like reset(), the projection is left to setOrthographic().
+    void restoreFraming(const glm::vec3& target, float yaw, float pitch, float distance);
+
     /// Orbit around the target by the given yaw/pitch deltas (radians).
     void orbit(float deltaYaw, float deltaPitch);
 
@@ -70,6 +74,8 @@ public:
 
     const glm::vec3& target() const { return m_target; }
     float            pitch() const { return m_pitch; }
+    float            yaw() const { return m_yaw; }
+    float            distance() const { return m_distance; }
 
     glm::mat4 view() const;
     glm::mat4 viewProjection() const { return m_projection * view(); }

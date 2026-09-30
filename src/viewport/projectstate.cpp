@@ -1,0 +1,29 @@
+#include "projectstate.h"
+
+namespace pose {
+
+ProjectState::ProjectState(QObject* parent) : QObject(parent) {}
+
+QString ProjectState::path() const { return m_path; }
+
+void ProjectState::setPath(const QString& path) {
+    if (m_path == path) return; // de-duplicate: no transition, no signal
+    m_path = path;
+    emit changed();
+}
+
+bool ProjectState::dirty() const { return m_dirty; }
+
+void ProjectState::markDirty() {
+    if (m_dirty) return; // pose edits re-mark a dirty scene on every commit — only the
+    m_dirty = true;      // clean->dirty transition is worth announcing
+    emit changed();
+}
+
+void ProjectState::setClean() {
+    if (!m_dirty) return; // a successful save is what clears the flag; re-saving a clean
+    m_dirty = false;      // scene must not re-announce itself
+    emit changed();
+}
+
+} // namespace pose

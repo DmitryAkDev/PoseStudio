@@ -242,6 +242,10 @@ void Model::applyPose(const std::vector<std::pair<std::string, glm::vec3>>& pose
     refreshCorrectives(); // the restored pose's corrective weights
 }
 
+void Model::setTransform(const glm::mat4& transform) {
+    m_armature.setTransform(transform);
+}
+
 void Model::bindPose(VkCommandBuffer cmd, VkPipelineLayout layout, uint32_t setIndex,
                      uint32_t frameIndex) {
     // A model whose meshes were all index-empty never created its pool/pose sets (the

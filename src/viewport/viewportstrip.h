@@ -48,6 +48,9 @@ public:
 public slots:
     /// Mirrors the camera's current named view in the View picker's caption (no signal back).
     void setViewPreset(ViewPreset view);
+    /// Mirrors the window's shade mode in the shader picker (no signal back — setCurrentIndex
+    /// never re-fires currentChanged), the same pattern as setViewPreset.
+    void setShadeMode(int mode);
     /// Mirrors the skeleton overlay's state in the Skeleton button (no signal back).
     void setSkeletonChecked(bool on);
     /// Shows the joint-mode badge for @p kind (0/1/2 = Bend / Side-Side / Twist: the dial the

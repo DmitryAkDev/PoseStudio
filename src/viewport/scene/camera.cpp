@@ -36,6 +36,13 @@ void Camera::reset() {
     setOrthographic(false); // the home view is the perspective three-quarter framing
 }
 
+void Camera::restoreFraming(const glm::vec3& target, float yaw, float pitch, float distance) {
+    m_target = target;
+    m_yaw = yaw;
+    m_pitch = std::clamp(pitch, kMinPitch, kMaxPitch); // a hand-edited file can't tip the camera under the floor
+    m_distance = distance > 0.0f ? distance : kDefaultDistance; // guard a zero/negative dolly
+}
+
 void Camera::orbit(float deltaYaw, float deltaPitch) {
     m_yaw += deltaYaw;
     m_pitch = std::clamp(m_pitch + deltaPitch, kMinPitch, kMaxPitch);

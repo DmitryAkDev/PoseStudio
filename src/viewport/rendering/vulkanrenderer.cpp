@@ -129,6 +129,11 @@ void VulkanRenderer::deleteModel(std::size_t index) {
     m_scene->removeModel(index);
 }
 
+void VulkanRenderer::clearModels() {
+    vkDeviceWaitIdle(m_context.device()); // same in-flight-frame guard as deleteModel
+    m_scene->clearModels();
+}
+
 bool VulkanRenderer::frameSelected() {
     glm::vec3 mn;
     glm::vec3 mx;

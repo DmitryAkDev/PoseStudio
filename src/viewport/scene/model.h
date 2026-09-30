@@ -117,6 +117,11 @@ public:
     /// The model matrix (owned by the armature — IK, picking, and grounding all need it).
     const glm::mat4& transform() const { return m_armature.transform(); }
 
+    /// The file this model was imported from (the .pss document references its figures by this
+    /// path). Empty for a model added without one.
+    const std::string& sourcePath() const { return m_sourcePath; }
+    void setSourcePath(std::string path) { m_sourcePath = std::move(path); }
+
     /// Poses the joint @p boneName by an Euler rotation (degrees) applied in its local frame, then
     /// recomputes the skin data and refreshes the correctives. No-op if the model has no such
     /// bone. This is the primitive a posing UI drives; @p eulerDegrees of 0 restores the rest pose.
@@ -202,6 +207,9 @@ public:
     /// them at the next recorded frame).
     void applyPose(const std::vector<std::pair<std::string, glm::vec3>>& pose);
 
+    /// Sets the model's transform matrix (the armature owns it — IK, picking, and grounding all
+    /// read it) and recomputes the skin data. The .pss load path restores a saved TRS through it.
+    void setTransform(const glm::mat4& transform);
     /// Re-evaluates the pose correctives' weights against the current pose now and, with
     /// POSESTUDIO_DUMP_CORRECTIVES set, prints the active ones (CorrectiveSet::refresh). The
     /// explicit "pose settled" hook (Scene::finalizePose, setBoneRotation, applyPose); every
@@ -263,6 +271,8 @@ private:
 
     // The skeleton + pose + pins + IK (and the model transform) — see armature.h.
     Armature                 m_armature;
+
+    std::string              m_sourcePath; // the import source file (the .pss document's reference)
 
     // Skinning upload: the armature's dual quaternions (see Armature::skinDualQuats) reach the
     // GPU through a storage buffer (set 2) bound per draw — ONE PER FRAME IN FLIGHT: interactive

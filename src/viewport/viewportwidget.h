@@ -24,7 +24,10 @@
 #include <QStringList>
 #include <QWidget>
 
+#include <map>
 #include <memory>
+#include <string>
+#include <vector>
 
 class QVulkanInstance;
 class QShowEvent;
@@ -66,6 +69,21 @@ public:
     bool savePose(const QString& path);
     bool loadPose(const QString& path);
 
+    /// Saves the whole scene to @p path as a .pss project file (File → Save / Save As). False on
+    /// failure (no renderer, or the file can't be written).
+    bool saveProjectFile(const QString& path);
+    /// Loads a .pss project (File → Open): atomic — the scene is only touched once the whole
+    /// document has parsed and every figure's source exists. @p recovered maps a missing source
+    /// to its re-pointed replacement (link recovery). Returns 0 on success, 1 when sources are
+    /// still missing (@p missing receives them), -1 on failure with a human-readable @p error.
+    int loadProjectFile(const QString& path, const std::map<std::string, std::string>& recovered,
+                        std::vector<std::string>& missing, std::string& error);
+    /// The .pss document this viewport last saved/opened ("" = unsaved) and whether the scene has
+    /// changed since (the close prompt and Save's no-op hint read it).
+    QString projectPath() const;
+    void setProjectPath(const QString& path);
+    bool isProjectDirty() const;
+    void setProjectClean();
     /// Sets the viewport shade mode by index into the picker's table (scene/shademode.h — the
     /// order shaderModeNames() lists). No-op if the viewport degraded.
     void setShadeMode(int mode);
@@ -73,6 +91,11 @@ public:
     /// Deletes the selected (outlined) object — Edit → Delete; the viewport's own Delete key
     /// handling reaches the same place. No-op without a selection or if the viewport degraded.
     void deleteSelectedObject();
+
+    /// Resets the scene to a fresh launch (File → New, and the base of Open): models, camera,
+    /// lighting / HDRI, shade mode, skeleton and history back to startup defaults. No-op if the
+    /// viewport degraded.
+    void resetToEmptyScene();
 
     /// Pose utilities (Edit menu), all undoable pose edits on the active figure; no-ops without
     /// a figure/selection or if the viewport degraded. "Limb" = the selected joint and
@@ -154,6 +177,10 @@ signals:
     /// selected, or its pose moved by any means (VulkanWindow::jointTransformChanged). The
     /// Transform tab re-reads jointTransform() on it.
     void jointTransformChanged();
+    /// Re-emitted from the viewport when the .pss document's state changes (path adopted, dirty
+    /// flag transitioned), so the main window can keep its title in sync. The window-title update
+    /// listens to this; the state itself is read back through projectPath() / isProjectDirty().
+    void documentChanged();
 
 protected:
     // The control strip is a *top-level* window floating over the native viewport (a child widget

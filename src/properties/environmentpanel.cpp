@@ -229,6 +229,11 @@ void EnvironmentPanel::pushSettings() {
     }
 }
 
+void EnvironmentPanel::resetToStartupDefaults() {
+    resetToDefaults();        // dials / toggles / backdrop mode (the restore-all gesture)
+    m_hdri->restoreDefault(); // HDRI caption back to the stock panorama (re-bakes it)
+}
+
 void EnvironmentPanel::resetToDefaults() {
     const LightingSettings defaults;
     // One gesture, one undo entry: the depth counter folds the nested brackets (the checkboxes'

@@ -11,7 +11,8 @@
     { "id": "posing",           "title": "Posing",                  "file": "posing.md",
       "children": [
         { "id": "poses",        "title": "Poses Step by Step",      "file": "poses.md" },
-        { "id": "pose-files",   "title": "Pose Files",              "file": "pose-files.md" }
+        { "id": "pose-files",   "title": "Pose Files",              "file": "pose-files.md" },
+        { "id": "project-files", "title": "Project Files",           "file": "project-files.md" }
       ]
     },
     { "id": "asset-manager",    "title": "The Asset Manager",       "file": "asset-manager.md" },

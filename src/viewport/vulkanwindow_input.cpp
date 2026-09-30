@@ -237,10 +237,12 @@ void VulkanWindow::mouseMoveEvent(QMouseEvent* event) {
                      -static_cast<float>(delta.y()) * kOrbitRadiansPerPixel);
         if (!delta.isNull()) {
             noteView(ViewPreset::Free); // orbited away from whatever named view this was
+            noteCameraChange();
         }
     } else if (active & Qt::MiddleButton) {
         camera.pan(static_cast<float>(delta.x()) * kPanPerPixel,
                    static_cast<float>(delta.y()) * kPanPerPixel);
+        noteCameraChange();
     } else {
         // Plain hover (QWindow gets move events with no buttons held): nothing changed, so don't
         // schedule a frame — an unconditional requestUpdate() here redraws the whole scene at
@@ -272,6 +274,7 @@ void VulkanWindow::wheelEvent(QWheelEvent* event) {
         return;
     }
     m_renderer->camera().dolly(steps * kDollyPerWheelStep);
+    noteCameraChange();
     requestUpdate();
 }
 

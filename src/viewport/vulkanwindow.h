@@ -46,7 +46,9 @@
 #include "scene/ik/cursorfilter.h"  // IkCursorFilter (the drag target low-pass)
 #include "scene/jointtransform.h"   // JointTransform (the Transform tab's view of the selected joint)
 #include "scene/lightingsettings.h" // stored by value; applied to the renderer once it exists
+#include "scene/projectfile.h"      // ProjectDocument (the .pss save/load state)
 #include "scene/shademode.h"        // kDefaultShadeMode
+#include "projectstate.h"           // ProjectState (the .pss document's runtime state)
 #include "viewpreset.h"
 
 #include <QElapsedTimer>
@@ -56,6 +58,7 @@
 #include <glm/glm.hpp>
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <string>
 #include <utility>
@@ -110,6 +113,35 @@ public:
     bool savePose(const QString& path);
     bool loadPose(const QString& path);
 
+    /// Gathers the live scene state into a .pss project document (File → Save): every model's
+    /// pose snapshot + world transform, the lighting dials + selected HDRI path, and the camera
+    /// framing. False without a renderer.
+    bool captureProjectDocument(ProjectDocument& out) const;
+
+    /// Writes the live scene state to @p path as a .pss project file (File → Save / Save As).
+    /// False without a renderer or if the file can't be written.
+    bool saveProjectFile(const QString& path);
+
+    /// Loads a .pss project file (File → Open): validates it atomically — the scene is only
+    /// touched once the whole document has parsed — then resets the scene, re-imports every
+    /// figure by its source path and restores pose + transform in document order, and applies
+    /// environment + camera. @p recovered maps a missing source path to the caller's re-pointed
+    /// replacement (link recovery); any source still absent lands in @p missing and the load is
+    /// refused with the scene untouched. Returns 0 on success, 1 when sources are missing,
+    /// -1 on failure with a human-readable @p error.
+    int loadProjectFile(const QString& path, const std::map<std::string, std::string>& recovered,
+                        std::vector<std::string>& missing, std::string& error);
+
+    /// The .pss document this window last saved/opened ("" = unsaved).
+    QString projectPath() const;
+    void setProjectPath(const QString& path);
+
+    /// Whether the scene has changed since the last save/open. Set by every scene-mutating
+    /// gesture, cleared by a successful save (the close prompt and Save's no-op hint read it).
+    bool isProjectDirty() const;
+    void markProjectDirty();
+    void setProjectClean();
+
     /// Sets the viewport shade mode (an index into the picker's table, scene/shademode.h).
     /// Remembered and applied once the renderer exists if it isn't built yet.
     void setShadeMode(int mode);
@@ -118,6 +150,12 @@ public:
     /// without a selection or before the renderer exists; a drag in flight is ended first, and
     /// the undo history is cleared (model indices shift; the deleted figure's poses are moot).
     void deleteSelectedObject();
+
+    /// Resets the scene to a FRESH LAUNCH (File → New; the base of Open): models, camera,
+    /// shade mode / skeleton / lighting / HDRI back to startup defaults, history cleared —
+    /// Ctrl+Z does not undo a New. Open pose edits are closed first (no settle/fall ticking at
+    /// deleted models). No-op before the renderer exists.
+    void resetToEmptyScene();
 
     /// Pose utilities (Edit menu / the joint context menu), each ONE undoable pose edit on the
     /// active figure — see runPoseUtility. "Limb" = the selected joint and everything below it.
@@ -233,6 +271,14 @@ signals:
     /// (a key to the main window), click / rclick (a press and release there) or move (@p delta
     /// pixels in @p steps mouse moves there). ViewportWidget makes the events.
     void appInputRequested(const QString& what, const QPointF& delta, int steps);
+    /// Emitted when the shade mode changes (a picker-table index, scene/shademode.h) — only a
+    /// real change is announced (setShadeMode de-duplicates against m_announcedShadeMode). The
+    /// viewport strip mirrors it into its shader picker.
+    void shadeModeChanged(int mode);
+    /// Emitted when the .pss document's state changes (a path was adopted, or the dirty flag
+    /// transitioned) — ProjectState de-duplicates, so a pose edit on an already-dirty scene is
+    /// not re-announced. ViewportWidget re-emits it for the window-title update.
+    void documentChanged();
 
 protected:
     void exposeEvent(QExposeEvent* event) override;
@@ -328,6 +374,9 @@ private:
     std::unique_ptr<VulkanContext>  m_context;
     std::unique_ptr<VulkanRenderer> m_renderer;
     DeferredSceneState              m_deferred;
+    int                            m_announcedShadeMode = kDefaultShadeMode; // last value announced via shadeModeChanged
+
+    ProjectState m_project;      // the .pss document's runtime state (path + dirty, change signal)
 
     // =========================================================================================
     // Environment (vulkanwindow_environment.cpp)
@@ -382,6 +431,10 @@ private:
 
     /// Records the named view the camera is now in and emits viewPresetChanged if it changed.
     void noteView(ViewPreset view);
+    /// Marks the project dirty for a camera move — ONLY when the "camera changes count as unsaved"
+    /// preference is on (default off: framing is saved into the document, but fiddling with the
+    /// view must not trip the close/New prompt). Every camera gesture funnels through this.
+    void noteCameraChange();
     /// The in-viewport fallback for the View menu's app-wide shortcuts (Blender's numpad
     /// convention, number row + keypad with either NumLock state): true if @p event was a view
     /// key and was handled.

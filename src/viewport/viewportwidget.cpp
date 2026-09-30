@@ -137,6 +137,8 @@ ViewportWidget::ViewportWidget(QWidget* parent) : QWidget(parent) {
             }
         }
     });
+    // Same forward for the document state: the main window's title listens on the facade.
+    connect(m_window, &VulkanWindow::documentChanged, this, &ViewportWidget::documentChanged);
     m_container = QWidget::createWindowContainer(m_window, this);
     m_container->setFocusPolicy(Qt::StrongFocus); // so the viewport can receive wheel/keys
     layout->addWidget(m_container);
@@ -164,12 +166,46 @@ bool ViewportWidget::loadPose(const QString& path) {
     return m_window && m_window->loadPose(path);
 }
 
+bool ViewportWidget::saveProjectFile(const QString& path) {
+    return m_window && m_window->saveProjectFile(path);
+}
+
+int ViewportWidget::loadProjectFile(const QString& path,
+                                    const std::map<std::string, std::string>& recovered,
+                                    std::vector<std::string>& missing, std::string& error) {
+    if (!m_window) {
+        error = "no viewport (Vulkan unavailable)";
+        return -1;
+    }
+    return m_window->loadProjectFile(path, recovered, missing, error);
+}
+
+QString ViewportWidget::projectPath() const {
+    return m_window ? m_window->projectPath() : QString();
+}
+
+void ViewportWidget::setProjectPath(const QString& path) {
+    withWindow([path](VulkanWindow& w) { w.setProjectPath(path); });
+}
+
+bool ViewportWidget::isProjectDirty() const {
+    return m_window && m_window->isProjectDirty();
+}
+
+void ViewportWidget::setProjectClean() {
+    withWindow([](VulkanWindow& w) { w.setProjectClean(); });
+}
+
 void ViewportWidget::setShadeMode(int mode) {
     withWindow([mode](VulkanWindow& w) { w.setShadeMode(mode); });
 }
 
 void ViewportWidget::deleteSelectedObject() {
     withWindow([](VulkanWindow& w) { w.deleteSelectedObject(); });
+}
+
+void ViewportWidget::resetToEmptyScene() {
+    withWindow([](VulkanWindow& w) { w.resetToEmptyScene(); });
 }
 
 void ViewportWidget::resetSelectedJoint() {
@@ -298,10 +334,11 @@ void ViewportWidget::createStrip() {
     connect(m_strip, &ViewportStrip::groundClicked, this, &ViewportWidget::groundFigure);
     connect(m_strip, &ViewportStrip::skeletonToggled, this, &ViewportWidget::setShowSkeleton);
 
-    // Window -> strip: the view caption follows the camera (keys, View menu, orbit), the badge
-    // follows the joint mouse mode, and the Skeleton button follows the overlay state whoever changed
-    // it (the signal is the single source of truth).
+    // Window -> strip: the view caption follows the camera (keys, View menu, orbit), the shader
+    // picker follows the shade mode, the badge follows the joint mouse mode, and the Skeleton
+    // button follows the overlay state whoever changed it (the signal is the single source of truth).
     connect(m_window, &VulkanWindow::viewPresetChanged, m_strip, &ViewportStrip::setViewPreset);
+    connect(m_window, &VulkanWindow::shadeModeChanged, m_strip, &ViewportStrip::setShadeMode);
     connect(m_window, &VulkanWindow::jointModalChanged, m_strip, &ViewportStrip::setJointModeBadge);
     connect(this, &ViewportWidget::skeletonVisibilityChanged, m_strip,
             &ViewportStrip::setSkeletonChecked);

@@ -8,6 +8,7 @@
 
 **Check for updates at startup** (on by default). A few seconds after launch PoseStudio asks GitHub for the latest release and tells you when a newer one exists. Nothing but the request is sent. **Help → Check for Updates…** does the same on demand.
 
+**Count camera changes as unsaved** (off by default). Moving the camera — orbiting, panning, dollying, switching named views, framing the selection — does not mark a project dirty, so closing the window or starting a new scene after a camera move asks nothing. Turn this on if you want a changed framing to count as an unsaved change; the camera is always saved with the project file either way.
 ## Interface, Input, Navigation, System
 
 These pages are placeholders: they name the settings that are planned (appearance, keyboard bindings, viewport navigation, performance and storage) but hold none yet.

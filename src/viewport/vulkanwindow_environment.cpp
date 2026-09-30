@@ -123,6 +123,7 @@ void VulkanWindow::beginEnvironmentBake(const QString& hdrPath, bool autoAimKey)
 void VulkanWindow::setEnvironmentFile(const QString& hdrPath) {
     m_deferred.environmentPath = hdrPath; // remembered so it survives a device loss / applies before first expose
     beginEnvironmentBake(hdrPath, /*autoAimKey=*/true); // no-op until the renderer exists (init kicks off the first bake)
+    markProjectDirty(); // the environment is part of the document
 }
 
 void VulkanWindow::setLightingSettings(const LightingSettings& settings) {

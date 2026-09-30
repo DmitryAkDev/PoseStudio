@@ -6,6 +6,8 @@
 #include "generalpreferencespanel.h"
 #include "installping.h"
 #include "updatecheck.h"
+#include "constants.h"
+#include "preferencesmanager.h"
 
 #include <QCheckBox>
 #include <QVBoxLayout>
@@ -54,4 +56,21 @@ GeneralPreferencesPanel::GeneralPreferencesPanel(QWidget* parent)
     connect(updateToggle, &QCheckBox::toggled, this, [](bool enabled) {
         UpdateCheck::setEnabled(enabled);
     });
+
+    // --- Camera changes as unsaved ---
+    // Off by default: orbiting/panning to look at a figure is not an edit worth being prompted
+    // about. The framing is still written into the .pss document on Save either way.
+    auto* cameraToggle = new QCheckBox(QStringLiteral("Count camera changes as unsaved"), this);
+    cameraToggle->setChecked(PreferencesManager::instance()
+                                   .getValue(Constants::PREF_CAMERA_CHANGES_MARK_DIRTY, false).toBool());
+    contentLayout()->addWidget(cameraToggle);
+    addDescription(
+        "When on, moving the camera (orbit, pan, zoom, the view hotkeys) marks the scene as having "
+        "unsaved changes — the close prompt and File → New will ask before discarding it. Off by "
+        "default: looking around is not an edit.");
+    connect(cameraToggle, &QCheckBox::toggled, this, [](bool enabled) {
+        PreferencesManager::instance().setValue(Constants::PREF_CAMERA_CHANGES_MARK_DIRTY,
+                                               enabled ? "1" : "0");
+    });
 }
+

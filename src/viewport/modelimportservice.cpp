@@ -14,6 +14,8 @@
 #include "import/texturegutters.h"
 #include "parallelfor.h"
 #include "rendering/vulkanrenderer.h"
+#include "scene/model.h"
+#include "scene/scene.h"
 
 #include <QApplication>
 #include <QBuffer>
@@ -405,6 +407,12 @@ void ModelImportService::uploadModelData(VulkanRenderer& renderer, ModelData& da
     // then jump to the max afterwards to auto-close it.
     progress.phase(QStringLiteral("Uploading to GPU…"));
     renderer.addModel(data);
+    // Remember where this model came from — the .pss project file references its figures by this
+    // path (the importer is the only place that knows it).
+    Scene& scene = renderer.scene();
+    if (scene.modelCount() > 0) {
+        scene.modelAt(scene.modelCount() - 1)->setSourcePath(path.toStdString());
+    }
     const qint64 msUpload = progress.elapsedMs();
     progress.done();
 

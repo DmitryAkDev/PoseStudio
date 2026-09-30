@@ -29,6 +29,52 @@
 #include <QSplitter>
 #include <QTimer>
 #include <QTabWidget>
+#include <QCloseEvent>
+#include <QFileInfo>
+#include <QString>
+
+/**
+ * @brief Vetoed window close while the scene has unsaved changes.
+ *
+ * The prompt and the Save path live in MenuManager (which owns the dirty flag's UI); a
+ * declined close is vetoed, an accepted one proceeds.
+ */
+class CloseGuard : public QObject {
+public:
+    explicit CloseGuard(MenuManager* menus) : m_menus(menus) {}
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if (event->type() == QEvent::Close && m_menus && !m_menus->confirmDiscardChanges()) {
+            event->ignore(); // the user cancelled: stay open
+            return true;
+        }
+        return false;
+    }
+
+private:
+    MenuManager* m_menus;
+};
+
+/**
+ * @brief The main window's title for a given document state.
+ *
+ * A saved/opened project is named by FILE NAME only — its folder would be truncated in the
+ * taskbar and adds nothing (the path stays visible in the Save/Open dialogs); unsaved changes
+ * earn an asterisk prefix; a new/empty project shows the plain application title. Unoptimized
+ * builds keep their marker as the tail of the string: a Debug build is ~5x slower at figure
+ * import (MSVC debug-STL overhead), which has been mistaken for a real performance regression
+ * when a Debug window was benchmarked against other applications' shipped binaries.
+ */
+static QString windowTitleFor(const QString& path, bool dirty) {
+    QString title = QStringLiteral("%1 %2").arg(Constants::APP_NAME, Constants::APP_VERSION);
+#ifndef NDEBUG
+    title += QStringLiteral(" [Debug build — slow imports]");
+#endif
+    if (path.isEmpty()) return title;
+    const QString name = QFileInfo(path).fileName();
+    return (dirty ? QStringLiteral("*") : QString()) + name + QStringLiteral(" — ") + title;
+}
 
 int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
@@ -54,15 +100,9 @@ int main(int argc, char *argv[]) {
 
     // --- 3. Main window layout ---
     QMainWindow mainWindow;
-#ifdef NDEBUG
-    mainWindow.setWindowTitle(QStringLiteral("%1 %2").arg(Constants::APP_NAME, Constants::APP_VERSION));
-#else
-    // Mark unoptimized builds in the title: a Debug build is ~5x slower at figure import (MSVC
-    // debug-STL overhead), which has been mistaken for a real performance regression when a Debug
-    // window was benchmarked against other applications' shipped binaries.
-    mainWindow.setWindowTitle(QStringLiteral("%1 %2 [Debug build — slow imports]")
-                                  .arg(Constants::APP_NAME, Constants::APP_VERSION));
-#endif
+    // The title tracks the current document (file name, a * for unsaved changes); at startup
+    // there is no document yet, so it starts as the plain application title.
+    mainWindow.setWindowTitle(windowTitleFor(QString(), /*dirty=*/false));
 
     // Size the window relative to the screen rather than using a fixed pixel size,
     // so it's usable on both small laptop displays and large monitors. The height-derived
@@ -78,12 +118,23 @@ int main(int argc, char *argv[]) {
     MenuManager *menuManager = new MenuManager(&mainWindow);
     menuManager->setupMenus();
 
+    // Unsaved-changes gate on window close (Save / Don't save / Cancel).
+    mainWindow.installEventFilter(new CloseGuard(menuManager));
+
     QSplitter *mainSplitter = new QSplitter(Qt::Horizontal, &mainWindow);
 
     // The 3D viewport: a self-contained Vulkan-backed widget. Everything graphics-API
     // related lives behind this facade (see src/viewport/). If Vulkan is unavailable it
     // degrades to an inline message rather than failing to launch.
     pose::ViewportWidget *viewport = new pose::ViewportWidget(mainSplitter);
+
+    // Document state changes (save/open/new, dirty transitions) re-title the window — the
+    // facade's signal is the only wiring point, per its contract.
+    QObject::connect(viewport, &pose::ViewportWidget::documentChanged, &mainWindow,
+                     [&mainWindow, viewport]() {
+                         mainWindow.setWindowTitle(windowTitleFor(viewport->projectPath(),
+                                                                  viewport->isProjectDirty()));
+                     });
 
     QTabWidget *sidePanel = new QTabWidget(mainSplitter);
     sidePanel->setTabPosition(QTabWidget::West);
@@ -93,7 +144,8 @@ int main(int argc, char *argv[]) {
     // The Transform tab: the selected joint's rotation as three dials (see TransformPanel).
     sidePanel->addTab(new pose::TransformPanel(viewport), QStringLiteral("Transform"));
     // The Environment tab: live image-based-lighting controls for the viewport (see EnvironmentPanel).
-    sidePanel->addTab(new pose::EnvironmentPanel(viewport), QStringLiteral("Environment"));
+    pose::EnvironmentPanel *environmentTab = new pose::EnvironmentPanel(viewport);
+    sidePanel->addTab(environmentTab, QStringLiteral("Environment"));
     // Developer lever: POSESTUDIO_TAB=<title> starts on that side tab (the scripted test's
     // `uishot` then pictures it — tools/ikscripts/README.md).
     if (const QString startTab = qEnvironmentVariable("POSESTUDIO_TAB"); !startTab.isEmpty()) {
@@ -106,6 +158,7 @@ int main(int argc, char *argv[]) {
 
     menuManager->setAssetManagerWidget(assetsTab);
     menuManager->setViewportWidget(viewport);
+    menuManager->setEnvironmentPanel(environmentTab);
 
     // Double-clicking an asset in the grid imports it into the viewport — the same entry points the
     // menu and command-line "open with" use: an .obj as a static model, a character figure (.duf/.dsf)

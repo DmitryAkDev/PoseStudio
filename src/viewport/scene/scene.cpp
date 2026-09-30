@@ -187,6 +187,23 @@ void Scene::removeModel(std::size_t index) {
     }
 }
 
+void Scene::clearModels() {
+    m_models.clear(); // destructors free buffers/descriptors, as the last removeModel would
+    setSelectedModel(-1); // clear the selection (and its joint selection)
+    m_activeFigure = -1;  // no posing target
+}
+
+std::size_t Scene::modelCount() const {
+    return m_models.size();
+}
+
+Model* Scene::modelAt(std::size_t index) {
+    return index < m_models.size() ? m_models[index].get() : nullptr;
+}
+
+const Model* Scene::modelAt(std::size_t index) const {
+    return index < m_models.size() ? m_models[index].get() : nullptr;
+}
 void Scene::recordShadowPass(VkCommandBuffer cmd, uint32_t frameIndex) {
     // This frame's key direction, shared with record()'s UBO fill (computed once per frame here,
     // since this pass always runs first).

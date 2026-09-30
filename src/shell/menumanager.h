@@ -21,6 +21,7 @@ class AssetManagerWidget;
 class QAction;
 
 namespace pose {
+class EnvironmentPanel;
 class ViewportWidget;
 }
 
@@ -47,13 +48,26 @@ public:
     /// user can import (from main.cpp, once the viewport exists).
     void setViewportWidget(pose::ViewportWidget *viewport);
 
+    /// Registers the live Environment tab so File → New can reset it to the startup defaults
+    /// (dials + HDRI caption) alongside the scene. From main.cpp, once the panel exists.
+    void setEnvironmentPanel(pose::EnvironmentPanel *panel);
+
     /// Opens the Preferences dialog, jumping straight to `initialTab` if given (e.g. "Assets"),
     /// or leaving it on whichever tab it last opened to otherwise. Shared by the Edit menu's
     /// "Preferences" action and any other entry point that wants a specific tab (e.g. the
     /// Asset Manager's "Manage Asset Folders" context menu action).
     void openPreferencesDialog(const QString &initialTab = QString());
 
+    /// The shared unsaved-changes gate before replacing the scene (New / Open / importing over a
+    /// dirty scene, and window close): Save / Don't save / Cancel. True = proceed, false =
+    /// cancelled. Public because main.cpp's close guard calls it.
+    bool confirmDiscardChanges();
+
 private:
+    /// File → New: a fresh launch — picker mirrors synced via signals, the Environment tab reset,
+    /// then the scene itself (models / camera / lighting / HDRI / history) to startup defaults.
+    void newScene();
+
     /// Opens a file dialog and imports the chosen OBJ into the viewport.
     void importObjFile();
 
@@ -64,9 +78,20 @@ private:
     void savePoseFile();
     void loadPoseFile();
 
+    /// File → Save / Save As: writes the whole scene (figures + poses, transforms, environment,
+    /// camera) as a .pss project. Save reuses the document's path — falling back to Save As when
+    /// there is none; both remember the last project folder.
+    void saveProject();
+    void saveProjectAs();
+
+    /// File → Open: loads a .pss project — atomic parse first, link recovery for missing figure
+    /// sources (per-row re-point pickers), then import + restore in document order.
+    void openProjectFile();
+
     QMainWindow *mainWindow;
     AssetManagerWidget *assetManagerWidget = nullptr;
     pose::ViewportWidget *viewportWidget = nullptr;
+    pose::EnvironmentPanel *environmentPanel = nullptr;
     QAction *m_showSkeletonAction = nullptr; // View → Show Skeleton; wired in setViewportWidget
     // Edit → Turn Joint with Mouse → Bend / Side-Side / Twist (B / S / T); wired and kept
     // enabled-with-the-selection in setViewportWidget.

@@ -106,6 +106,18 @@ public:
     /// VulkanRenderer::deleteModel() does this.
     void removeModel(std::size_t index);
 
+    /// Removes EVERY model, resetting the selection and the active figure — File → New and Open
+    /// start from this (the renderer's own delete pass runs first, as for removeModel).
+    void clearModels();
+
+    /// The number of imported models, in scene order (the Nth import is index N-1).
+    std::size_t modelCount() const;
+
+    /// Model @p index in scene order — the .pss document addresses its figures by this position
+    /// (out of range: nullptr).
+    Model*       modelAt(std::size_t index);
+    const Model* modelAt(std::size_t index) const;
+
     /// Records the key light's depth-only shadow pass (its own render pass on the shadow map).
     /// Call BEFORE the main render pass each frame — it is also where this frame's key-light
     /// direction is computed, and it (re)fits the light's ortho frustum around the scene + its
