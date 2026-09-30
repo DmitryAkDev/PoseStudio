@@ -274,12 +274,35 @@ void Armature::ikPinRows(IkSolveScratch& s, std::size_t p) {
     bool  toLying = false;   // its knee holds: the foot is lying, or rolling onto its top
     // (The STANDING ball offset from the ankle: the bind's, turned to the foot's heading as the drag
     // found it — its lateral axis's, which a pitch does not move.)
+    // The HEADING the drag found the foot at: how far its LATERAL axis — the foot's own, across the
+    // ankle-to-ball line at bind, which a pitch about it does not move — has turned about the
+    // vertical. (Read off the WORLD's lateral axis until 2026-09-30: a foot stands toed out at
+    // bind, the world's x is not its pitch axis, and pitched half a turn — lying on its top behind
+    // a kneel — that axis read a heading up to twice the toe-out off. It went unseen while the
+    // bones' frames were themselves composed wrongly, the foot's pitch axis standing nearer the
+    // world's: with the frames right, a foot rolled back onto its toes was re-seated to stand 35
+    // degrees toed out, its heel 7cm inside its ball, and the leg flipped basins to get there —
+    // 14cm at a thigh in one tick. IK_JS_FOOT_HEADING_WORLD_X is the A/B.)
+    const auto foundFootYaw = [&](int ballBone, float& yaw) {
+        static const bool kWorldX = std::getenv("IK_JS_FOOT_HEADING_WORLD_X") != nullptr; // A/B probe
+        glm::vec3 fore = m_ikBindPos[static_cast<std::size_t>(ballBone)] - m_ikBindPos[node];
+        fore.y = 0.0f;
+        const glm::vec3 lateralBind = (!kWorldX && glm::length(fore) > 1.0e-4f)
+                                          ? glm::normalize(glm::cross(glm::vec3(0.0f, 1.0f, 0.0f), fore))
+                                          : glm::vec3(1.0f, 0.0f, 0.0f);
+        glm::vec3 lateralFound = node < m_jsStartRot.size() ? m_jsStartRot[node] * lateralBind : lateralBind;
+        lateralFound.y = 0.0f;
+        if (glm::length(lateralFound) <= 0.3f) {
+            return false;
+        }
+        lateralFound = glm::normalize(lateralFound);
+        yaw = std::atan2(glm::cross(lateralBind, lateralFound).y, glm::dot(lateralBind, lateralFound));
+        return true;
+    };
     const auto standingBallOffset = [&](int ballBone) {
         glm::vec3 standing = m_ikBindPos[static_cast<std::size_t>(ballBone)] - m_ikBindPos[node];
-        glm::vec3 lateralFound = node < m_jsStartRot.size() ? m_jsStartRot[node] * glm::vec3(1.0f, 0.0f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
-        lateralFound.y = 0.0f;
-        if (glm::length(lateralFound) > 0.3f) {
-            const float yaw = std::atan2(-lateralFound.z, lateralFound.x);
+        float     yaw = 0.0f;
+        if (foundFootYaw(ballBone, yaw)) {
             standing = glm::mat3_cast(glm::angleAxis(yaw, glm::vec3(0.0f, 1.0f, 0.0f))) * standing;
         }
         return standing;
@@ -527,6 +550,20 @@ void Armature::ikPinRows(IkSolveScratch& s, std::size_t p) {
                     rig.reseatPin(p, newAnkle.x, newAnkle.z);
                     m_jsFlatBallOffset[node] = lyingBall - pin.target; // (relative to the re-seated pin: the ball where it lay)
                 }
+                // The ball's row is back at its FULL weight from this tick: its target starts where the
+                // ball IS and eases to the floor from there. Through the unroll the target's height —
+                // no row's business then, the spring holds the ball's place only — was set to the
+                // ball's and then walked a pin's step (2.5cm) back toward the LYING height by the
+                // easing below, every tick: the handover found it 3cm under the ball, and 1e8 hauled
+                // the ball there in one tick. A foot that had unrolled in the air took it as a twitch;
+                // one standing on its toes on the floor had the next solve fail under it — the knees
+                // back on the floor and the hips 25cm from the cursor for a tick, then back: 17-27cm.
+                // (IK_JS_HANDOVER_BALL_TARGET_STALE is the A/B.)
+                static const bool kStaleBallTarget = std::getenv("IK_JS_HANDOVER_BALL_TARGET_STALE") != nullptr; // A/B probe
+                if (!kStaleBallTarget) {
+                    m_jsBallTarget[node] = ballNow;
+                    m_jsBallTargetValid[node] = 1;
+                }
                 for (std::size_t k = 0; k < m_ikFlatNodes.size(); ++k) {
                     if (m_ikFlatOwner[k] == pin.node && m_ikFlatNodes[k] >= 0 && static_cast<std::size_t>(m_ikFlatNodes[k]) < n) {
                         m_ikFlatRot[k] = glm::mat3(m_poseGlobal[static_cast<std::size_t>(m_ikFlatNodes[k])]);
@@ -560,7 +597,23 @@ void Armature::ikPinRows(IkSolveScratch& s, std::size_t p) {
                 // foot from flying.)
                 static const bool kBallDown = std::getenv("IK_JS_UNROLL_BALL_DOWN") != nullptr; // A/B probe
                 const float ballFloorY = pin.target.y + standingBallOffset(ball).y;
-                const float ballY = kBallDown ? std::max(ballFloorY, ballNow.y - kKneelFlatLandStep * rig.sizeScale()) : ballNow.y;
+                // THE FOOT COMES OFF THE FLOOR TO TURN OVER (2026-09-30; kKneelUnrollBallLift,
+                // IK_JS_UNROLL_BALL_LIFT, 0 = the plane-only spring): the ball's height target rises
+                // with the roll's progress, softly, and never below where the ball is. A lying foot's
+                // toes point back, on their tops; a tucked foot's point forward, on their pads — the
+                // toes turn OVER between the two, and on the floor they can only do it on their tips,
+                // the ball a toe's length up: where the handover then found the foot, and whether the
+                // returning ball row folded the toes forward (the tuck) or back (the foot lying down
+                // again, the knee after it, the hips 25cm from their cursor for a tick) was the lean of
+                // a toe a few degrees from vertical — 12-27cm pops on three of the eight rigs. Lifted,
+                // the toes swing under in the air and the foot LANDS on them, as a person's does.
+                // (It had been doing just that by accident: until the bones' frames were put right the
+                // foot pitched about an axis 7 degrees off its own, its toes dug at the floor's rows,
+                // and the leg folded the foot 25cm into the air.)
+                static const float kBallLift = static_cast<float>(envOr("IK_JS_UNROLL_BALL_LIFT", static_cast<double>(kKneelUnrollBallLift)));
+                const float liftY = ballFloorY + kBallLift * rig.sizeScale() * (node < m_jsFootUnrollProgress.size() ? m_jsFootUnrollProgress[node] : 0.0f);
+                const float ballY = kBallLift > 0.0f ? std::max(liftY, ballNow.y)
+                                    : kBallDown ? std::max(ballFloorY, ballNow.y - kKneelFlatLandStep * rig.sizeScale()) : ballNow.y;
                 m_jsFlatHeelOffset[node] = pinNow - ballNow;
                 m_jsBallTarget[node] = glm::vec3(pin.target.x + m_jsFlatBallOffset[node].x, ballY, pin.target.z + m_jsFlatBallOffset[node].z);
                 m_jsBallTargetValid[node] = 1;
@@ -592,6 +645,9 @@ void Armature::ikPinRows(IkSolveScratch& s, std::size_t p) {
                              kp >= 0 ? m_boneEuler[static_cast<std::size_t>(kp)].x : 0.0f, kp >= 0 ? m_boneEuler[static_cast<std::size_t>(kp)].y : 0.0f, kp >= 0 ? m_boneEuler[static_cast<std::size_t>(kp)].z : 0.0f,
                              m_boneEuler[node].x, m_boneEuler[node].y, m_boneEuler[node].z);
             }
+            std::fprintf(stderr, " rise %.2f progress %.2f base %.2f unroll %.2f pin(%.3f %.3f %.3f)", m_jsRootRise, m_jsRiseProgress,
+                         node < m_jsFlatRiseBase.size() ? m_jsFlatRiseBase[node] : 0.0f,
+                         node < m_jsFootUnrollProgress.size() ? m_jsFootUnrollProgress[node] : 0.0f, pin.target.x, pin.target.y, pin.target.z);
             std::fputc(10, stderr);
         }
     } else if (m_jsFootFlat.size() == n && !rig.pinIsLive(p) && !rig.pinIsUser(p) && ball >= 0) {
@@ -1236,11 +1292,8 @@ void Armature::ikPinRows(IkSolveScratch& s, std::size_t p) {
                 // more than 5cm from its target pulled no harder than at 5 (JointSolver::
                 // residuals); pulled in full, she stood up out of a kneel on 3cm of heel.
                 glm::vec3 flat = bindOffset;
-                glm::vec3 lateralFound = node < m_jsStartRot.size() ? m_jsStartRot[node] * glm::vec3(1.0f, 0.0f, 0.0f)
-                                                                    : glm::vec3(1.0f, 0.0f, 0.0f);
-                lateralFound.y = 0.0f;
-                if (glm::length(lateralFound) > 0.3f) {
-                    const float yaw = std::atan2(-lateralFound.z, lateralFound.x);
+                float     yaw = 0.0f;
+                if (foundFootYaw(ball, yaw)) {
                     flat = glm::mat3_cast(glm::angleAxis(yaw, glm::vec3(0.0f, 1.0f, 0.0f))) * bindOffset;
                 }
                 float turn = m_jsRiseProgress;
@@ -1264,7 +1317,17 @@ void Armature::ikPinRows(IkSolveScratch& s, std::size_t p) {
             // over its ball and toe tips resting on the floor: the toes folded to their limits
             // under it, the floor's rows on their joints locked the roll, and the foot flipped 8cm
             // in the tick the active set gave — 131mm at a toe in a kneel's still hold.)
-            if (flat > 0.0f) {
+            // (... and only while the foot LIES or rolls: once it has been handed back to the standing
+            // model (flip) the heel's target is the tucked foot's alone. Mixed in through the share's
+            // fade after the handover too — until 2026-09-30 — the row, back at its full weight by
+            // then, asked the ankle of a foot standing on its toes down to the lying height at the
+            // RE-SEATED pin, a foot's length behind: as strong a pull as the cursor's, for the five
+            // ticks of the fade. A foot that had unrolled in the air shrugged it off; one that keeps
+            // its toes on the floor through the unroll, as a foot pitching about its true axis does,
+            // lay down again under it and sprang back, the knee 13cm down and up: 17-27cm in a tick on
+            // the rigs with a thigh twist bone. IK_JS_LYING_HEEL_AFTER_HANDOVER is the A/B.)
+            static const bool kLyingAfterHandover = std::getenv("IK_JS_LYING_HEEL_AFTER_HANDOVER") != nullptr; // A/B probe
+            if (flat > 0.0f && (flip < 1.0f || kLyingAfterHandover)) {
                 const float rollDone = glm::smoothstep(0.5f, 1.0f, rollProgress); // (1 for a foot found lying)
                 const float lyingY = glm::mix(m_jsFlatRollStartY[node], m_jsFlatLyingY[node], rollDone);
                 glm::dvec3 lying(pin.target.x, lyingY, pin.target.z);
@@ -1384,7 +1447,8 @@ void Armature::ikPinRows(IkSolveScratch& s, std::size_t p) {
             // cannot trail after a rising pelvis, nor fly up on a leg the rise folds.)
             static const bool kBallDown2 = std::getenv("IK_JS_UNROLL_BALL_DOWN") != nullptr; // A/B probe
             bear.weight = kKneelFootHold;
-            bear.axisScale = kBallDown2 ? glm::dvec3(1.0, 1.0, 1.0) : glm::dvec3(1.0, 0.0, 1.0);
+            static const bool kBallLifted = envOr("IK_JS_UNROLL_BALL_LIFT", static_cast<double>(kKneelUnrollBallLift)) > 0.0; // (... and UP, off the floor: see the tracking above)
+            bear.axisScale = (kBallDown2 || kBallLifted) ? glm::dvec3(1.0, 1.0, 1.0) : glm::dvec3(1.0, 0.0, 1.0);
         }
         // (After the handover the row is HARD at once: its target is the spot the spring held the
         // ball at, so nothing is yanked — faded in over the share the free foot trailed the rising

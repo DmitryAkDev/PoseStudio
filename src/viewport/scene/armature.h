@@ -95,6 +95,33 @@ enum class IkScope { Body, Chain, Figure, Part };
 /// digit alone, up to where the digit joins the hand or the foot (the DIGIT DRAG, armatureikdigit.cpp).
 enum class BoneClass { Body, Face, Digit };
 
+/// The three TRANSFORM DIALS of a joint (the Transform tab; Armature::jointDial): the bend in the
+/// joint's natural direction, the bend in its secondary direction, and the twist about its length.
+enum class JointDialKind { BendForward = 0, BendSideways = 1, Twist = 2 };
+constexpr int kJointDialCount = 3;
+
+/// One dial: the Euler channel it turns and the scale it reads on. 0 is the rest pose, 100 the
+/// channel's limit in the dial's own direction (`fullDeg`, signed), and a negative value bends the
+/// other way IN THE SAME PROPORTION — value / 100 * fullDeg degrees — until the channel's other
+/// limit stops it: a knee authored -11..155 reads -7.1..100. `bone` is -1 for a motion the joint
+/// does not have (a locked channel: a hinge elbow's side bend).
+struct JointDial {
+    int   bone = -1;       ///< The bone whose channel the dial turns (a limb's TWIST may be its twist bone's).
+    int   axis = 0;        ///< ... and the channel (0/1/2 = x/y/z).
+    float fullDeg = 0.0f;  ///< The channel's angle at dial 100.
+    float minValue = 0.0f; ///< The dial's range: where the channel's limits stop it.
+    float maxValue = 0.0f;
+    bool  valid() const { return bone >= 0; }
+};
+
+/// How turning a dial moves the limb it swings — what the viewport's mouse mode (B / S / T) reads
+/// to let the limb go the way the mouse goes (Armature::jointDialSweep).
+struct JointDialSweep {
+    glm::vec3 tip{0.0f};          ///< A world point on the limb the dial swings: its far end, as posed.
+    glm::vec3 tipPerDegree{0.0f}; ///< That point's world velocity per degree toward the dial's POSITIVE side.
+    float     degreesPerUnit = 0.0f; ///< Degrees of the channel per dial unit (|fullDeg| / 100).
+};
+
 class Armature {
 public:
     Armature();
@@ -248,6 +275,45 @@ public:
     bool setBoneRotation(const std::string& boneName, const glm::vec3& eulerDegrees);
     /// Adds @p deltaEulerDegrees to the selected bone's accumulated rotation and re-poses it.
     void nudgeSelectedBone(const glm::vec3& deltaEulerDegrees);
+
+    // --- THE TRANSFORM DIALS (armaturedials.cpp): a joint's rotation as three 0-100 dials ---
+    /// The joint a selection of @p bone presents: the bone itself, or — for a TWIST bone, which is
+    /// a piece of its limb's rigid segment and no joint of its own — the bend bone it belongs to
+    /// (a click on the lower thigh finds the thigh's twist bone: the joint is the thigh). -1 for
+    /// a bad index.
+    int dialJoint(int bone) const;
+    /// Dial @p kind of the joint @p bone presents (dialJoint), found by STRUCTURE:
+    ///   - the TWIST channel is the bone's length axis — the rotation order's first axis, the
+    ///     format's own statement of it. Where the bend bone's is locked (a limb whose twist is
+    ///     cut out into a twist bone), the dial turns that twist bone's;
+    ///   - of the two others, BEND FORWARD is the joint's natural direction — the channel with
+    ///     the wider range (a knee's or an elbow's fold, a wrist's flexion), or, where the two
+    ///     are near equal (a shoulder, a spine joint), the one that carries the limb fore and aft
+    ///     — and BEND SIDEWAYS the other;
+    ///   - each dial's POSITIVE direction: a one-sided channel's long side (a knee flexes, an
+    ///     elbow folds, a collar shrugs); else, for the forward bend, the way that takes what the
+    ///     joint carries FORWARD, or where it moves up and down, DOWN (a wrist flexes, a finger
+    ///     and a toe curl, a foot points); for the side bend and the twist the channel's longer
+    ///     side, and on an even channel outward / toward her left — mirrored left and right, so
+    ///     the same value on a left and a right joint gives mirrored poses.
+    /// Reads the bone classes as they stand (the head is the bone the face rig hangs from): the
+    /// same answer before and after the rig is built for every bone but the head, whose selection
+    /// builds it anyway. An invalid dial for a bad index or a locked channel.
+    JointDial jointDial(int bone, JointDialKind kind) const;
+    /// The dial's reading of the pose as it stands.
+    float jointDialValue(const JointDial& dial) const;
+    /// Turns the dial's channel to @p value (clamped to the dial's range) — an FK rotation
+    /// through the limits and the FK collision stop, so the pose may rest short of the value
+    /// asked (read it back). False when nothing changed or the dial is invalid.
+    bool setJointDial(const JointDial& dial, float value);
+    /// How turning @p dial moves the limb it swings, in the pose as it stands: the limb's far end
+    /// (the joint plus the way the bone lies, limbDirection, over the length of its rigid segment)
+    /// and that point's velocity per degree of the dial's positive direction — the channel's
+    /// axis as it stands (the rotation-order prefix applied, as the solver's Jacobian reads it)
+    /// crossed with the lever. A TWIST turns the limb about its own length: its far end moves
+    /// little or not at all (nil on a twist bone and on a straight limb) — the caller has no
+    /// direction to follow there. False for an invalid dial.
+    bool jointDialSweep(const JointDial& dial, JointDialSweep& sweep) const;
 
     /// Captures the current pose as (bone name, Euler degrees) for each non-rest joint, plus
     /// "@trans:<bone>" rows for pose translations and "@pin:<bone>" rows for user pins (see
@@ -416,6 +482,13 @@ private:
     /// Re-poses bone @p index from its accumulated Euler (m_boneEuler) in its oriented frame, then
     /// recomputes the skin data. Shared by setBoneRotation() and nudgeSelectedBone().
     void applyBoneEuler(int index);
+    /// Adds @p deltaEulerDegrees to bone @p bone's rotation through the FK COLLISION STOP (see
+    /// fkVolumeDepth) — the body of nudgeSelectedBone, and of a transform dial, which may turn a
+    /// bone other than the selected one (a limb's twist bone).
+    void nudgeBone(int bone, const glm::vec3& deltaEulerDegrees);
+    /// The way bone @p bone lies, distally, at bind (model space, unit): its own length axis — the
+    /// rotation order's first axis in its orientation frame — pointing at what the joint carries.
+    glm::vec3 limbDirection(int bone) const;
     /// Builds the IK rig (graph, constraints, masses, body volumes) from the bind skeleton on
     /// first use — an IK drag or an FK rotation, which checks the body volumes. False for a
     /// boneless model.
@@ -441,13 +514,6 @@ private:
     /// through.
     void clampBoneEuler(int index);
 
-    /// A bone the user rotated by the X/Y/Z wheel DURING an IK drag (nudgeSelectedBone with a
-    /// drag active): the rotation is the user's — the posture reference takes it, so the solve
-    /// never eases it back — and a promoted drag's grab offset is re-captured in the effector's
-    /// current frame (rotating a grabbed finger moves it relative to the solved hand; the cursor
-    /// must keep tracking the finger).
-    void holdNudgedBoneThroughDrag(int bone);
-
     std::vector<Bone>                    m_bones;
     std::unordered_map<std::string, int> m_boneIndex; // bone name -> index into m_bones
     std::vector<std::string>             m_boneNames;  // parallel to m_bones (for the posing UI)
@@ -455,10 +521,12 @@ private:
     glm::mat4                            m_transform{1.0f};
     std::vector<glm::vec3>               m_boneWorldPos; // current world position per bone (overlay/pick)
     // Per bone: its highlight TWIN (-1 if none). Figures split each limb segment into a bend
-    // bone and a TWIST child whose two swing axes are locked (range under 2°) — the mid-limb
-    // bone that spreads axial twist across the skin. The selection highlight covers the pair
-    // (bend -> its twist child, twist -> its bend parent), so grabbing the upper-arm joint lights
-    // the whole upper arm rather than the half the bend bone's own weights cover.
+    // bone and a TWIST child (isTwistBone: two locked axes, the free one along the bone) — the
+    // mid-limb bone that spreads axial twist across the skin. The selection highlight covers the
+    // pair (bend -> its twist child, twist -> its bend parent), so grabbing the upper-arm joint
+    // lights the whole upper arm rather than the half the bend bone's own weights cover. A HINGE
+    // (a finger's or a toe's middle joint, an elbow with its other channels locked) is no twist
+    // bone and has no twin: every joint of a digit lights its own phalanx.
     std::vector<int>                     m_highlightTwin;
     std::vector<std::vector<int>>        m_children;   // anatomical children per bone (subtree walks, the foot contact model's ball search)
     std::vector<int>                     m_mirrorBone; // the other side's bone per bone (self for centre)

@@ -37,12 +37,16 @@ The keys work on the number row and on the numeric keypad. With NumLock off, the
 | Key | Needs | Action |
 | --- | --- | --- |
 | `P` | viewport focus, a joint selected | Pin or unpin the selected joint |
-| `X`, `Y`, `Z` (hold) + wheel | viewport focus, a joint selected | Rotate the joint about that axis |
+| `B` | a joint selected | Bend the joint with the mouse: move to turn it, click to keep |
+| `S` | a joint selected | The same for Side-Side |
+| `T` | a joint selected | The same for Twist |
+| Left click or `Enter` | while `B` / `S` / `T` is on | Keep the result |
+| `Esc`, right click, or the same key again | while `B` / `S` / `T` is on | Put the joint back as it was |
 | `Delete` or `Backspace` | viewport focus, a model selected | Delete the selected model (clears the undo history) |
 | `Ctrl+Z` | | Undo |
 | `Ctrl+Y` | | Redo |
 
-Edit → Reset Selected Joint, Reset Limb, Reset Pose, Mirror Pose and Mirror Limb to Other Side have no keys; they are on the Edit menu and (the per-joint ones) on the joint's context menu.
+`B`, `S` and `T` work whichever panel has the keyboard focus (they are the keys of **Edit → Turn Joint with Mouse**); `P` and `Delete` need the viewport to have it. Edit → Reset Selected Joint, Reset Limb, Reset Pose, Mirror Pose and Mirror Limb to Other Side have no keys; they are on the Edit menu and (the per-joint ones) on the joint's context menu.
 
 ## Application
 
@@ -68,6 +72,14 @@ Edit → Reset Selected Joint, Reset Limb, Reset Pose, Mirror Pose and Mirror Li
 | Drag across a value | Scrub it |
 | Click a value | Type it; `Enter` confirms, `Esc` cancels |
 | The small button beside a row | Restore that setting's default |
+
+## Transform tab
+
+| Gesture | Action |
+| --- | --- |
+| Drag across a dial | Scrub the selected joint's Bend, Side-Side or Twist |
+| Click a dial | Type a value; `Enter` confirms, `Esc` cancels |
+| The small button beside a dial | Return that dial to 0, the rest pose |
 
 ## This manual
 

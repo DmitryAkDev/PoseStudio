@@ -54,6 +54,12 @@ void DragNumberBox::setDecimals(int decimals) {
     update();
 }
 
+void DragNumberBox::setOrigin(double origin) {
+    m_hasOrigin = true;
+    m_origin = origin;
+    update();
+}
+
 void DragNumberBox::setValue(double value) {
     const double clamped = std::clamp(value, m_min, m_max);
     // Half-a-step epsilon-of-step comparisons would fight typed precision; compare against a
@@ -75,7 +81,11 @@ QSize DragNumberBox::minimumSizeHint() const {
 }
 
 QString DragNumberBox::formattedValue() const {
-    return QString::number(m_value, 'f', m_decimals);
+    QString text = QString::number(m_value, 'f', m_decimals);
+    if (text.startsWith(QLatin1Char('-')) && text.toDouble() == 0.0) {
+        text.remove(0, 1); // a small negative that rounds to zero reads "0", not "-0"
+    }
+    return text;
 }
 
 void DragNumberBox::paintEvent(QPaintEvent*) {
@@ -89,22 +99,40 @@ void DragNumberBox::paintEvent(QPaintEvent*) {
 
     p.fillPath(box, m_backgroundColor);
 
-    // The range fill: left-to-right, proportional to where the value sits in [min, max].
-    // Clipped to the rounded box so the fill's leading edge stays square while the
-    // left corners keep the border radius.
+    // The range fill: from the origin (the left edge, unless setOrigin placed it inside the
+    // range) to where the value sits in [min, max]. Clipped to the rounded box so the fill's
+    // leading edge stays square while the corners keep the border radius. A disabled box (a
+    // parameter that does not apply right now) shows no fill and a dimmed value.
+    const bool   enabled = isEnabled();
     const double range = m_max - m_min;
-    const double fraction = (range > 0.0) ? std::clamp((m_value - m_min) / range, 0.0, 1.0) : 0.0;
-    if (fraction > 0.0) {
+    const auto   fractionOf = [&](double v) { return (range > 0.0) ? std::clamp((v - m_min) / range, 0.0, 1.0) : 0.0; };
+    const double from = m_hasOrigin ? fractionOf(m_origin) : 0.0;
+    const double to = fractionOf(m_value);
+    if (enabled && to != from) {
         p.save();
         p.setClipPath(box);
-        p.fillRect(QRectF(r.left(), r.top(), r.width() * fraction, r.height()), m_fillColor);
+        p.fillRect(QRectF(r.left() + r.width() * std::min(from, to), r.top(), r.width() * std::abs(to - from), r.height()),
+                   m_fillColor);
         p.restore();
     }
+    if (enabled && from > 0.0 && from < 1.0) {
+        // The origin's mark: where "rest" is on a bar that fills both ways — a tick at the top and
+        // the bottom edge, clear of the value's text (which sits on it when the origin is central).
+        const double x = std::floor(r.left() + r.width() * from) + 0.5;
+        const double tick = std::min(4.0, r.height() / 4.0);
+        p.setPen(QPen(m_borderColor, 1.0));
+        p.drawLine(QPointF(x, r.top() + 1.0), QPointF(x, r.top() + 1.0 + tick));
+        p.drawLine(QPointF(x, r.bottom() - 1.0 - tick), QPointF(x, r.bottom() - 1.0));
+    }
 
-    p.setPen(QPen(m_hovered ? m_hoverBorderColor : m_borderColor, 1.0));
+    p.setPen(QPen(m_hovered && enabled ? m_hoverBorderColor : m_borderColor, 1.0));
     p.drawPath(box);
 
-    p.setPen(m_textColor);
+    QColor text = m_textColor;
+    if (!enabled) {
+        text.setAlphaF(0.35f);
+    }
+    p.setPen(text);
     p.drawText(rect(), Qt::AlignCenter, formattedValue());
 }
 
@@ -138,7 +166,8 @@ void DragNumberBox::mouseMoveEvent(QMouseEvent* event) {
     // so the readout lands on the same values the old slider/spin pair produced.
     const double range = m_max - m_min;
     const double raw = m_pressValue + (dx / std::max(1, width())) * range;
-    const double snapped = m_min + std::round((raw - m_min) / m_step) * m_step;
+    const double anchor = m_hasOrigin ? m_origin : m_min; // the step grid's anchor (see setOrigin)
+    const double snapped = anchor + std::round((raw - anchor) / m_step) * m_step;
     setValue(snapped);
     event->accept();
 }
@@ -211,6 +240,24 @@ void DragNumberBox::focusOutEvent(QFocusEvent* event) {
         break;
     }
     QWidget::focusOutEvent(event);
+}
+
+void DragNumberBox::changeEvent(QEvent* event) {
+    if (event->type() == QEvent::EnabledChange) {
+        // Disabled mid-gesture (the thing the box edits went away): end the scrub or the type-in
+        // so a listener's bracket closes, and drop the scrub cursor — a disabled box scrubs nothing.
+        if (!isEnabled()) {
+            abandonScrub();
+            if (m_editing) {
+                cancelEdit();
+            }
+            unsetCursor();
+        } else {
+            setCursor(Qt::SizeHorCursor);
+        }
+        update();
+    }
+    QWidget::changeEvent(event);
 }
 
 void DragNumberBox::enterEvent(QEnterEvent*) {

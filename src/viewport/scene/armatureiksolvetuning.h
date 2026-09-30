@@ -292,6 +292,10 @@ constexpr float  kKneelFlatNearLimitDeg = 20.0f;
 /// the rise stalled and let go in one tick (260mm); free, the knee lifted with the hips while the foot
 /// hung in the air on its soft spring, and the returning rows brought it down in a tick (52-275mm).
 constexpr float  kKneeUnrollLift = 0.25f;
+/// ... and the FOOT comes off the floor to turn over: through the unroll the ball's soft spring also
+/// asks its height up, to this far over its floor height by the roll's end (figure-scaled; the
+/// handover then lands it at kKneelFlatLandStep). 0.12-0.25 measured alike on the eight rigs.
+constexpr float  kKneelUnrollBallLift = 0.15f;
 /// A LYING FOOT UNDER A DRAWN-UP KNEE (ikPinRows, ikPinRowsEnd) hangs with its lowest joint this far
 /// (m, figure-scaled) clear of the floor while it still points down past level by more than
 /// kLyingFootHangClearToDeg, none from kLyingFootHangClearFromDeg: hung exactly at the height that

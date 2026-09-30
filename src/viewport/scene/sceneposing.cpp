@@ -22,6 +22,46 @@ void Scene::nudgeSelectedBone(const glm::vec3& deltaEulerDegrees) {
     }
 }
 
+JointTransform Scene::selectedJointTransform() const {
+    JointTransform out;
+    const Model*   fig = figureModel();
+    if (fig == nullptr) {
+        return out;
+    }
+    const Armature& arm = fig->armature();
+    const int       joint = arm.dialJoint(arm.highlightBone());
+    if (joint < 0) {
+        return out;
+    }
+    out.valid = true;
+    out.name = arm.boneName(static_cast<std::size_t>(joint));
+    for (int k = 0; k < kJointDialCount; ++k) {
+        const JointDial dial = arm.jointDial(joint, static_cast<JointDialKind>(k));
+        if (dial.valid()) {
+            out.dials[k] = {true, arm.jointDialValue(dial), dial.minValue, dial.maxValue};
+        }
+    }
+    return out;
+}
+
+bool Scene::setSelectedJointDial(int dial, float value) {
+    Model* fig = figureModel();
+    if (fig == nullptr || dial < 0 || dial >= kJointDialCount) {
+        return false;
+    }
+    const Armature& arm = fig->armature();
+    return fig->setJointDial(arm.jointDial(arm.highlightBone(), static_cast<JointDialKind>(dial)), value);
+}
+
+bool Scene::selectedJointDialSweep(int dial, JointDialSweep& sweep) const {
+    const Model* fig = figureModel();
+    if (fig == nullptr || dial < 0 || dial >= kJointDialCount) {
+        return false;
+    }
+    const Armature& arm = fig->armature();
+    return arm.jointDialSweep(arm.jointDial(arm.highlightBone(), static_cast<JointDialKind>(dial)), sweep);
+}
+
 void Scene::finalizePose() {
     if (Model* fig = figureModel()) {
         fig->refreshCorrectives();

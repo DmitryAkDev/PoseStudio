@@ -923,38 +923,6 @@ void Armature::endIkDrag() {
     m_figureMove = false;
 }
 
-void Armature::holdNudgedBoneThroughDrag(int bone) {
-    if ((m_digitDrag || m_figureMove) && bone >= 0 && static_cast<std::size_t>(bone) < m_ikStartEuler.size()) {
-        // (A digit drag, a figure move: the user's rotation is the posture their solve eases toward.)
-        m_ikStartEuler[static_cast<std::size_t>(bone)] = m_boneEuler[static_cast<std::size_t>(bone)];
-        return;
-    }
-    if (!m_ikRig || !m_ikRig->dragActive() || bone < 0 ||
-        bone >= static_cast<int>(m_bones.size())) {
-        return;
-    }
-    // The user's rotation becomes part of the posture the solve eases toward.
-    if (static_cast<std::size_t>(bone) < m_ikStartEuler.size()) {
-        m_ikStartEuler[static_cast<std::size_t>(bone)] = m_boneEuler[static_cast<std::size_t>(bone)];
-    }
-    // A promoted grab (a finger driving the hand): the offset the window's targets are shifted
-    // by is (grabbed - solved) in the effector's DRAG-START frame (see dragIkTo), so re-capture
-    // it from the current positions through the effector's rotation since drag start.
-    const int eff = m_ikRig->dragEffector();
-    if (eff >= 0 && eff != m_selectedBone && eff < static_cast<int>(m_bones.size()) &&
-        m_selectedBone >= 0 && m_selectedBone < static_cast<int>(m_bones.size())) {
-        const glm::mat3 grabRot =
-            m_ikRig->effectorIsTrunk()
-                ? glm::mat3(1.0f)
-                : glm::mat3(m_poseGlobal[static_cast<std::size_t>(eff)]) *
-                      glm::transpose(m_ikGrabRotStart);
-        m_ikGrabOffset =
-            glm::transpose(grabRot) *
-            (glm::vec3(m_poseGlobal[static_cast<std::size_t>(m_selectedBone)][3]) -
-             glm::vec3(m_poseGlobal[static_cast<std::size_t>(eff)][3]));
-    }
-}
-
 bool Armature::togglePinSelectedBone() {
     if (m_selectedBone < 0 || m_selectedBone >= static_cast<int>(m_bones.size())) {
         return false;

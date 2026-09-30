@@ -11,7 +11,7 @@ Distances assume a standard-size adult figure; a small character needs proportio
 - **Lean the body**: drag the chest sideways or back. A short pull leans; a longer one, and the feet step under her. Drag the head instead for the same lean carried through the neck.
 - **Bow**: drag the chest (or the head) forward *and down*. She folds at the hips with the spine curling and the head staying up to look ahead, and she takes no step.
 - **Hands on hips, elbows out**: drag the hand to the hip, pin it (`P`), then drag the elbow outward — it swivels about the pinned hand.
-- **Turn the head**: click the head, then hold `Y` and roll the wheel to turn it, `X` to nod it, `Z` to tilt it sideways (the axes of a figure's head are usually laid out this way; the badge under the strip shows which you are holding).
+- **Turn the head**: click the head, press `T` and move the mouse left or right to turn it; `B` nods it and `S` tilts it sideways. Click to keep the result (a badge under the strip shows which of the three is on).
 
 ## Crouching, kneeling, sitting
 
@@ -45,6 +45,6 @@ Distances assume a standard-size adult figure; a small character needs proportio
 ## Fixing a pose
 
 - **A limb went somewhere odd**: select the joint and use **Reset Limb**, or `Ctrl+Z`.
-- **The feet came off the floor** (after wheel rotations, or a loaded pose): press the **Ground** button.
+- **The feet came off the floor** (after turning joints with `B` / `S` / `T` or the Transform tab, or a loaded pose): press the **Ground** button.
 - **Everything at once**: **Reset Pose**.
 - **Left and right ended unequal** on a symmetric pose: pose one side, then **Mirror Limb to Other Side**.

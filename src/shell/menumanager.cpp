@@ -22,6 +22,7 @@
 #include "updatecheck.h"
 #include "helpwindow.h"
 #include "viewport/viewportwidget.h"
+#include "jointtransform.h" // pose::JointTransform: which of the joint-mode keys are live
 #include <QMenu>
 #include <QMenuBar>
 #include <QAction>
@@ -174,6 +175,29 @@ void MenuManager::setupMenus() {
         if (viewportWidget) viewportWidget->resetPose();
     });
     editMenu->addSeparator();
+    // THE JOINT MOUSE MODE's keys (VulkanWindow::toggleJointModal): B / S / T turn the selected
+    // joint's Bend / Side-Side / Twist with the mouse. They are bound here as window shortcuts so
+    // that they work WHICHEVER PANEL HAS THE FOCUS — bound to the viewport alone, the key did
+    // nothing after a click on the Transform tab until the viewport was clicked again. A text
+    // field keeps its letters (a focused QLineEdit accepts the ShortcutOverride for text keys),
+    // and each action is enabled only while the selected joint has that motion
+    // (setViewportWidget), so with nothing to turn the letters go where they always went — the
+    // asset lists' type-ahead. No auto-repeat: a key held a moment too long must not toggle the
+    // mode off again.
+    QMenu *turnJointMenu = editMenu->addMenu("Turn Joint with Mouse");
+    static const struct { const char *label; Qt::Key key; } kTurnJoint[3] = {
+        {"Bend", Qt::Key_B}, {"Side-Side", Qt::Key_S}, {"Twist", Qt::Key_T}};
+    for (int kind = 0; kind < 3; ++kind) {
+        QAction *action = turnJointMenu->addAction(kTurnJoint[kind].label);
+        action->setShortcut(QKeySequence(kTurnJoint[kind].key));
+        action->setAutoRepeat(false);
+        action->setEnabled(false); // until a joint is selected
+        QObject::connect(action, &QAction::triggered, mainWindow, [this, kind]() {
+            if (viewportWidget) viewportWidget->toggleJointModal(kind);
+        });
+        m_turnJointActions[kind] = action;
+    }
+    editMenu->addSeparator();
     QAction *mirrorPoseAction = editMenu->addAction("Mirror Pose");
     QObject::connect(mirrorPoseAction, &QAction::triggered, mainWindow, [this]() {
         if (viewportWidget) viewportWidget->mirrorPose();
@@ -319,6 +343,19 @@ void MenuManager::setViewportWidget(pose::ViewportWidget *viewport) {
     if (!viewport || !m_showSkeletonAction) {
         return;
     }
+    // Edit → Turn Joint with Mouse: each key is live only while the selected joint has that
+    // motion (an elbow has no Side-Side; nothing selected has none). jointTransformChanged says
+    // when to look again: a selection, a deselection, a deleted figure.
+    const auto syncTurnJoint = [this]() {
+        const pose::JointTransform transform = viewportWidget ? viewportWidget->jointTransform() : pose::JointTransform{};
+        for (int kind = 0; kind < 3; ++kind) {
+            if (m_turnJointActions[kind]) {
+                m_turnJointActions[kind]->setEnabled(transform.valid && transform.dials[kind].enabled);
+            }
+        }
+    };
+    QObject::connect(viewport, &pose::ViewportWidget::jointTransformChanged, this, syncTurnJoint);
+    syncTurnJoint();
     // View → Show Skeleton drives the same overlay state as the viewport's Skeleton button; the
     // skeletonVisibilityChanged signal keeps the two in lockstep (blockSignals keeps the round-trip
     // to one hop).

@@ -22,9 +22,10 @@
  *                                  plus the object context menu and cursor→ray helpers.
  *   - vulkanwindow_camera.cpp      named views, the Blender-convention view hotkeys, projection.
  *   - vulkanwindow_ik.cpp          the full-body-IK drag loop (the 60 Hz tick, the release settle,
- *                                  wheel depth), the animated ground fall, the X/Y/Z wheel hold.
+ *                                  wheel depth), the animated ground fall.
  *   - vulkanwindow_pose.cpp        pose edits as undo entries: commit, utilities, pins, save/load,
- *                                  delete, the unified undo/redo stack.
+ *                                  delete, the Transform tab's dials and the joint mouse mode
+ *                                  (B / S / T), the unified undo/redo stack.
  *   - vulkanwindow_bench.cpp       the POSESTUDIO_IK_PERF / POSESTUDIO_IK_BENCH diagnostics.
  * The private declarations below follow the same order.
  *
@@ -43,6 +44,7 @@
 
 #include "scene/camera.h"           // AxisView (the view hotkeys), Ray
 #include "scene/ik/cursorfilter.h"  // IkCursorFilter (the drag target low-pass)
+#include "scene/jointtransform.h"   // JointTransform (the Transform tab's view of the selected joint)
 #include "scene/lightingsettings.h" // stored by value; applied to the renderer once it exists
 #include "scene/shademode.h"        // kDefaultShadeMode
 #include "viewpreset.h"
@@ -125,6 +127,40 @@ public:
     void mirrorPose();
     void mirrorSelectedLimb();
 
+    /// THE TRANSFORM TAB's side of the selected joint (Armature::jointDial): its name and its
+    /// three dials — Bend Forward, Bend Sideways, Twist — as the pose stands. Invalid without a
+    /// renderer, a posable figure or a selected joint. jointTransformChanged says when to re-read.
+    JointTransform jointTransform() const;
+    /// A dial edit, as ONE undoable pose edit however many values it passes through (a scrub):
+    /// begin — refused (false) while a button-held drag owns the pose; every self-completing edit
+    /// is closed first and the pose snapshotted — then any number of setJointTransformDial, then
+    /// end (the settled-pose hook and the undo entry; a no-op when nothing changed). A set without
+    /// a begin opens the bracket itself; any other pose edit closes an open one (closeSettlingEdits),
+    /// after which the panel's own end is a no-op.
+    bool beginJointTransformEdit();
+    /// Turns dial @p dial (0/1/2 = Bend Forward / Bend Sideways / Twist) of the selected joint to
+    /// @p value on its 0-100 scale: an FK rotation through the limits and the collision stop, so
+    /// the pose may rest short of the value — re-read jointTransform().
+    void setJointTransformDial(int dial, double value);
+    void endJointTransformEdit();
+
+    /// THE JOINT MOUSE MODE, as the rest of the application drives it (the mode itself is
+    /// described with its members below). toggleJointModal is the B / S / T key (@p kind 0/1/2 =
+    /// Bend / Side-Side / Twist, a JointDialKind) WHEREVER THE KEYBOARD FOCUS IS — the Edit menu's
+    /// actions carry the keys application-wide: it turns the mode on for that dial of the
+    /// selected joint, off again if it is the running one, or switches to it; true if the mode
+    /// is on afterwards. moveJointModalTo is a mouse move that arrived at another window of the
+    /// application (JointModalInput), in GLOBAL coordinates; confirm keeps the result (one undo
+    /// entry), cancel puts the joint back as it was. All no-ops with the mode off.
+    bool toggleJointModal(int kind);
+    void moveJointModalTo(const QPointF& globalPos);
+    void confirmJointModal();
+    void cancelJointModal();
+    /// The dial the mouse is turning (a JointDialKind), or -1 with the mode off.
+    int jointModal() const { return m_modalKind; }
+    /// A scripted test owns the input (POSESTUDIO_IK_SCRIPT): real input is ignored meanwhile.
+    bool scriptRunning() const { return m_script != nullptr; }
+
     /// Toggles the skeleton overlay (the joint→parent bone lines drawn over the figure). Off by
     /// default — joints are grabbed directly on the figure — but they stay grabbable either way.
     /// Remembered and applied once the renderer exists if it isn't built yet.
@@ -181,10 +217,22 @@ signals:
     /// Emitted whenever the camera enters or leaves a named view (an axis view, Home, a flip, or
     /// an orbit drag away from one) — the View picker's button follows it.
     void viewPresetChanged(ViewPreset view);
-    /// Emitted when an axis-rotate key hold begins (@p axis 0/1/2 = X/Y/Z: while held, the mouse
-    /// wheel rotates the selected joint about that channel) and when it ends (-1). The viewport
-    /// strip shows an axis badge for the duration.
-    void axisRotateKeyChanged(int axis);
+    /// Emitted when the joint mouse mode turns on (@p kind 0/1/2 = Bend / Side-Side / Twist, a
+    /// JointDialKind: moving the mouse turns that dial of the selected joint) and when it ends
+    /// (-1). The viewport strip shows a badge for the duration.
+    void jointModalChanged(int kind);
+    /// Emitted when what jointTransform() returns has changed — another joint (or none) selected,
+    /// or the selected joint's pose moved by ANY means: a drag, the mouse mode, undo, a pose load,
+    /// a reset, a dial. The Transform tab re-reads on it.
+    void jointTransformChanged();
+    /// The scripted test's `uishot`: a picture of the application's WIDGETS (the side tabs — the
+    /// native viewport is not in it) is wanted at @p path. ViewportWidget takes it.
+    void uiShotRequested(const QString& path);
+    /// The scripted test's `app`: input as it arrives at the APPLICATION with the viewport not
+    /// focused — @p what is b / s / t (the Edit menu's action with that shortcut), esc / enter
+    /// (a key to the main window), click / rclick (a press and release there) or move (@p delta
+    /// pixels in @p steps mouse moves there). ViewportWidget makes the events.
+    void appInputRequested(const QString& what, const QPointF& delta, int steps);
 
 protected:
     void exposeEvent(QExposeEvent* event) override;
@@ -196,7 +244,6 @@ protected:
     void mouseMoveEvent(QMouseEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
-    void keyReleaseEvent(QKeyEvent* event) override;
     void focusOutEvent(QFocusEvent* event) override;
 
 private:
@@ -211,7 +258,7 @@ private:
     /// off the startup environment bake, and drains the import queue.
     void initializeVulkan();
     /// Tears down renderer + context (the surface stays valid) and resets every interaction
-    /// state machine — a drag, settle, fall, or axis hold dies with the figure it acted on.
+    /// state machine — a drag, settle, fall, or joint mouse mode dies with the figure it acted on.
     /// Idempotent.
     void releaseVulkan();
     /// The ONE device-loss path (init, the environment upload, a frame): releases the Vulkan
@@ -227,6 +274,11 @@ private:
     void syncRendererExtent();
     /// The renderer's scene — every posing/selection call goes through it. Requires m_renderer.
     Scene& scene() const;
+    /// Emits jointTransformChanged if the selected joint's transform differs from the one last
+    /// announced. Called once per rendered frame: rendering is event-driven and EVERY pose or
+    /// selection change requests a frame, so the frame is the one place that sees them all —
+    /// no gesture has to remember the Transform tab.
+    void notifyJointTransform();
 
     /// An import requested before the renderer existed, replayed in request order once it does
     /// (command-line "open with" hands several in a row — the order must survive).
@@ -340,7 +392,7 @@ private:
     ViewPreset m_viewPreset = ViewPreset::Home; // the camera starts at its default framing
 
     // =========================================================================================
-    // Full-body IK drag, ground fall, axis hold (vulkanwindow_ik.cpp)
+    // Full-body IK drag, ground fall (vulkanwindow_ik.cpp)
     // =========================================================================================
 
     /// Wheel during a full-body-IK drag: how far the drag plane moves along the view direction
@@ -452,20 +504,6 @@ private:
     };
     GroundFall m_fall;
 
-    // Hold-and-scroll joint rotation: while X, Y, or Z is held with a joint selected, the mouse
-    // wheel rotates that joint about the matching Euler channel (its own oriented frame, limits
-    // enforced) instead of zooming. One hold = one undo entry (the pose is snapshotted at the
-    // press, the settled-pose hook + the commit run at the release); a focus loss, a mouse
-    // press, undo/redo, or any other pose edit ends the hold too. DURING an IK drag the hold
-    // works as well — the grabbed joint's own rotation is the user's, the IK places it and
-    // leaves its orientation alone (Armature::holdNudgedBoneThroughDrag) — but then it is part
-    // of the drag's edit: no snapshot of its own, no commit at the release (the drag's settle
-    // commits), and the drag's mouse-up ends the hold with it.
-    void beginAxisRotate(int axis);
-    void endAxisRotate();
-    int  m_axisRotateKey = -1; // 0/1/2 while X/Y/Z is held, else -1
-    bool m_axisRotateInDrag = false; // the hold began inside an IK drag (see above)
-
     // =========================================================================================
     // Pose edits and undo (vulkanwindow_pose.cpp)
     // =========================================================================================
@@ -475,14 +513,14 @@ private:
     /// is REFUSED until its release. An IK drag in particular solves against pins captured at
     /// drag start, and re-posing underneath it would leave the solve fighting a stale stance.
     bool dragInFlight() const { return m_ik.dragging; }
-    /// Any pose edit in flight: a held drag, the animated release settle, or an X/Y/Z wheel hold.
-    /// The self-completing ones can be closed early by closeOpenPoseEdits().
-    bool poseEditInFlight() const {
-        return dragInFlight() || m_ik.settling || m_axisRotateKey >= 0;
-    }
+    /// Any pose edit in flight: a held drag, the animated release settle, or an open dial edit
+    /// (the Transform tab's, or the joint mouse mode's). The self-completing ones can be closed
+    /// early by closeOpenPoseEdits().
+    bool poseEditInFlight() const { return dragInFlight() || m_ik.settling || m_transformEdit; }
     /// Lands / closes every edit that completes on its own — the release settle, the ground
-    /// fall, an X/Y/Z hold — so the caller acts on a settled pose (each one commits its own undo
-    /// entry). Leaves a live button-held drag alone.
+    /// fall, an open dial edit (the Transform tab's or the joint mouse mode's, which is KEPT) —
+    /// so the caller acts on a settled pose (each one commits its own undo entry). Leaves a live
+    /// button-held drag alone.
     void closeSettlingEdits();
     /// closeSettlingEdits() plus the button-held drags: a STALE IK drag (its release never
     /// reached this window) is aborted, an FK drag ended. Every discrete pose edit (undo/redo,
@@ -527,6 +565,40 @@ private:
     PoseSnapshot           m_preEditPose;
     std::vector<UndoEntry> m_undoStack;
     std::vector<UndoEntry> m_redoStack;
+
+    // The Transform tab's dial edit (beginJointTransformEdit .. endJointTransformEdit): open while
+    // true, its pre-edit pose in m_preEditPose like every bracketed edit's. And the joint
+    // transform last announced through jointTransformChanged (notifyJointTransform).
+    bool           m_transformEdit = false;
+    JointTransform m_announcedJointTransform;
+
+    // THE JOINT MOUSE MODE (Blender's modal transforms): with a joint selected, B / S / T turns
+    // on its Bend / Side-Side / Twist dial and MOVING THE MOUSE turns it — the limb goes the way
+    // the mouse goes (the dial's sweep projected to the screen: Armature::jointDialSweep), or,
+    // for a twist and for a bend that goes toward or away from the camera as the mode begins,
+    // right is more and left is less. A LEFT CLICK (or Enter) keeps the result: one undo entry. Esc, a
+    // RIGHT CLICK or the same key again puts the joint back as it was; another of the three keys
+    // drops the running mode and begins that one. It is an open dial edit (m_transformEdit) with
+    // the mouse as its scrub, so everything that closes one — a press elsewhere, undo, a pose
+    // utility, a lost focus — keeps the result like a click. Refused while a drag owns the pose.
+    // The keys and the mouse are the mode's WHEREVER they land in the application, not only over
+    // the viewport: the Edit menu's actions carry B / S / T (toggleJointModal), and while the mode
+    // is on JointModalInput hands this window the moves, clicks and Esc / Enter that arrive at
+    // the application's other windows.
+    /// B / S / T (@p kind a JointDialKind), with the cursor at @p cursor: toggles or switches the
+    /// mode as described above. True if the mode is on afterwards.
+    bool beginJointModal(int kind, const QPointF& cursor);
+    /// The cursor moved to @p cursor with the mode on: turns the dial by the move.
+    void jointModalMove(const QPointF& cursor);
+    /// Where the mode's dial swings its limb's far end on screen, as the pose stands: the unit
+    /// @p direction of a positive turn and the lever in pixels per radian. False with no swing
+    /// to read (the mode off, the point behind the camera, a limb that does not move).
+    bool jointModalSwing(QPointF& direction, double& leverPx) const;
+    int              m_modalKind = -1;               // the dial the mouse turns, or -1
+    QPointF          m_modalCursor;                  // the cursor at the last move
+    bool             m_modalFollow = false;          // the limb follows the mouse (else left-right turns the dial)
+    QPointF          m_modalDirection{1.0, 0.0};     // the screen direction of "more", as last read
+    Qt::MouseButtons m_modalSwallow = Qt::NoButton;  // presses the mode consumed: their releases are its too
 
     // =========================================================================================
     // Diagnostics (vulkanwindow_bench.cpp; see ikdiagnostics.h)

@@ -16,15 +16,15 @@ namespace pose {
 
 namespace {
 
-// Builds a bone's rest-orientation matrix from its Euler orientation (degrees), composed X·Y·Z — the
-// same frame the posing runtime rotates in (scene/ik/ikmath's eulerMatrix(orientation, "XYZ"), as
-// applied by the Armature). Since the bind transform is translation-only, this matrix's columns are
+// Builds a bone's rest-orientation matrix from its Euler orientation (degrees), applied in x, y, z
+// order (Rz·Ry·Rx) — the same frame the posing runtime rotates in (Armature::build has the check
+// that settled the order). Since the bind transform is translation-only, this matrix's columns are
 // the bone's three world-space rotation-channel axes (the axes its pose Euler angles rotate about).
 glm::mat3 orientationAxes(const glm::vec3& degrees) {
     const glm::mat4 m =
-        glm::rotate(glm::mat4(1.0f), glm::radians(degrees.x), glm::vec3(1.0f, 0.0f, 0.0f)) *
+        glm::rotate(glm::mat4(1.0f), glm::radians(degrees.z), glm::vec3(0.0f, 0.0f, 1.0f)) *
         glm::rotate(glm::mat4(1.0f), glm::radians(degrees.y), glm::vec3(0.0f, 1.0f, 0.0f)) *
-        glm::rotate(glm::mat4(1.0f), glm::radians(degrees.z), glm::vec3(0.0f, 0.0f, 1.0f));
+        glm::rotate(glm::mat4(1.0f), glm::radians(degrees.x), glm::vec3(1.0f, 0.0f, 0.0f));
     return glm::mat3(m);
 }
 

@@ -48,11 +48,24 @@ int VulkanWindow::boneAt(const QPointF& localPos) {
 }
 
 void VulkanWindow::mousePressEvent(QMouseEvent* event) {
+    // THE JOINT MOUSE MODE owns the mouse while it is on (B / S / T: beginJointModal): a left
+    // click keeps what it made, a right click puts the joint back — and neither is a press on
+    // the scene: no selection, no drag, no context menu (the matching release is the mode's too).
+    // Any other button does nothing until the mode is over.
+    if (m_modalKind >= 0) {
+        if (event->button() == Qt::LeftButton) {
+            confirmJointModal();
+        } else if (event->button() == Qt::RightButton) {
+            cancelJointModal();
+        }
+        m_modalSwallow |= event->button();
+        m_lastMousePos = event->position();
+        return;
+    }
     // A new interaction must not overlap a still-animating release settle, a figure still
-    // falling (a drag captures the floor at its start), or an X/Y/Z wheel hold (its pose
-    // snapshot would be overwritten below, and the wheel must mean DEPTH during an IK drag). A
-    // live button-held drag is left alone here: a right press while the left button drags is
-    // the context-menu-mid-drag case, handled by the menu's actions.
+    // falling (a drag captures the floor at its start), or an open dial edit (its pose snapshot
+    // would be overwritten below). A live button-held drag is left alone here: a right press
+    // while the left button drags is the context-menu-mid-drag case, handled by the menu's actions.
     closeSettlingEdits();
     m_lastMousePos = event->position();
     m_activeDragButtons |= event->button(); // a drag with this button started in the viewport
@@ -93,6 +106,10 @@ void VulkanWindow::selectModelAtClick(const QPointF& localPos) {
 }
 
 void VulkanWindow::mouseReleaseEvent(QMouseEvent* event) {
+    if (m_modalSwallow & event->button()) {
+        m_modalSwallow &= ~event->button(); // the click that ended the joint mouse mode: all of it
+        return;
+    }
     m_activeDragButtons &= ~event->button();
     if (event->button() == Qt::LeftButton) {
         if (dragInFlight() && m_renderer) {
@@ -189,6 +206,12 @@ void VulkanWindow::mouseMoveEvent(QMouseEvent* event) {
     }
     const QPointF delta = event->position() - m_lastMousePos;
     m_lastMousePos = event->position();
+    if (m_modalKind >= 0) {
+        // The joint mouse mode: every move turns the selected joint's dial, button or no button
+        // (a QWindow gets move events with none held). It requests its own frame when the pose moves.
+        jointModalMove(event->position());
+        return;
+    }
 
     // Only act on buttons that are BOTH held now AND were pressed inside this window. Using
     // event->buttons() alone would let a leaked move (e.g. as the modal Import dialog closes
@@ -232,24 +255,6 @@ void VulkanWindow::wheelEvent(QWheelEvent* event) {
         return;
     }
     const float steps = static_cast<float>(event->angleDelta().y()) / 120.0f;
-    if (m_axisRotateKey >= 0) {
-        // X/Y/Z held: the wheel rotates the selected joint about that channel, a fixed angle
-        // per notch (trackpads deliver fractional notches and get proportionally finer steps).
-        // Limits clamp inside nudgeSelectedBone; correctives follow live on the GPU, the
-        // settled-pose hook runs at the key release.
-        constexpr float kDegreesPerWheelNotch = 5.0f;
-        glm::vec3 delta(0.0f);
-        delta[m_axisRotateKey] = steps * kDegreesPerWheelNotch;
-        scene().nudgeSelectedBone(delta);
-        if (m_ik.dragging) {
-            // Inside an IK drag the rotation is part of the drag's edit: the release must settle
-            // and commit it even if the cursor never moved (a press + wheel + release is not a
-            // click, and abortIkDrag would drop the entry).
-            m_ik.poseChanged = true;
-        }
-        requestUpdate();
-        return;
-    }
     if (m_ik.dragging && (m_activeDragButtons & event->buttons() & Qt::LeftButton)) {
         // DEPTH during a full-body-IK drag. The cursor only ever places the grabbed joint within
         // the camera-parallel drag plane, so without this every "bring the hand forward" needed a
@@ -270,24 +275,14 @@ void VulkanWindow::wheelEvent(QWheelEvent* event) {
     requestUpdate();
 }
 
-void VulkanWindow::keyReleaseEvent(QKeyEvent* event) {
-    if (!event->isAutoRepeat() && m_axisRotateKey >= 0 &&
-        ((event->key() == Qt::Key_X && m_axisRotateKey == 0) ||
-         (event->key() == Qt::Key_Y && m_axisRotateKey == 1) ||
-         (event->key() == Qt::Key_Z && m_axisRotateKey == 2))) {
-        endAxisRotate();
-        event->accept();
-        return;
-    }
-    QWindow::keyReleaseEvent(event);
-}
-
 void VulkanWindow::focusOutEvent(QFocusEvent* event) {
-    // The releases will never reach us: don't leave the wheel in rotate mode, and don't leave
-    // the button mask set (it would keep blocking the view hotkeys). A live IK drag is left to the
-    // stale close-out at the next press: its timer keeps re-issuing the last target, which is
-    // harmless, and the mouse-up may still arrive.
-    endAxisRotate();
+    // The clicks and releases will never reach us: don't leave the joint mouse mode on (what it
+    // made is kept, as a click would keep it — nothing springs back behind the user's back), and
+    // don't leave the button mask set (it would keep blocking the view hotkeys). A live IK drag is
+    // left to the stale close-out at the next press: its timer keeps re-issuing the last target,
+    // which is harmless, and the mouse-up may still arrive.
+    confirmJointModal();
+    m_modalSwallow = Qt::NoButton;
     m_activeDragButtons = Qt::NoButton;
     m_leftClickCandidate = false;
     QWindow::focusOutEvent(event);
@@ -309,21 +304,30 @@ void VulkanWindow::keyPressEvent(QKeyEvent* event) {
             return;
         }
     }
-    // X / Y / Z held with a joint selected: the mouse wheel rotates that joint about the channel
-    // for as long as the key is down (see beginAxisRotate); the strip shows the axis badge. The
-    // key's auto-repeats are swallowed so a long hold doesn't re-open the edit; no modifiers
-    // (Ctrl+Z is undo, and Ctrl+X/Y/Z stay free). Allowed DURING an IK drag — the wheel then
-    // rotates the grabbed joint while the IK places it (the drag's edit absorbs it, see
-    // beginAxisRotate); refused while a Ctrl FK drag owns the pose; a settle or fall still
-    // animating is landed first.
+    // THE JOINT MOUSE MODE (see beginJointModal): B / S / T with a joint selected turns on its
+    // Bend / Side-Side / Twist dial — moving the mouse then turns it, a left click (or Enter)
+    // keeps the result, Esc, a right click or the same key again puts the joint back; the strip
+    // shows the mode's badge. The Edit menu's actions carry these keys APPLICATION-WIDE (they
+    // must work whichever panel has the focus); this is the in-viewport fallback, like Ctrl+Z
+    // and the view keys, for a key the shortcut map did not take. No modifiers (Ctrl+S and the
+    // like stay free), and the key's auto-repeats are swallowed: a key held a moment too long
+    // must not toggle the mode off again. Refused while a drag owns the pose; a settle or fall
+    // still animating is landed first.
     if (m_renderer && event->modifiers() == Qt::NoModifier &&
-        (event->key() == Qt::Key_X || event->key() == Qt::Key_Y || event->key() == Qt::Key_Z)) {
-        const int axis = event->key() == Qt::Key_X ? 0 : event->key() == Qt::Key_Y ? 1 : 2;
-        if (!event->isAutoRepeat() && m_axisRotateKey != axis &&
-            scene().hasSelectedBone()) {
-            closeSettlingEdits(); // ends a hold on another axis as its own undo step
-            beginAxisRotate(axis);
+        (event->key() == Qt::Key_B || event->key() == Qt::Key_S || event->key() == Qt::Key_T)) {
+        if (!event->isAutoRepeat()) {
+            toggleJointModal(event->key() == Qt::Key_B ? 0 : event->key() == Qt::Key_S ? 1 : 2);
         }
+        event->accept();
+        return;
+    }
+    if (m_modalKind >= 0 && event->key() == Qt::Key_Escape) {
+        cancelJointModal();
+        event->accept();
+        return;
+    }
+    if (m_modalKind >= 0 && (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)) {
+        confirmJointModal();
         event->accept();
         return;
     }

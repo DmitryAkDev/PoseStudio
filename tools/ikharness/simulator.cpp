@@ -371,7 +371,7 @@ RunResult runScenario(const std::vector<ArmatureBone>& baseBones, const Scenario
             const int idx = resolveBone(arm, name);
             return idx >= 0 && arm.mirrorBone(static_cast<std::size_t>(idx)) == idx;
         };
-        bool symmetric = centreBone(sc.grab) && sc.cursorNoise == 0.0f && sc.nudges.empty();
+        bool symmetric = centreBone(sc.grab) && sc.cursorNoise == 0.0f;
         for (const Waypoint& w : sc.path) {
             symmetric = symmetric && std::abs(w.offset.x) < 1.0e-6f;
         }
@@ -619,11 +619,6 @@ RunResult runScenario(const std::vector<ArmatureBone>& baseBones, const Scenario
             raw += glm::vec3(noise(rng), noise(rng), noise(rng)) * sc.cursorNoise;
         }
         PhaseStats& ph = r.phases[seg];
-        for (const auto& [nudgeTick, delta] : sc.nudges) {
-            if (nudgeTick == tick) {
-                arm.nudgeSelectedBone(delta); // the X/Y/Z wheel mid-drag (the window's path)
-            }
-        }
         const bool moved = arm.dragIkTo(filter.update(raw));
         ++ph.ticks;
         ++r.dragTicks;
@@ -1174,11 +1169,6 @@ IdleMetrics runIdleMetrics(const std::vector<ArmatureBone>& baseBones, const Sce
         }
         if (sc.cursorNoise > 0.0f) {
             raw += glm::vec3(noise(rng), noise(rng), noise(rng)) * sc.cursorNoise;
-        }
-        for (const auto& [nudgeTick, delta] : sc.nudges) {
-            if (nudgeTick == tick) {
-                arm.nudgeSelectedBone(delta); // mirror the main pass's wheel nudges
-            }
         }
         arm.dragIkTo(filter.update(raw));
         for (std::size_t k = 0; k < idle.size(); ++k) {

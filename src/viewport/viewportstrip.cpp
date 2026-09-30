@@ -12,7 +12,7 @@
 
 #include "viewportstrip.h"
 
-#include "axisrotatebadge.h"
+#include "jointmodebadge.h"
 #include "menupickerbutton.h"
 #include "scene/shademode.h"
 
@@ -196,14 +196,14 @@ ViewportStrip::ViewportStrip(QWidget* owner)
     connect(m_skeletonButton, &QPushButton::toggled, this, &ViewportStrip::skeletonToggled);
     row->addWidget(m_skeletonButton);
 
-    // The axis-rotate badge, under the strip's right end (below the Skeleton button): visible
-    // only while X/Y/Z is held with a joint selected (setAxisBadge).
-    m_axisBadge = new AxisRotateBadge(this, fieldHeight);
-    m_axisBadge->hide();
+    // The joint-mode badge, under the strip's right end (below the Skeleton button): visible
+    // only while the joint mouse mode is on (B / S / T with a joint selected: setJointModeBadge).
+    m_modeBadge = new JointModeBadge(this, fieldHeight);
+    m_modeBadge->hide();
     auto* badgeRow = new QHBoxLayout();
     badgeRow->setContentsMargins(0, 0, 0, 0);
     badgeRow->addStretch(1);
-    badgeRow->addWidget(m_axisBadge);
+    badgeRow->addWidget(m_modeBadge);
     column->addLayout(badgeRow);
 
     adjustSize();
@@ -239,10 +239,13 @@ void ViewportStrip::setSkeletonChecked(bool on) {
     m_skeletonButton->blockSignals(false);
 }
 
-void ViewportStrip::setAxisBadge(int axis) {
-    m_axisBadge->setAxis(axis);
-    m_axisBadge->setVisible(axis >= 0);
-    anchorTo(m_anchor); // the strip grew or shrank by a row
+void ViewportStrip::setJointModeBadge(int kind) {
+    const bool was = m_modeBadge->isVisibleTo(this);
+    m_modeBadge->setMode(kind);
+    m_modeBadge->setVisible(kind >= 0);
+    if (was != (kind >= 0)) {
+        anchorTo(m_anchor); // the strip grew or shrank by a row
+    }
 }
 
 } // namespace pose

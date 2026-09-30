@@ -198,6 +198,10 @@ add_executable(
     src/properties/environmentpanel.h
     src/properties/hdriselector.cpp      # the HDRI picker (button + thumbnail menu) the panel hosts
     src/properties/hdriselector.h
+    src/properties/transformpanel.cpp    # the Transform tab: the selected joint's three rotation dials
+    src/properties/transformpanel.h
+    src/properties/propertyrows.cpp      # the row builders every properties tab shares (group, restore button)
+    src/properties/propertyrows.h
 
     # --- 3D Viewport (Vulkan) ---
     # Qt-facing layer (the only viewport files that touch Qt):
@@ -205,8 +209,10 @@ add_executable(
     src/viewport/viewportwidget.h
     src/viewport/viewportstrip.cpp        # the floating top-right control strip (pickers, buttons, badge)
     src/viewport/viewportstrip.h
-    src/viewport/axisrotatebadge.cpp      # the strip's "rotating about X/Y/Z" badge
-    src/viewport/axisrotatebadge.h
+    src/viewport/jointmodebadge.cpp       # the strip's "the mouse is turning Bend / Side-Side / Twist" badge
+    src/viewport/jointmodebadge.h
+    src/viewport/jointmodalinput.cpp      # the joint mouse mode's input wherever in the app it lands
+    src/viewport/jointmodalinput.h
     src/viewport/vulkanwindow.cpp         # VulkanWindow lifecycle (one class, seven TUs - see vulkanwindow.h)
     src/viewport/vulkanwindow.h
     src/viewport/vulkanwindow_environment.cpp # the HDRI: default path, off-thread IBL bake, lighting dials
@@ -356,6 +362,8 @@ add_executable(
     src/viewport/scene/armatureikdigit.cpp  # the bone classes (body / face rig / digit) and the digit drag
     src/viewport/scene/armaturelanding.cpp  # the landing bounce: a figure dropped onto her feet absorbs the landing
     src/viewport/scene/armatureikfigure.cpp # the figure move: Ctrl + the body itself moves the figure as she is posed
+    src/viewport/scene/armaturedials.cpp    # the transform dials: a joint's rotation as Bend Forward / Bend Sideways / Twist, 0-100
+    src/viewport/scene/jointtransform.h     # ... and what the Transform tab shows of them (plain data)
     src/viewport/scene/shadowpass.cpp    # the key light's depth-only pass: map, pipeline, frustum fit
     src/viewport/scene/shadowpass.h
     src/viewport/scene/outlinepass.cpp   # the selection-outline mask pass
@@ -584,6 +592,7 @@ add_executable(PoseStudioIkHarness
     src/viewport/scene/armatureikdigit.cpp
     src/viewport/scene/armaturelanding.cpp
     src/viewport/scene/armatureikfigure.cpp
+    src/viewport/scene/armaturedials.cpp
     src/viewport/scene/ik/ikmath.cpp
     src/viewport/scene/ik/skeletongraph.cpp
     src/viewport/scene/ik/bonealiases.cpp

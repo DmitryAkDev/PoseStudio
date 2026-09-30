@@ -1,32 +1,49 @@
 /**
  * @file _environment.qss
- * @brief The Environment properties tab (src/properties/environmentpanel.* and hdriselector.*).
+ * @brief The properties tabs: Environment (src/properties/environmentpanel.* and hdriselector.*)
+ *        and Transform (src/properties/transformpanel.*).
  *
  * Concatenated after global.qss (shell/apptheme.cpp), so these rules override the base.
- * Everything is scoped under #EnvironmentPanel or the tab's own object names so it can't leak
- * into other widgets. Palette matches the app: pane #252627, inputs #2a2b2d, borders
+ * Everything is scoped under #EnvironmentPanel / #TransformPanel or the tabs' own object names so
+ * it can't leak into other widgets; what the tabs share — the section frames, the per-row restore
+ * button, the quiet reset button (built by src/properties/propertyrows.*) — is styled ONCE, under
+ * the #Property… names. Palette matches the app: pane #252627, inputs #2a2b2d, borders
  * #3a3b3d/#4a4b4d, accent #5b87cc, hover #314D7A, text #e0e0e0.
  */
 
 #EnvironmentPanel,
-#EnvironmentContent {
+#EnvironmentContent,
+#TransformPanel,
+#TransformContent {
     background-color: #252627; /* same as the QTabWidget::pane the tab sits in */
 }
 
-#EnvironmentPanel QScrollArea {
+#EnvironmentPanel QScrollArea,
+#TransformPanel QScrollArea {
     background: transparent;
     border: none;
 }
 
 /* Row labels: the global QLabel rule is white/18px — far too big here. Reset to the app's body size. */
-#EnvironmentPanel QLabel {
+#EnvironmentPanel QLabel,
+#TransformPanel QLabel {
     color: #c7c8cb;
     font-size: 12px;
     padding: 0;
 }
+/* A row whose dial the selected joint does not have (or no joint selected): the label dims with it. */
+#TransformPanel QLabel:disabled { color: #6f7073; }
+
+/* The Transform tab's heading (the selected joint's name) and its hint line under the rows. */
+#TransformPanel #TransformJointName {
+    color: #e0e0e0;
+    font-size: 13px;
+    font-weight: bold;
+}
+#TransformPanel #TransformHint { color: #8b9096; }
 
 /* Section frames. */
-#EnvironmentGroup {
+#PropertyGroup {
     border: 1px solid #3a3b3d;
     border-radius: 5px;
     margin-top: 14px;       /* room for the title sitting on the top border */
@@ -34,7 +51,7 @@
     font-size: 12px;
     color: #cfcfd2;
 }
-#EnvironmentGroup::title {
+#PropertyGroup::title {
     subcontrol-origin: margin;
     subcontrol-position: top left;
     left: 8px;
@@ -115,14 +132,14 @@
 
 /* Per-row restore-default button (the small icon right of each DragNumberBox): quiet until
  * hovered, then the app-wide menu-hover blue. */
-#EnvironmentRowRestore {
+#PropertyRowRestore {
     border: none;
     background: transparent;
     padding: 2px;
     border-radius: 3px;
 }
-#EnvironmentRowRestore:hover   { background-color: #314D7A; }
-#EnvironmentRowRestore:pressed { background-color: #2f3f5c; }
+#PropertyRowRestore:hover   { background-color: #314D7A; }
+#PropertyRowRestore:pressed { background-color: #2f3f5c; }
 
 /* The toggles (tonemap, shadows): the label matches the row labels; the indicator itself is the
  * app-wide QCheckBox::indicator rule in global.qss. */
@@ -133,14 +150,18 @@
 }
 
 /* Reset button: quiet, secondary. */
-#EnvironmentResetButton {
+#PropertyResetButton {
     background-color: #2a2b2d;
     color: #d0d0d3;
     border: 1px solid #4a4b4d;
     border-radius: 4px;
     padding: 5px 12px;
 }
-#EnvironmentResetButton:hover {
+#PropertyResetButton:hover {
     background-color: #314D7A;
     color: #ffffff;
+}
+#PropertyResetButton:disabled {
+    color: #6f7073;
+    border-color: #3a3b3d;
 }

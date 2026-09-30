@@ -28,7 +28,7 @@ class QPushButton;
 
 namespace pose {
 
-class AxisRotateBadge;
+class JointModeBadge;
 class MenuPickerButton;
 
 /**
@@ -50,9 +50,9 @@ public slots:
     void setViewPreset(ViewPreset view);
     /// Mirrors the skeleton overlay's state in the Skeleton button (no signal back).
     void setSkeletonChecked(bool on);
-    /// Shows the axis badge for @p axis (0/1/2 = X/Y/Z) or hides it (-1), re-anchoring the
-    /// strip as its row appears/disappears.
-    void setAxisBadge(int axis);
+    /// Shows the joint-mode badge for @p kind (0/1/2 = Bend / Side-Side / Twist: the dial the
+    /// mouse is turning) or hides it (-1), re-anchoring the strip as its row appears/disappears.
+    void setJointModeBadge(int kind);
 
 signals:
     /// The user picked a shading mode: a row of scene/shademode.h's table.
@@ -70,7 +70,7 @@ private:
     QPushButton*      m_homeButton = nullptr;    // resets the camera to default framing
     QPushButton*      m_groundButton = nullptr;  // drops the figure onto the floor plane
     QPushButton*      m_skeletonButton = nullptr; // toggles the skeleton overlay (checkable)
-    AxisRotateBadge*  m_axisBadge = nullptr;     // "rotating about X/Y/Z", under the buttons
+    JointModeBadge*   m_modeBadge = nullptr;     // "the mouse is turning Bend / Side-Side / Twist", under the buttons
     const QWidget*    m_anchor = nullptr;        // the container anchorTo() last glued us to
 };
 

@@ -6,6 +6,9 @@
  * parameters (the DCC-app convention — Blender/Substance-style):
  *  - Background: a left-to-right fill proportional to (value - min) / (max - min),
  *    so the box doubles as a progress-bar readout of where the value sits in range.
+ *    A box given an ORIGIN inside its range (setOrigin: a dial whose rest value is 0
+ *    between a negative and a positive limit) fills from the origin to the value
+ *    instead — empty at rest, growing either way — with a hairline marking the origin.
  *  - Foreground: the current value, centered.
  *  - Press + horizontal drag scrubs the value (a full-width sweep covers the whole
  *    range). The cursor shows a left-right arrow whenever it hovers the box, so the
@@ -59,6 +62,12 @@ public:
     void setSingleStep(double step);
     /// Fractional digits shown in the label and the type-in editor.
     void setDecimals(int decimals);
+    /// The value the FILL starts from and the scrub's step grid is anchored at — the minimum
+    /// until one is set. For a range that runs both ways from a rest value (a dial from -7 to
+    /// 100 about 0): the bar is empty at the origin and fills toward the value on either side,
+    /// and a scrub lands on origin + n * step, so the origin itself is always reachable (anchored
+    /// at a fractional minimum the grid would step over it).
+    void setOrigin(double origin);
 
     double value() const { return m_value; }
     double minimum() const { return m_min; }
@@ -94,6 +103,7 @@ protected:
     void leaveEvent(QEvent* event) override;
     void hideEvent(QHideEvent* event) override;
     void focusOutEvent(QFocusEvent* event) override;
+    void changeEvent(QEvent* event) override;
     bool event(QEvent* event) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
 
@@ -109,6 +119,8 @@ private:
     double m_step = 0.01;
     int    m_decimals = 2;
     double m_value = 0.0;
+    bool   m_hasOrigin = false; // see setOrigin: until set, the fill and the step grid start at m_min
+    double m_origin = 0.0;
 
     // Scrub state. The drag is anchored: value = pressValue + (dx / width) * range, so
     // overshooting a bound and dragging back retraces symmetrically.

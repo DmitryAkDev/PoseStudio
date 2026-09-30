@@ -351,7 +351,7 @@ void CorrectiveSet::uploadIfDirty(uint32_t frameIndex, const Armature& armature)
         return;
     }
     // The pose moved since the weights were last evaluated (any posing path — a drag tick, a
-    // wheel nudge, an IK settle, a pose load — bumps the armature's skin version).
+    // dial turn, an IK settle, a pose load — bumps the armature's skin version).
     if (m_evalSkinVersion != armature.skinVersion()) {
         evaluateWeights(armature);
         m_evalSkinVersion = armature.skinVersion();

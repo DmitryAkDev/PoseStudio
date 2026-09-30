@@ -23,7 +23,7 @@ PoseStudio renders with Vulkan, which needs a graphics driver that provides it. 
 - **Skin looks like wet plastic** in the PBR mode: lower **Specular** under Image-Based Lighting, or try a less glossy environment. Most skin materials render as intended; the remaining cases are content whose maps were authored for another renderer.
 - **The figure is dark**: raise **Exposure**, or switch the HDRI — some panoramas are much dimmer than others.
 - **A black or missing texture**: the texture file the material refers to is not where the preset expects it. PoseStudio skips textures it cannot decode and uses the material's colour.
-- **The figure floats or sinks**: press the **Ground** button. Figures import on the floor; loading a pose file, rotating joints with the `X`/`Y`/`Z` wheel, or lifting her with Ctrl + drag can leave her off it.
+- **The figure floats or sinks**: press the **Ground** button. Figures import on the floor; loading a pose file, turning joints with `B` / `S` / `T` or the Transform tab, or lifting her with Ctrl + drag can leave her off it.
 
 ## Posing does not do what I expect
 
@@ -32,7 +32,7 @@ PoseStudio renders with Vulkan, which needs a graphics driver that provides it. 
 - **The hand stops short of the cursor**: the arm is at full reach and the body has leaned as far as its balance allows. Take the hips along, or let a foot step first (drag the hips or the chest).
 - **She will not go lower / will not stand up**: a kneeling body is stopped by its thighs over the planted knees — drag the hips *back* to sit onto the heels. To get up from a kneel or a sit, drag the hips or the chest *up*.
 - **A pinned joint holds a drag back**: unpin it (`P`, or *Unpin All Joints* in the context menu). Orange markers show the pins.
-- **Delete, P, X/Y/Z do nothing**: the viewport needs keyboard focus — click in it first.
+- **Delete or P does nothing**: the viewport needs keyboard focus — click in it first.
 - **Undo is empty after deleting an object**: deleting clears the whole undo history.
 
 ## Assets do not appear

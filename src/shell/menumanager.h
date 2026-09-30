@@ -68,6 +68,9 @@ private:
     AssetManagerWidget *assetManagerWidget = nullptr;
     pose::ViewportWidget *viewportWidget = nullptr;
     QAction *m_showSkeletonAction = nullptr; // View → Show Skeleton; wired in setViewportWidget
+    // Edit → Turn Joint with Mouse → Bend / Side-Side / Twist (B / S / T); wired and kept
+    // enabled-with-the-selection in setViewportWidget.
+    QAction *m_turnJointActions[3] = {nullptr, nullptr, nullptr};
 };
 
 #endif // MENUMANAGER_H

@@ -20,6 +20,7 @@
 
 #include "scene/camera.h" // AxisView (the View menu's camera entries)
 
+#include <QPointF>
 #include <QStringList>
 #include <QWidget>
 
@@ -35,6 +36,8 @@ namespace pose {
 
 class ViewportStrip;
 class VulkanWindow;
+struct JointTransform;
+class JointModalInput;
 struct LightingSettings;
 
 /**
@@ -80,6 +83,21 @@ public:
     void resetPose();
     void mirrorPose();
     void mirrorSelectedLimb();
+
+    /// The Transform tab's view of the selected joint — its name and its three dials (Bend
+    /// Forward, Bend Sideways, Twist: see VulkanWindow::jointTransform) — and the dial edit, one
+    /// undo entry per begin..end however many values are set between. Invalid / no-ops if the
+    /// viewport degraded; begin is false while a viewport drag owns the pose.
+    JointTransform jointTransform() const;
+    bool beginJointTransformEdit();
+    void setJointTransformDial(int dial, double value);
+    void endJointTransformEdit();
+    /// The B / S / T key, wherever the keyboard focus is (the Edit menu's actions carry the keys
+    /// application-wide): the joint mouse mode on dial @p kind (0/1/2 = Bend / Side-Side /
+    /// Twist) of the selected joint — on, off again, or switched to it
+    /// (VulkanWindow::toggleJointModal). While it is on, the mouse and Esc / Enter are the
+    /// mode's anywhere in the application (JointModalInput).
+    void toggleJointModal(int kind);
 
     /// Returns the camera to the default perspective framing (the strip's Home button, the 5
     /// key). No-op if the viewport degraded.
@@ -132,6 +150,10 @@ signals:
     /// button or the View menu), so the two controls stay in sync. The renderer state is already
     /// updated by the time this fires.
     void skeletonVisibilityChanged(bool visible);
+    /// Re-emitted from the viewport when the selected joint's transform changed — another joint
+    /// selected, or its pose moved by any means (VulkanWindow::jointTransformChanged). The
+    /// Transform tab re-reads jointTransform() on it.
+    void jointTransformChanged();
 
 protected:
     // The control strip is a *top-level* window floating over the native viewport (a child widget
@@ -158,6 +180,8 @@ private:
 
     std::unique_ptr<QVulkanInstance> m_instance;               // owns the VkInstance
     VulkanWindow*                    m_window = nullptr;        // owned by m_container
+    JointModalInput*                 m_modalInput = nullptr;    // the joint mouse mode's app-wide input (a child)
+    QPointF                          m_scriptCursor;            // the scripted test's `app` cursor, global
     QWidget*                         m_container = nullptr;     // the createWindowContainer wrapper
     ViewportStrip*                   m_strip = nullptr;         // the floating top-right control strip
     QWidget*                         m_filteredWindow = nullptr; // top-level we filter for move/resize

@@ -44,13 +44,14 @@ A row of controls floats in the viewport's top-right corner:
 | **Ground** | Drops the active figure so its lowest point rests on the floor; landing on her feet, she absorbs the drop with her knees. See [Posing](posing.md#the-ground-button). |
 | **Skeleton** | Toggles the bone overlay. Joints can be grabbed with it on or off. |
 
-While you hold `X`, `Y` or `Z` with a joint selected, a small badge appears under the strip showing the axis the mouse wheel will rotate the joint about.
+While the mouse is turning a joint (`B`, `S` or `T` with a joint selected: see [Posing](posing.md#turning-a-joint-with-the-mouse-b-s-t)), a small badge under the strip names the motion: Bend, Side-Side or Twist.
 
 ## The side panel
 
-The two tabs sit on the panel's left edge.
+The three tabs sit on the panel's left edge.
 
 - **Asset Manager** — a tree of your asset libraries, Favorites and Collections above a thumbnail grid, with a search field at the top. Double-clicking an asset imports it. See [The Asset Manager](asset-manager.md).
+- **Transform** — the selected joint's rotation as three dials: Bend, Side-Side and Twist. See [The Transform tab](posing.md#the-transform-tab).
 - **Environment** — the lighting controls: the HDRI picker, the backdrop, exposure and tone, image-based lighting, the key light, shadows, and skin and rim accents. See [Lighting and Environment](environment.md).
 
 Drag the divider between the tree and the grid inside the Asset Manager to give either more room.

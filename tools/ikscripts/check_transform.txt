@@ -1,0 +1,238 @@
+# THE TRANSFORM TAB's dials (2026-09-30): the selected joint's rotation as Bend / Side-Side /
+# Twist (`forward`, `sideways` and `twist` here), each on the 0-100 scale of its own limit — 0 the
+# rest pose, 100 the limit in the dial's direction, negative the other way in proportion until the
+# other limit stops it. `dial
+# <forward|sideways|twist> <value>` sets one the way the tab does (one bracketed, undoable edit);
+# `dial.<kind>`, `dialmin.<kind>`, `dialmax.<kind>` read them; `dialjoint.<bone>` is 1 when the tab
+# shows that joint. `uishot` pictures the tab itself (run with POSESTUDIO_TAB=Transform).
+# And THE JOINT MOUSE MODE (the B / S / T keys): `modal <bend|side|twist>` is the key, `modalmove`
+# the mouse, `modalkeep` the left click, `modaldrop` Esc or the right click; `modal` reads the dial
+# the mouse is turning (-1: none).
+# `app <b|s|t|esc|enter|click|rclick>` and `app move <dx> <dy>` are the same input arriving at the
+# APPLICATION with the viewport not focused: the Edit menu's action, and events to the main window.
+view front
+uishot 00_nothing_selected
+# With nothing selected the mode's keys are not live (the letters go where they always went).
+app b
+expect modal == -1
+modal bend
+expect modal == -1
+
+# A knee: 100 is the fold's limit (155 degrees on the reference figure), the low end the 11 degrees
+# it hyperextends, in proportion: -7.1.
+click lShin
+expect dialjoint.lShin == 1
+expect dial.forward == 0
+expect dialmax.forward == 100
+expect dialmin.forward > -8
+expect dialmin.forward < -6
+dial forward 50
+expect dial.forward > 49.99
+expect dial.forward < 50.01
+expect euler.lShin.x > 77
+expect euler.lShin.x < 78
+shot 01_knee_50
+uishot 01_knee_50
+# One gesture, one undo entry — and the dials follow an undo.
+undo
+expect dial.forward == 0
+# A value past the range stops at the limit.
+dial forward -50
+expect euler.lShin.x < -10.9
+expect euler.lShin.x > -11.1
+reset
+
+# A click on the lower thigh finds the thigh's TWIST bone: the tab shows the thigh, its bends on
+# the bend bone and its twist on the twist bone.
+view right
+click lThigh@0.75
+expect dialjoint.lThigh == 1
+dial forward 40
+dial sideways 30
+dial twist 50
+expect euler.lThigh.x < -45
+expect euler.lThigh.x > -47
+expect euler.lThigh.z > 25
+expect euler.lThigh.z < 26
+expect euler.lThighTwist.y > 37
+expect euler.lThighTwist.y < 38
+view front
+shot 02_thigh
+uishot 02_thigh
+# Each dial was its own edit: three undos bring her back.
+undo
+undo
+undo
+expect dial.forward == 0
+expect dial.sideways == 0
+expect dial.twist == 0
+
+# The same values on the right leg give the mirrored pose.
+click rThigh
+dial forward 40
+dial sideways 30
+click lThigh
+dial forward 40
+dial sideways 30
+expect euler.rThigh.z < -25
+expect euler.lThigh.z > 25
+shot 03_both_thighs
+reset
+
+# The trunk and the head bend FORWARD on a positive dial, whatever the longer side of their range.
+click head
+dial forward 100
+expect gaze < -15
+uishot 04_head
+reset
+click abdomenLower
+dial forward 100
+dial sideways 50
+shot 05_trunk
+expect tilt.chest_2 > 20
+reset
+
+# The dials follow the pose when something else moves it: an IK drag bends the elbow, and the
+# forearm's forward dial reads it.
+view front
+press lHand
+dragv -0.20 0.25 30 10
+release
+# (From the front the raised hand is in front of its own elbow, and a click picks what the cursor
+# is on: the elbow is clicked from her left side.)
+view right
+click lForeArm
+expect dialjoint.lForeArm == 1
+expect dial.forward > 10
+uishot 06_after_ik_drag
+reset
+
+# THE JOINT MOUSE MODE. B on a knee, seen from her left side (screen-right is her back): the mouse
+# moved toward her back folds the shin back — the limb goes the way the mouse goes.
+view right
+click lShin
+expect dialjoint.lShin == 1
+modal bend
+expect modal == 0
+uishot 07_bend_mode_on
+modalmove 120 0
+expect dial.forward > 15
+expect euler.lShin.x > 25
+shot 07_knee_bent_by_mouse
+# The left click keeps it, as ONE undo entry — and the click is the mode's: it lands in the middle
+# of the view, on her body, and selects nothing there.
+modalkeep
+expect modal == -1
+expect dialjoint.lShin == 1
+expect dial.forward > 15
+# Esc (or the right click) puts the joint back as it was, and leaves no undo entry: the undo after
+# it takes back the kept bend.
+modal bend
+modalmove 100 0
+expect dial.forward > 30
+modaldrop
+expect modal == -1
+expect dialjoint.lShin == 1
+expect dial.forward > 15
+expect dial.forward < 30
+undo
+expect dial.forward == 0
+# The same key again drops the mode; another of the three drops it and begins that one.
+modal bend
+modalmove 60 0
+modal bend
+expect modal == -1
+expect dial.forward == 0
+modal bend
+modalmove 60 0
+modal twist
+expect modal == 2
+expect dial.forward == 0
+# A twist is turned by the mouse's left-right: right for more.
+modalmove 60 0
+expect dial.twist > 10
+modaldrop
+expect dial.twist == 0
+
+# From the front a thigh's Side-Side swings across the screen and follows the mouse (her left is
+# screen-right: right is outward, left is inward); its Bend goes straight at the camera, so
+# left-right turns it, right for more.
+view front
+click lThigh
+modal side
+modalmove 80 0
+expect dial.sideways > 15
+expect euler.lThigh.z > 10
+modalmove -160 0
+expect dial.sideways < -15
+# (Esc drops it like the right click; Enter keeps it like the left.)
+modaldrop esc
+expect modal == -1
+expect dial.sideways == 0
+modal side
+modalmove 80 0
+modalkeep enter
+expect modal == -1
+expect dial.sideways > 15
+undo
+expect dial.sideways == 0
+modal bend
+modalmove 100 0
+expect dial.forward > 15
+expect euler.lThigh.x < -15
+shot 08_thigh_bent_by_mouse
+modaldrop
+expect euler.lThigh.x == 0
+
+# A motion the joint does not have: an elbow has no Side-Side, and S does nothing.
+view right
+click lForeArm
+expect dialjoint.lForeArm == 1
+modal side
+expect modal == -1
+reset
+
+# THE KEYS WORK WHEREVER THE FOCUS IS, and while the mode is on the mouse is the mode's anywhere in
+# the application (the user had clicked the Transform tab, pressed T, and nothing happened until
+# the viewport was clicked again). `app` is the Edit menu's action for the key and events delivered
+# to the MAIN WINDOW, not the viewport.
+view right
+click lShin
+expect dialjoint.lShin == 1
+app b
+expect modal == 0
+app move 120 0
+expect dial.forward > 15
+# A left click anywhere in the application keeps it — and is the mode's: nothing under it is clicked.
+app click
+expect modal == -1
+expect dialjoint.lShin == 1
+expect dial.forward > 15
+# Esc and a right click anywhere put the joint back; Enter keeps.
+app t
+expect modal == 2
+app move 60 0
+expect dial.twist > 10
+app esc
+expect modal == -1
+expect dial.twist == 0
+app b
+app move 60 0
+expect dial.forward > 30
+app rclick
+expect modal == -1
+expect dial.forward < 30
+app b
+app move 40 0
+app enter
+expect modal == -1
+expect dial.forward > 25
+# The same key again drops the mode; a motion the joint does not have is not live.
+app b
+expect modal == 0
+app b
+expect modal == -1
+click lForeArm
+app s
+expect modal == -1
+reset

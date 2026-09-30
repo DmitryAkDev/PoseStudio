@@ -27,6 +27,8 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QImage>
+#include <QKeyEvent>
+#include <QMouseEvent>
 #include <QTextStream>
 #include <QTimer>
 
@@ -214,8 +216,9 @@ void VulkanWindow::scriptStep() {
             scene().translateModelY(scene().activeFigureIndex(), num(1));
             requestUpdate();
         } else if (cmd == QLatin1String("fk") && w.size() >= 5) {
-            // fk <bone> <dx> <dy> <dz>: the joint turned by that many degrees, as Ctrl+drag or
-            // the X/Y/Z wheel would (through the FK collision stop), as one undoable edit.
+            // fk <bone> <dx> <dy> <dz>: the joint turned by that many degrees about its own
+            // channels, as a Transform dial turns one (through the limits and the FK collision
+            // stop), as one undoable edit.
             if (scene().selectBoneByName(figureBoneName(scene().figureArmature(), w[1].toStdString())) >= 0) {
                 closeOpenPoseEdits();
                 m_preEditPose = scene().capturePose();
@@ -226,6 +229,79 @@ void VulkanWindow::scriptStep() {
             } else {
                 say("[ikscript]   unknown bone\n");
             }
+        } else if (cmd == QLatin1String("dial") && w.size() > 2) {
+            // dial <forward|sideways|twist> <value>: the selected joint's Transform-tab dial set to
+            // that value, the way the tab does it (one bracketed, undoable edit).
+            const QString which = w[1].toLower();
+            const int     dial = which == QLatin1String("forward") ? 0 : which == QLatin1String("sideways") ? 1 : 2;
+            if (beginJointTransformEdit()) {
+                setJointTransformDial(dial, w[2].toDouble());
+                endJointTransformEdit();
+            } else {
+                say("[ikscript]   dial refused (a drag owns the pose)\n");
+            }
+        } else if (cmd == QLatin1String("modal") && w.size() > 1) {
+            // modal <bend|side|twist>: the B / S / T key — a key event handed to the window's own
+            // keyPressEvent, so the routing is the real one (the same key again drops the mode,
+            // another of the three switches). The mode reads the desktop's cursor at the key; the
+            // script's stands at the middle of the view instead: only its moves count.
+            const QString which = w[1].toLower();
+            const int     key = (which == QLatin1String("bend") || which == QLatin1String("forward")) ? Qt::Key_B
+                                : (which == QLatin1String("side") || which == QLatin1String("sideways")) ? Qt::Key_S
+                                                                                                          : Qt::Key_T;
+            QKeyEvent press(QEvent::KeyPress, key, Qt::NoModifier);
+            keyPressEvent(&press);
+            m_modalCursor = QPointF(width() * 0.5, height() * 0.5);
+            m_lastMousePos = m_modalCursor;
+            say("[ikscript]   joint mouse mode %s\n", m_modalKind >= 0 ? "on" : "off");
+        } else if (cmd == QLatin1String("app") && w.size() > 1) {
+            // app <b|s|t|esc|enter|click|rclick> / app move <dxPx> <dyPx> [steps]: the same input
+            // arriving at the APPLICATION with the viewport not focused — the Edit menu's action
+            // for the key, and key and mouse events delivered to the main window, where the mode's
+            // application-wide filter (JointModalInput) must pick them up. ViewportWidget makes them.
+            // (The menu's actions are enabled by the joint the Transform state last ANNOUNCED, which
+            // follows the rendered frame; the script does not wait for one: bring it up to date.)
+            notifyJointTransform();
+            const QString what = w[1].toLower();
+            const bool    move = what == QLatin1String("move") && w.size() > 3;
+            emit appInputRequested(what, move ? QPointF(num(2), num(3)) : QPointF(),
+                                   move ? std::max(1, w.size() > 4 ? w[4].toInt() : 20) : 1);
+            say("[ikscript]   joint mouse mode %s\n", m_modalKind >= 0 ? "on" : "off");
+        } else if (cmd == QLatin1String("modalmove") && w.size() > 2) {
+            // modalmove <dxPx> <dyPx> [steps]: the mouse moved that far (+y down) with no button
+            // held, in that many move events (20 by default) through the window's mouseMoveEvent.
+            const int     steps = std::max(1, w.size() > 3 ? w[3].toInt() : 20);
+            const QPointF step(num(1) / steps, num(2) / steps);
+            for (int k = 0; k < steps; ++k) {
+                const QPointF at = m_lastMousePos + step;
+                QMouseEvent   move(QEvent::MouseMove, at, mapToGlobal(at), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+                mouseMoveEvent(&move);
+            }
+        } else if (cmd == QLatin1String("modalkeep") || cmd == QLatin1String("modaldrop")) {
+            // modalkeep [enter] / modaldrop [esc]: the left click (or Enter) that keeps the result /
+            // the right click (or Esc) that puts the joint back — press AND release through the
+            // window's handlers, so a click that leaked through the mode would show as a changed
+            // selection, a drag, or the context menu it must not open.
+            const bool keep = cmd == QLatin1String("modalkeep");
+            if (w.size() > 1) {
+                QKeyEvent press(QEvent::KeyPress, keep ? Qt::Key_Return : Qt::Key_Escape, Qt::NoModifier);
+                keyPressEvent(&press);
+            } else {
+                const Qt::MouseButton button = keep ? Qt::LeftButton : Qt::RightButton;
+                const QPointF         at = m_lastMousePos;
+                QMouseEvent down(QEvent::MouseButtonPress, at, mapToGlobal(at), button, button, Qt::NoModifier);
+                mousePressEvent(&down);
+                QMouseEvent up(QEvent::MouseButtonRelease, at, mapToGlobal(at), button, Qt::NoButton, Qt::NoModifier);
+                mouseReleaseEvent(&up);
+            }
+        } else if (cmd == QLatin1String("uishot") && w.size() > 1) {
+            // uishot <name>: ui/<name>.png of the application's widgets — the side tabs (start on
+            // one with POSESTUDIO_TAB=<title>); in a folder of its own, beside the viewport's shots
+            // and out of their contact sheet. The Transform tab is brought up to date first: it
+            // follows the rendered frame, and the script does not wait for one here.
+            notifyJointTransform();
+            QDir(s.outDir).mkpath(QStringLiteral("ui"));
+            emit uiShotRequested(QDir(s.outDir).filePath(QStringLiteral("ui/") + w[1] + QStringLiteral(".png")));
         } else if (cmd == QLatin1String("pin") && w.size() > 1) {
             // The joint a CLICK there finds — and, since the pick is the SKIN's (2026-09-26), the named
             // bone by name where the click lands on another part of the body (a hanging hand covers
@@ -253,8 +329,11 @@ void VulkanWindow::scriptStep() {
         } else if (cmd == QLatin1String("pick2d") && w.size() > 1) {
             scene().setPick2D(w[1] == QLatin1String("on")); // (the A/B probe: the 2D pick alone, as before 2026-09-26)
         } else if (cmd == QLatin1String("click") && w.size() > 1) {
+            // click <bone>[@share] [dxPx dyPx]: the pick at the bone's pixel — moved by that many
+            // pixels where given (+y down): the tip of a toe lies beyond its last joint's pixel.
             QPointF px;
             if (scriptPixelOf(w[1], px)) {
+                px += QPointF(num(2), num(3));
                 const int picked = boneAt(px);
                 const Armature* arm = scene().figureArmature();
                 say("[ikscript]   click at px(%.0f %.0f): picked %s\n", px.x(), px.y(),
@@ -527,7 +606,11 @@ void VulkanWindow::scriptFrameRendered() {
 ///   moved.<bone>    moved since the last press, mm           euler.<bone>.<x|y|z>  a posed channel
 ///   movedxz.<bone>  moved along the FLOOR since the last press, mm (a planted foot's place, heel lift aside)
 ///   selected.<bone> 1 if the selected joint is that bone or a bone of its rigid segment (a click's pick), else 0
+///   lit.<bone>      1 if the selection highlight tints that bone's flesh (the selected joint, or its twist twin), else 0
 ///   palm.<bone>.<x|y|z>  a HAND's palm normal, that world component (where a laid hand faces)
+///   dial.<forward|sideways|twist>  the selected joint's Transform-tab dial, as it reads now
+///   dialmin.<kind>, dialmax.<kind>  that dial's range     dialjoint.<bone>  1 if the tab shows that joint
+///   modal                  the dial the joint mouse mode turns (0/1/2 = bend / side / twist), -1 when off
 bool VulkanWindow::scriptMetric(const QString& name, double& value) {
     IkScript&       s = *m_script;
     const Armature* arm = scene().figureArmature();
@@ -548,6 +631,21 @@ bool VulkanWindow::scriptMetric(const QString& name, double& value) {
             return false;
         }
         value = glm::length(grab - s.cursorWorld) * 1000.0;
+    } else if ((key == QLatin1String("dial") || key == QLatin1String("dialmin") || key == QLatin1String("dialmax")) &&
+               part.size() > 1) {
+        const JointTransform transform = jointTransform();
+        const QString        which = part[1].toLower();
+        const int            dial = which == QLatin1String("forward") ? 0 : which == QLatin1String("sideways") ? 1 : 2;
+        if (!transform.valid || !transform.dials[dial].enabled) {
+            return false;
+        }
+        value = key == QLatin1String("dial") ? transform.dials[dial].value
+                : key == QLatin1String("dialmin") ? transform.dials[dial].minValue : transform.dials[dial].maxValue;
+    } else if (key == QLatin1String("modal")) {
+        value = m_modalKind; // the dial the mouse turns (0/1/2), -1 with the mode off
+    } else if (key == QLatin1String("dialjoint") && bone >= 0) {
+        const JointTransform transform = jointTransform();
+        value = transform.valid && transform.name == arm->boneName(static_cast<std::size_t>(bone)) ? 1.0 : 0.0;
     } else if (key == QLatin1String("palm") && bone >= 0 && part.size() > 2) {
         const glm::vec3 pn = arm->handPalmNormal(bone);
         if (glm::length(pn) < 0.5f) {
@@ -625,6 +723,9 @@ bool VulkanWindow::scriptMetric(const QString& name, double& value) {
         value = moved(bone);
     } else if (key == QLatin1String("selected") && bone >= 0) {
         value = arm->selectedBone() >= 0 && arm->sameRigidSegment(arm->selectedBone(), bone) ? 1.0 : 0.0;
+    } else if (key == QLatin1String("lit") && bone >= 0) {
+        // (What the mesh shader is told to tint: the highlighted joint and its twin.)
+        value = arm->highlightBone() >= 0 && (bone == arm->highlightBone() || bone == arm->selectedHighlightTwin()) ? 1.0 : 0.0;
     } else if (key == QLatin1String("movedxz") && bone >= 0) {
         const std::size_t b = static_cast<std::size_t>(bone);
         if (b >= s.pressPositions.size()) {

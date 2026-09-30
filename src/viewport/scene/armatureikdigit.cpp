@@ -289,7 +289,46 @@ bool Armature::dragDigitTo(const glm::vec3& targetWorld) {
     }
     JointSolver::Settings settings;
     settings.maxIterations = 16;
-    const JointSolver::Result result = m_jointSolver->solve(pose, problem, settings);
+    JointSolver::Result result = m_jointSolver->solve(pose, problem, settings);
+
+    // THE BOUND RETRY (2026-09-30; IK_DIGIT_NO_BOUND_RETRY is the A/B): a channel the solve left AT
+    // its authored limit is tried a few degrees back inside, and the cheaper pose kept — the fold
+    // retry's idea, for a limit. The solver freezes a channel at a limit whose STEP points out of
+    // the box, and with a neighbour still a hair short of its own limit that step can point out
+    // while the channel's own gradient points in: a finger pulled along its own line folds into a
+    // zigzag (its base extended, its middle joint curled to the limit to keep the grabbed joint on
+    // the line), and pulled on beyond its reach it stayed in it until the base joint reached ITS
+    // limit to the last hundredth of a degree — a third of a second into a still hold on one rig,
+    // when the middle joint swung 87 degrees in one tick, 27mm at the grabbed joint. Retried, it
+    // leaves the zigzag in the tick the straighter pose becomes the cheaper one, during the move.
+    // (One extra small solve per channel at a limit; the retry must beat the pose by a real margin,
+    // so two descents that land in the same minimum never trade places.)
+    static const bool kNoBoundRetry = std::getenv("IK_DIGIT_NO_BOUND_RETRY") != nullptr; // A/B probe
+    if (!kNoBoundRetry) {
+        constexpr double kBoundKickDeg = 5.0;
+        for (const JointSolverDof& dof : problem.dofs) {
+            const std::size_t b = static_cast<std::size_t>(dof.bone);
+            const Bone&       bone = m_bones[b];
+            if (dof.axis >= 3 || !bone.rotLimited[dof.axis]) {
+                continue;
+            }
+            const double lo = static_cast<double>(bone.rotMin[dof.axis]);
+            const double hi = static_cast<double>(bone.rotMax[dof.axis]);
+            const double v = pose.eulerDeg[b][dof.axis];
+            const bool   atLo = v <= lo + 1.0e-3;
+            const bool   atHi = v >= hi - 1.0e-3;
+            if (atLo == atHi) {
+                continue; // (inside its range — or a range too narrow to tell)
+            }
+            JointSolver::Pose kicked = pose;
+            kicked.eulerDeg[b][dof.axis] = atLo ? std::min(lo + kBoundKickDeg, hi) : std::max(hi - kBoundKickDeg, lo);
+            const JointSolver::Result retry = m_jointSolver->solve(kicked, problem, settings);
+            if (retry.cost < result.cost * (1.0 - 1.0e-3) - 1.0e-9) {
+                pose = kicked;
+                result = retry;
+            }
+        }
+    }
 
     // Applied in full.
     float changed = 0.0f;

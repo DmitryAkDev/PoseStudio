@@ -11,6 +11,8 @@ A pose is saved as a small plain-text `.pose` file that you can load back onto a
 
 A pose file names the figure's bones, so it applies best to the figure it was saved from — or to another figure of the same generation, which names its bones the same way. Loaded onto a figure that names them differently, the joints it cannot find are skipped and stay at rest.
 
+Poses saved by version 0.3.15 or earlier may load a little differently: those versions turned each joint about axes that were slightly off the figure's own, most visibly at the thumbs, the fingers, the forearms and the feet. The rotations in the file are applied about the correct axes now.
+
 ## Pins travel with the pose
 
 The joints you pinned when you saved are pinned again when you load. Older files without pin rows load fine — they simply set no pins.

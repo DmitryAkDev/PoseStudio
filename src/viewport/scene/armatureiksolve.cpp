@@ -187,6 +187,24 @@ void Armature::ikSolve(IkSolveScratch& s) {
         pose.eulerDeg[i] = glm::dvec3(m_boneEuler[i]);
         pose.translation[i] = glm::dvec3(m_boneTranslation[i]);
     }
+    // (IK_JS_START_COST_TRACE=<n>: the position rows that BEGIN a solve costing more than n —
+    // weight x miss^2 on the pose as the last tick left it: which row a tick's rows have moved away
+    // from the pose, where IK_JS_COST_TRACE shows what a solve ENDS fighting.)
+    static const char* kStartCost = std::getenv("IK_JS_START_COST_TRACE");
+    if (kStartCost != nullptr) {
+        static const double kFrom = std::max(1.0, std::atof(kStartCost));
+        for (const JointPositionTask& task : problem.positions) {
+            const std::size_t tb = static_cast<std::size_t>(task.bone);
+            const glm::dvec3  at = glm::dvec3(glm::vec3(m_poseGlobal[tb][3])) + glm::dmat3(glm::mat3(m_poseGlobal[tb])) * task.offset;
+            const glm::dvec3  e = (task.target - at) * task.axisScale;
+            const double      cost = task.weight * glm::dot(e, e);
+            if (cost > kFrom) {
+                std::fprintf(stderr, "[js-start] position %s: (%.1f %.1f %.1f) mm off, weight %.4g, cost %.1f", m_boneNames[tb].c_str(), e.x * 1000.0,
+                             e.y * 1000.0, e.z * 1000.0, task.weight, cost);
+                std::fputc(10, stderr);
+            }
+        }
+    }
     JointSolver::Settings settings;
     JointSolver::Result& result = s.result;
     s.iterations = 0;

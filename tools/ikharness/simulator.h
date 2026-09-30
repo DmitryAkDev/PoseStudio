@@ -88,9 +88,6 @@ struct Scenario {
     float                 cursorNoise = 0.0f;   // +-metres of per-tick cursor noise
     bool                  release = true;       // run the release settle
     std::vector<std::string> idleJoints;        // oscillation is measured on these
-    // The X/Y/Z wheel during the drag: at each listed tick the GRABBED bone's Euler pose is
-    // nudged by the delta (degrees), exactly as the window's wheel handler does.
-    std::vector<std::pair<int, glm::vec3>> nudges;
     /// The most left/right asymmetry a SYMMETRIC gesture may gain (mm; RunResult::symmetricGesture:
     /// the gate is applied by construction, to every such run that takes no step). Negative =
     /// reported only, for a phase with a known lopsided result - say which, where it is set.
@@ -146,7 +143,7 @@ struct RunResult {
     // and from the side, where such a drag is looked at, it cannot be seen.
     double                   asymmetryStart = 0.0, asymmetryEnd = 0.0;
     /// The run WAS such a symmetric problem: every grab (preludes included) a centre bone, no
-    /// waypoint with a sideways part, pins and pre-pose symmetric, no cursor noise, no wheel nudge.
+    /// waypoint with a sideways part, pins and pre-pose symmetric, no cursor noise.
     /// (Whether she then STEPPED is the caller's to read: a step is lopsided by nature.) Only ever
     /// true on a rig that is itself symmetric at rest: see where it is set.
     bool                     symmetricGesture = false;

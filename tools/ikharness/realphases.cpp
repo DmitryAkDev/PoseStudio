@@ -385,6 +385,248 @@ void realPhases(Report& report, const std::vector<ArmatureBone>& bones) {
                       gateMin("pin survives reset pose", pinKept, 1.0)});
     }
 
+    // --- THE TRANSFORM DIALS (Armature::jointDial; the Transform tab): a joint's rotation as Bend
+    // Forward / Bend Sideways / Twist on a 0-100 scale of its own limit. Which channel is which
+    // dial and which way is positive is found by structure, so it is checked on every rig: a knee
+    // and an elbow read 100 at their fold's limit and a negative value in proportion the other
+    // way; the forward dials take what their joint carries forward (the trunk, a thigh, an upper
+    // arm) and the side dials sideways; a limb whose twist is cut out into a twist bone has a twist
+    // dial all the same; and — the rule's consistency — the SAME value on a left and a right joint
+    // gives mirrored poses, for every dial of every paired joint of the body.
+    if (report.wants("transform-dials")) {
+        Armature arm;
+        arm.build(bones);
+        arm.boneClass(0); // builds the rig and the bone classes (the head is found by them)
+        const auto at = [&](int bone) { return arm.boneWorldPosition(static_cast<std::size_t>(bone)); };
+        const int knee = resolveBone(arm, "lShin"), foot = resolveBone(arm, "lFoot");
+        const int elbow = resolveBone(arm, "lForeArm"), hand = resolveBone(arm, "lHand");
+        const int thigh = resolveBone(arm, "lThigh"), shoulder = resolveBone(arm, "lShldr");
+        const int abdomen = resolveBone(arm, "abdomenLower"), head = resolveBone(arm, "head");
+        const bool named = knee >= 0 && foot >= 0 && elbow >= 0 && hand >= 0 && thigh >= 0 && shoulder >= 0 &&
+                           abdomen >= 0 && head >= 0;
+        double foldErr = 1e9, proportionErr = 1e9, roundTripErr = 1e9, stopErr = 1e9;
+        double directions = 0.0, twistDials = 0.0, mirrorErr = 0.0, dialled = 0.0, noDial = 0.0;
+        double sweepCos = -1.0, sweepRatioErr = 1e9, sweepTwist = 0.0;
+        double digitTwins = 0.0, digitJoints = 0.0, limbTwinsMissing = 0.0, limbTwins = 0.0;
+        // THE SELECTION HIGHLIGHT's twin (Armature::selectedHighlightTwin): a limb's TWIST bone
+        // lights with its bend bone, so a grabbed thigh lights the whole thigh — and nothing else
+        // is a twin. It was "any child with two locked axes", which a finger's or a toe's middle
+        // joint is too (a hinge): the first two joints of every finger lit together whichever was
+        // selected, and the user could not tell which joint a click had taken.
+        for (std::size_t i = 0; i < arm.boneCount(); ++i) {
+            if (arm.boneClass(static_cast<int>(i)) != BoneClass::Digit) {
+                continue;
+            }
+            digitJoints += 1.0;
+            arm.selectBoneByName(arm.boneName(i));
+            if (arm.selectedHighlightTwin() >= 0) {
+                digitTwins += 1.0;
+                if (v) {
+                    std::fprintf(stderr, "  [transform-dials] digit joint %s lights %s with it\n", arm.boneName(i).c_str(),
+                                 arm.boneName(static_cast<std::size_t>(arm.selectedHighlightTwin())).c_str());
+                }
+            }
+        }
+        for (const char* limb : {"lThigh", "rThigh", "lShldr", "rShldr", "lForeArm", "rForeArm"}) {
+            const int bone = resolveBone(arm, limb);
+            if (bone < 0) {
+                continue;
+            }
+            // (Where the limb's twist is cut out into a twist BONE, that bone is the twin.)
+            const JointDial twist = arm.jointDial(bone, JointDialKind::Twist);
+            if (twist.valid() && twist.bone != bone) {
+                arm.selectBoneByName(arm.boneName(static_cast<std::size_t>(bone)));
+                limbTwins += 1.0;
+                limbTwinsMissing += arm.selectedHighlightTwin() == twist.bone ? 0.0 : 1.0;
+            }
+        }
+        arm.setSelectedBone(-1);
+        if (named) {
+            // A fold: 100 is the long limit, the low end the short one in proportion.
+            foldErr = 0.0;
+            proportionErr = 0.0;
+            for (const int fold : {knee, elbow}) {
+                const JointDial d = arm.jointDial(fold, JointDialKind::BendForward);
+                const ArmatureBone& b = bones[static_cast<std::size_t>(fold)];
+                const float lo = d.valid() ? b.rotationMin[d.axis] : 0.0f;
+                const float hi = d.valid() ? b.rotationMax[d.axis] : 0.0f;
+                const float big = std::max(std::abs(lo), std::abs(hi));
+                const float small = std::min(std::abs(lo), std::abs(hi));
+                foldErr = std::max(foldErr, d.valid() && d.bone == fold ? static_cast<double>(std::abs(std::abs(d.fullDeg) - big)) : 1e9);
+                proportionErr = std::max(proportionErr, d.valid() && big > 0.0f
+                                                            ? static_cast<double>(std::abs(d.minValue + small / big * 100.0f)) +
+                                                                  static_cast<double>(std::abs(d.maxValue - 100.0f))
+                                                            : 1e9);
+            }
+            // A value set reads back; one beyond the range stops at the limit.
+            const JointDial kneeDial = arm.jointDial(knee, JointDialKind::BendForward);
+            arm.setJointDial(kneeDial, 50.0f);
+            roundTripErr = std::abs(static_cast<double>(arm.jointDialValue(kneeDial)) - 50.0);
+            arm.setJointDial(kneeDial, -1000.0f);
+            const ArmatureBone& kb = bones[static_cast<std::size_t>(knee)];
+            const float kneeEuler = arm.boneEuler(static_cast<std::size_t>(knee))[kneeDial.axis];
+            stopErr = std::max(std::abs(static_cast<double>(arm.jointDialValue(kneeDial)) - static_cast<double>(kneeDial.minValue)),
+                               static_cast<double>(std::min(std::abs(kneeEuler - kb.rotationMin[kneeDial.axis]),
+                                                            std::abs(kneeEuler - kb.rotationMax[kneeDial.axis]))));
+            arm.resetPose();
+
+            // Which way a positive dial goes: a joint below the turned one, against where it rested.
+            const auto moves = [&](int joint, JointDialKind kind, int carried, const glm::vec3& way) {
+                const glm::vec3 rest = at(carried);
+                const JointDial d = arm.jointDial(joint, kind);
+                arm.setJointDial(d, 30.0f);
+                const bool ok = d.valid() && glm::dot(at(carried) - rest, way) > 0.01f;
+                arm.resetPose();
+                if (v && !ok) {
+                    std::fprintf(stderr, "  [transform-dials] %s dial %d does not move %s along (%.0f %.0f %.0f)\n",
+                                 arm.boneName(static_cast<std::size_t>(joint)).c_str(), static_cast<int>(kind),
+                                 arm.boneName(static_cast<std::size_t>(carried)).c_str(), way.x, way.y, way.z);
+                }
+                return ok ? 1.0 : 0.0;
+            };
+            const glm::vec3 fore(0.0f, 0.0f, 1.0f), aft(0.0f, 0.0f, -1.0f), left(1.0f, 0.0f, 0.0f);
+            directions = moves(abdomen, JointDialKind::BendForward, head, fore) +    // the trunk bends forward
+                         moves(abdomen, JointDialKind::BendSideways, head, left) +   // ... and to her left
+                         moves(thigh, JointDialKind::BendForward, knee, fore) +      // a thigh flexes forward
+                         moves(thigh, JointDialKind::BendSideways, knee, left) +     // ... and abducts (the left: outward)
+                         moves(shoulder, JointDialKind::BendForward, hand, fore) +   // an arm swings forward
+                         moves(knee, JointDialKind::BendForward, foot, aft) +        // a knee folds its foot back
+                         moves(elbow, JointDialKind::BendForward, hand, fore);       // an elbow folds its hand forward
+            // A limb's twist has a dial whether the rig keeps it on the bend bone or on a twist bone.
+            for (const int limb : {thigh, shoulder, elbow}) {
+                twistDials += arm.jointDial(limb, JointDialKind::Twist).valid() ? 1.0 : 0.0;
+            }
+
+            // THE SWEEP (Armature::jointDialSweep — what the viewport's B / S / T mouse mode follows:
+            // the limb goes the way the mouse goes): where a bend dial says its limb's far end goes
+            // per degree, against where the limb's next joint DOES go when the dial is turned a
+            // unit. From a pose with every dial of the joint already turned, so the channels
+            // composed outside the dial's own carry its axis (the rotation-order prefix), and on
+            // the positive side, so the sign is the dial's.
+            sweepCos = 1.0;
+            sweepRatioErr = 0.0;
+            const auto sweepOf = [&](int joint, int farJoint) {
+                for (int k = 0; k < kJointDialCount; ++k) {
+                    const JointDial d = arm.jointDial(joint, static_cast<JointDialKind>(k));
+                    if (d.valid()) {
+                        arm.setJointDial(d, 0.3f * d.maxValue);
+                    }
+                }
+                for (const JointDialKind kind : {JointDialKind::BendForward, JointDialKind::BendSideways}) {
+                    const JointDial d = arm.jointDial(joint, kind);
+                    if (!d.valid()) {
+                        continue; // (a hinge elbow has no side bend)
+                    }
+                    JointDialSweep s;
+                    if (!arm.jointDialSweep(d, s) || glm::length(s.tipPerDegree) < 1e-7f) {
+                        sweepCos = -1.0;
+                        continue;
+                    }
+                    const glm::vec3 before = at(farJoint);
+                    const float     value = arm.jointDialValue(d);
+                    arm.setJointDial(d, value + 1.0f);
+                    const float turned = (arm.jointDialValue(d) - value) * s.degreesPerUnit;
+                    const glm::vec3 moved = at(farJoint) - before;
+                    arm.setJointDial(d, value);
+                    if (turned < 1e-3f || glm::length(moved) < 1e-7f) {
+                        sweepCos = -1.0; // the dial did not turn, or its limb did not move
+                        continue;
+                    }
+                    const double cosine = glm::dot(glm::normalize(moved), glm::normalize(s.tipPerDegree));
+                    const double ratio = glm::length(moved) / turned / glm::length(s.tipPerDegree);
+                    if (v && (cosine < 0.95 || std::abs(ratio - 1.0) > 0.25)) {
+                        std::fprintf(stderr, "  [transform-dials] %s dial %d sweep: cosine %.3f, measured / predicted %.2f\n",
+                                     arm.boneName(static_cast<std::size_t>(joint)).c_str(), static_cast<int>(kind), cosine, ratio);
+                    }
+                    sweepCos = std::min(sweepCos, cosine);
+                    sweepRatioErr = std::max(sweepRatioErr, std::abs(ratio - 1.0));
+                }
+                const JointDial twist = arm.jointDial(joint, JointDialKind::Twist);
+                JointDialSweep  ts;
+                if (twist.valid() && arm.jointDialSweep(twist, ts)) {
+                    sweepTwist = std::max(sweepTwist, static_cast<double>(glm::length(ts.tipPerDegree)) * 1000.0);
+                }
+                arm.resetPose();
+            };
+            sweepOf(thigh, knee);
+            sweepOf(knee, foot);
+            sweepOf(shoulder, elbow);
+            sweepOf(elbow, hand);
+
+            // MIRROR: the same value on a left joint and on its right twin, each posed alone from
+            // rest (posed together, the FK collision stop of the second would meet the first).
+            std::vector<glm::vec3> rest(arm.boneCount());
+            for (std::size_t i = 0; i < rest.size(); ++i) {
+                rest[i] = arm.boneWorldPosition(i);
+            }
+            const auto lopsided = [&](const std::vector<glm::vec3>& one, const std::vector<glm::vec3>& other) {
+                double worst = 0.0;
+                for (std::size_t k = 0; k < one.size(); ++k) {
+                    const glm::vec3 reflected(-one[k].x, one[k].y, one[k].z);
+                    worst = std::max(worst, static_cast<double>(glm::length(reflected - other[static_cast<std::size_t>(arm.mirrorBone(k))])));
+                }
+                return worst;
+            };
+            const double restLopsided = lopsided(rest, rest);
+            const auto posedBy = [&](int bone, JointDialKind kind, float share, bool& valid) {
+                const JointDial d = arm.jointDial(bone, kind);
+                valid = d.valid();
+                arm.setJointDial(d, share >= 0.0f ? share * d.maxValue : -share * d.minValue);
+                std::vector<glm::vec3> out(arm.boneCount());
+                for (std::size_t i = 0; i < out.size(); ++i) {
+                    out[i] = arm.boneWorldPosition(i);
+                }
+                arm.resetPose();
+                return out;
+            };
+            for (std::size_t i = 0; i < arm.boneCount(); ++i) {
+                const int j = arm.mirrorBone(i);
+                if (arm.boneClass(static_cast<int>(i)) == BoneClass::Face || arm.dialJoint(static_cast<int>(i)) != static_cast<int>(i)) {
+                    continue; // (the face rig is not posed; a twist bone presents its bend joint)
+                }
+                int dials = 0;
+                for (int k = 0; k < kJointDialCount; ++k) {
+                    dials += arm.jointDial(static_cast<int>(i), static_cast<JointDialKind>(k)).valid() ? 1 : 0;
+                }
+                dialled += dials > 0 ? 1.0 : 0.0;
+                noDial += dials == 0 ? 1.0 : 0.0;
+                if (j <= static_cast<int>(i)) {
+                    continue; // (a centre bone, or the pair's second)
+                }
+                for (int k = 0; k < kJointDialCount; ++k) {
+                    for (const float share : {0.4f, -0.5f}) {
+                        bool validL = false, validR = false;
+                        const std::vector<glm::vec3> posedL = posedBy(static_cast<int>(i), static_cast<JointDialKind>(k), share, validL);
+                        const std::vector<glm::vec3> posedR = posedBy(j, static_cast<JointDialKind>(k), share, validR);
+                        const double err = validL != validR ? 1.0 : lopsided(posedL, posedR) - restLopsided;
+                        if (v && err > 0.001) {
+                            std::fprintf(stderr, "  [transform-dials] %s / %s dial %d at share %.1f: %.1f mm from mirrored\n",
+                                         arm.boneName(i).c_str(), arm.boneName(static_cast<std::size_t>(j)).c_str(), k, share, err * 1000.0);
+                        }
+                        mirrorErr = std::max(mirrorErr, err);
+                    }
+                }
+            }
+        }
+        report.phase("[real] transform dials: bend forward / bend sideways / twist",
+                     {gateMax("a fold's 100 is its long limit (deg off)", foldErr, 1e-3),
+                      gateMax("... and its low end the short limit in proportion (dial units off)", proportionErr, 1e-2),
+                      gateMax("a value set reads back (dial units off)", roundTripErr, 1e-2),
+                      gateMax("a value beyond the range stops at the limit (off)", stopErr, 1e-2),
+                      gateMin("positive dials go the way they say (of 7)", directions, 7.0),
+                      gateMin("limb twist dials (thigh, upper arm, forearm)", twistDials, 3.0),
+                      gateMax("left and right joints at the same value: off mirrored (mm)", mirrorErr * 1000.0, 1.0),
+                      gateMax("finger and toe joints lit together with another joint (each lights alone)", digitTwins, 0.0),
+                      info("finger and toe joints", digitJoints),
+                      gateMax("limbs whose twist bone does not light with them", limbTwinsMissing, 0.0),
+                      info("limbs with a twist bone", limbTwins),
+                      gateMin("a bend dial's sweep points where its limb goes (worst cosine)", sweepCos, 0.95),
+                      gateMax("... at the pace it goes (measured / predicted, off 1)", sweepRatioErr, 0.25),
+                      info("a bent limb's twist dial moves its far end (mm per degree, most)", sweepTwist),
+                      info("body joints with a dial", dialled),
+                      info("body joints with none (every channel locked)", noDial)});
+    }
+
     // --- A reachable overhead pull RAISES THE ARM with the head and chest still, the feet
     // planted, no suspension (the "pulling straight up bends her over" repro).
     if (report.wants("arm-raise")) {
@@ -1855,7 +2097,13 @@ void realPhases(Report& report, const std::vector<ArmatureBone>& bones) {
                           // with the roll, so the hips wait on it (a mean lag of 15-22mm where the tucked
                           // kneel's read 3-8) — and the handed-over foot's rows come back over the share's
                           // fade (60-97mm at a toe or shin in the tick they land). 85 and 15 before.)
-                          gateMax("worst single-tick jump (mm)", r.phases.empty() ? 0.0 : r.phases[0].maxJump * 1000.0, 100.0),
+                          // (120 since the bones' frames were put right, 2026-09-30 — every foot now
+                          // pitches about its own axis, 7 degrees from where it did: 45-88 on seven rigs,
+                          // where the unrolling foot now comes off the floor to turn over; 114 on the
+                          // generation whose toes fan from the mid-foot, in the tick its one gathering
+                          // step lifts a foot that still stands on its toes — a step's own start, late
+                          // in the rise. It read 88 there.)
+                          gateMax("worst single-tick jump (mm)", r.phases.empty() ? 0.0 : r.phases[0].maxJump * 1000.0, 120.0),
                           gateMax("grab's lag behind the cursor, mean (mm)", r.phases.empty() ? 0.0 : r.phases[0].lagMean() * 1000.0, 25.0),
                           gateMax("settle max step (mm)", r.settleMaxStep * 1000.0, 21.0)}, r);
         }
@@ -2312,47 +2560,9 @@ void realPhases(Report& report, const std::vector<ArmatureBone>& bones) {
         (void)hipRest;
     }
 
-    // --- ORIENTATION during a drag: the X/Y/Z wheel hold works mid-drag, rotating the
-    // grabbed joint about its own channel while the IK keeps placing it. The rotation must
-    // STICK (the drag-tick rotational prior decays every unfitted channel toward the drag start
-    // at 5%/tick — over 90 ticks a 40° turn would be gone — so a wheel-nudged bone leaves the
-    // prior for the rest of the drag), and the drag itself must be undisturbed: the joint stays
-    // on the cursor, the feet stay planted. A hand (a limb effector) and the head (a trunk
-    // effector whose neck aims at it).
-    if (report.wants("wheel-hand")) {
-        Scenario sc;
-        sc.grab = "lHand";
-        sc.path = pullPath(glm::vec3(0.0f, 0.0f, 0.25f), 60, 90);
-        sc.nudges = {{30, glm::vec3(0.0f, 0.0f, 40.0f)}};
-        sc.idleJoints = kIdleForHandDrag;
-        const RunResult r = run(sc);
-        const IdleMetrics idle = runIdle(sc);
-        const float turned = r.grabEulerEnd.z - r.grabEulerStart.z;
-        phaseLegs("[real] wheel rotate mid-drag (lHand +25cm z, hand z +40 deg at tick 30)",
-                     {gateMax("hand rotation kept vs the wheel (deg off)", std::abs(turned - 40.0f), 3.0),
-                      info("hand z channel turned (deg)", turned),
-                      gateMax("grab-to-cursor at rest (mm)", r.restingMiss * 1000.0, 5.0),
-                      gateMax("feet drift (mm)", r.contactDriftMax * 1000.0, 10.0),
-                      gateMax("idle-joint tremble (mm)", idle.oscMax * 1000.0, 35.0),
-                      gateMax("settle max step (mm)", r.settleMaxStep * 1000.0, 21.0)}, r, kHandLegs);
-    }
-    if (report.wants("wheel-head")) {
-        Scenario sc;
-        sc.grab = "head";
-        sc.path = pullPath(glm::vec3(0.10f, 0.0f, 0.0f), 60, 90);
-        sc.nudges = {{30, glm::vec3(0.0f, 20.0f, 0.0f)}};
-        sc.idleJoints = kIdleForHeadDrag;
-        const RunResult r = run(sc);
-        const IdleMetrics idle = runIdle(sc);
-        const float turned = r.grabEulerEnd.y - r.grabEulerStart.y;
-        phaseLegs("[real] wheel rotate mid-drag (head +10cm x, head y +20 deg at tick 30)",
-                     {gateMax("head rotation kept vs the wheel (deg off)", std::abs(turned - 20.0f), 3.0),
-                      info("head y channel turned (deg)", turned),
-                      gateMax("grab-to-cursor at rest (mm)", r.restingMiss * 1000.0, 5.0),
-                      gateMax("feet drift (mm)", r.contactDriftMax * 1000.0, 10.0),
-                      gateMax("idle-joint tremble (mm)", idle.oscMax * 1000.0, 35.0),
-                      gateMax("settle max step (mm)", r.settleMaxStep * 1000.0, 21.0)}, r);
-    }
+    // (The two MID-DRAG ROTATE phases — the X/Y/Z wheel held during a drag turned the grabbed
+    // joint while the IK kept placing it — went with the wheel rotation on 2026-09-30: no gesture
+    // turns a joint in the middle of a drag any more.)
 
     // --- A DEEP crouch lifts the heels: once the ankle's dorsiflexion range is spent the sole
     // pitches, and before the heel-lift round the toes rode it 6-8cm through the floor. The

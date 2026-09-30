@@ -168,11 +168,12 @@ void VulkanWindow::initializeVulkan() {
 void VulkanWindow::failDevice(const char* stage, const VulkanError& error) {
     // Every device-loss site (init, the environment upload's queued slot, a frame's VK_CHECK
     // after a driver reset/TDR) ends here: the interaction state machines must reset with the
-    // renderer they acted on, or a drag/settle/fall/axis hold outlives its figure and the axis
-    // badge stays lit over a dead viewport.
+    // renderer they acted on, or a drag/settle/fall/joint mouse mode outlives its figure and the
+    // mode's badge stays lit over a dead viewport.
     releaseVulkan();
     m_deviceFailed = true;
     qCritical() << "[Vulkan]" << stage << "failed; viewport disabled:" << error.what();
+    notifyJointTransform(); // the figure went with the renderer: the Transform tab empties
 }
 
 void VulkanWindow::releaseVulkan() {
@@ -186,9 +187,11 @@ void VulkanWindow::releaseVulkan() {
     m_ik.poseChanged = false;
     m_leftClickCandidate = false;
     m_activeDragButtons = Qt::NoButton;
-    if (m_axisRotateKey >= 0) {
-        m_axisRotateKey = -1; // the joint it rotated is going away with the renderer
-        emit axisRotateKeyChanged(-1);
+    m_transformEdit = false; // (an open dial edit dies with the figure it turned)
+    m_modalSwallow = Qt::NoButton;
+    if (m_modalKind >= 0) {
+        m_modalKind = -1; // the joint the mouse turned is going away with the renderer
+        emit jointModalChanged(-1);
     }
     if (m_fall.timer) {
         m_fall.timer->stop(); // the figure is going away with the renderer
@@ -231,7 +234,7 @@ void VulkanWindow::importOrQueue(PendingImport import) {
         return;
     }
     // The new model becomes the selection (and, for a figure, the active posing target): a
-    // release settle still ticking, a fall, or an X/Y/Z hold would retarget to it and commit
+    // release settle still ticking, a fall, or an open dial edit would retarget to it and commit
     // the previous figure's snapshot against the new figure's index — close them first.
     closeOpenPoseEdits();
     if (runImport(import, /*showProgress=*/true)) {
@@ -290,6 +293,23 @@ bool VulkanWindow::event(QEvent* e) {
             releaseVulkan();
         }
         break;
+    case QEvent::MouseButtonPress:
+    case QEvent::MouseButtonRelease:
+    case QEvent::MouseButtonDblClick:
+    case QEvent::MouseMove:
+    case QEvent::Wheel:
+    case QEvent::KeyPress:
+    case QEvent::KeyRelease:
+        // A scripted test drives the gestures itself (POSESTUDIO_IK_SCRIPT) and runs on a desktop
+        // in use: real input that happens to reach the window is not part of it. A wheel notch
+        // from the user's own scrolling, the cursor merely passing over the window, dollied the
+        // camera under a scripted drag — the drag's target jumped with the view's scale (a 14cm
+        // "pop" no rerun reproduced) and every later shot of the script was framed differently.
+        if (m_script) {
+            e->accept();
+            return true;
+        }
+        break;
     default:
         break;
     }
@@ -306,6 +326,7 @@ void VulkanWindow::renderFrame() {
     // idle, keeping the GPU busy and (with FIFO/vsync present) throttling the whole GUI thread.
     // drawFrame() returns true only when the swapchain was just rebuilt (or the frame skipped
     // mid-rebuild) and one follow-up frame is needed to reflect the new size.
+    notifyJointTransform(); // the Transform tab follows whatever this frame is about to show
     try {
         const bool perfFrame = m_diag && (m_ik.dragging || m_ik.settling);
         const qint64 f0 = perfFrame ? m_diag->frameBegin() : 0;

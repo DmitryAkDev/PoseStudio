@@ -151,6 +151,9 @@ public:
     void nudgeSelectedBone(const glm::vec3& deltaEulerDegrees) {
         m_armature.nudgeSelectedBone(deltaEulerDegrees);
     }
+    /// Turns one of a joint's transform dials (Armature::setJointDial; the dial itself is read off
+    /// armature()). The correctives follow at the next recorded frame, like any pose change.
+    bool setJointDial(const JointDial& dial, float value) { return m_armature.setJointDial(dial, value); }
 
     // --- Full-body IK (scene/ik/, driven through the armature): drag a joint, the body follows ---
     bool beginIkDrag(IkScope scope = IkScope::Body) { return m_armature.beginIkDrag(scope); }

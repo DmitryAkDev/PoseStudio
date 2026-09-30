@@ -19,6 +19,7 @@
 #include "lightingsettings.h"
 #include "shademode.h"
 #include "armature.h" // IkScope
+#include "jointtransform.h"
 
 #include <glm/glm.hpp>
 #include <vulkan/vulkan.h>
@@ -179,6 +180,18 @@ public:
     int selectBoneByName(const std::string& name);
     /// Rotates the selected joint by @p deltaEulerDegrees (accumulated), re-posing the figure.
     void nudgeSelectedBone(const glm::vec3& deltaEulerDegrees);
+    /// The selected joint's TRANSFORM DIALS (the Transform tab; Armature::jointDial): its name and
+    /// the three dials' values and ranges as the pose stands — invalid without a posable figure or
+    /// a selected joint. The joint is the one the selection HIGHLIGHTS (the user's, through a
+    /// landing bounce).
+    JointTransform selectedJointTransform() const;
+    /// Turns dial @p dial (a JointDialKind) of the selected joint to @p value. True if the pose
+    /// changed — the pose may rest short of the value (the limits, the FK collision stop).
+    bool setSelectedJointDial(int dial, float value);
+    /// How turning dial @p dial of the selected joint moves its limb, as the pose stands
+    /// (Armature::jointDialSweep) — what the viewport's mouse mode follows. False without a
+    /// selected joint or for a motion the joint does not have.
+    bool selectedJointDialSweep(int dial, JointDialSweep& sweep) const;
     /// The "pose settled" hook after an interactive pose edit: re-evaluates the figure's pose
     /// corrective weights now (they blend live on the GPU during a drag anyway) and prints the
     /// active ones under POSESTUDIO_DUMP_CORRECTIVES — see Model::refreshCorrectives.

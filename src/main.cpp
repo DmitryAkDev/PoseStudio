@@ -19,6 +19,7 @@
 #include "assetmanagerwidget.h"
 #include "apptheme.h"
 #include "environmentpanel.h"
+#include "transformpanel.h"
 #include "viewport/viewportwidget.h"
 
 #include <QApplication>
@@ -89,8 +90,19 @@ int main(int argc, char *argv[]) {
 
     AssetManagerWidget *assetsTab = new AssetManagerWidget();
     sidePanel->addTab(assetsTab, QStringLiteral("Asset Manager"));
+    // The Transform tab: the selected joint's rotation as three dials (see TransformPanel).
+    sidePanel->addTab(new pose::TransformPanel(viewport), QStringLiteral("Transform"));
     // The Environment tab: live image-based-lighting controls for the viewport (see EnvironmentPanel).
     sidePanel->addTab(new pose::EnvironmentPanel(viewport), QStringLiteral("Environment"));
+    // Developer lever: POSESTUDIO_TAB=<title> starts on that side tab (the scripted test's
+    // `uishot` then pictures it — tools/ikscripts/README.md).
+    if (const QString startTab = qEnvironmentVariable("POSESTUDIO_TAB"); !startTab.isEmpty()) {
+        for (int i = 0; i < sidePanel->count(); ++i) {
+            if (sidePanel->tabText(i).compare(startTab, Qt::CaseInsensitive) == 0) {
+                sidePanel->setCurrentIndex(i);
+            }
+        }
+    }
 
     menuManager->setAssetManagerWidget(assetsTab);
     menuManager->setViewportWidget(viewport);

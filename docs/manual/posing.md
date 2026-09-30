@@ -55,9 +55,10 @@ Some joints have their own way of being dragged, because that is what a person m
 **A finger or a toe dragged moves that one digit and nothing else.** Every joint of the digit bends toward the cursor, up to where the digit joins the hand or the foot; the hand, the foot and the whole body stay exactly where they are. It makes no difference whether `Ctrl` is held.
 
 - Take hold of a **fingertip** to curl or straighten the finger; take hold nearer the knuckle to swing the finger from the knuckle.
+- A click **selects the joint whose segment you clicked**, and that segment alone lights up: the base, the middle or the tip of a finger, the base or the tip of a toe. The Transform tab names it.
 - Pulled beyond its reach, the digit points after the cursor as far as its joints allow and rests there. The joint limits and the floor still hold.
 - To move the **hand** or the **foot** itself, take hold of it, not of a digit: the back of the hand, the palm or the wrist; the instep, the heel or the ankle.
-- To turn a single finger joint about one axis, select it and use the `X`/`Y`/`Z` wheel (below).
+- To turn a single finger joint, select it and press `B` (or `S`, `T`) and move the mouse, or use the Transform tab (both below).
 - Zoom in before posing fingers. From a view of the whole figure a finger is a few pixels wide, and it is easy to take hold of the hand instead.
 
 ## Posing one part: Ctrl + drag
@@ -82,11 +83,51 @@ Nothing else happens in this mode: no balance, no step, no lift-off, and the arm
 
 To *pose* the torso — lean, bow, crouch, walk — drag it without `Ctrl`.
 
-## Rotating a joint: FK
+## Turning a joint with the mouse: B, S, T
 
-To turn one joint about one axis — twist a forearm, tilt the head, cock a wrist — **hold `X`, `Y` or `Z` and roll the mouse wheel** with a joint selected: each wheel notch turns the joint 5° about that one channel of its rotation. A badge under the viewport strip shows the axis. This is the way to reach a joint's *twist*, which a drag cannot address. The hold also works in the middle of a drag: the wheel turns the grabbed joint while the body keeps following the cursor.
+To turn one joint and nothing else — fold a knee, tilt the head, twist a forearm — select it (click it), then press one of three keys. They work whichever panel you last clicked in, and they are also on the menu, under **Edit → Turn Joint with Mouse**:
 
-Rotations stop at the joint's limits, and a rotation that would push a limb into the body stops at the body. Each key-hold is one undo step.
+| Key | Turns |
+| --- | --- |
+| `B` | **Bend**: the joint's natural direction. A knee or an elbow folds, a finger curls, the spine and the head bend forward. |
+| `S` | **Side-Side**: its secondary direction. A thigh moves out to the side, an arm is raised or lowered, the head tilts. |
+| `T` | **Twist**: the turn about the joint's own length. A forearm or a thigh rotates, the head turns. |
+
+These are the same three motions as the dials of the [Transform tab](#the-transform-tab). While the mode is on, a badge under the viewport strip names it, the pointer becomes a four-way arrow, and **moving the mouse turns the joint — no button held**, wherever in the PoseStudio window the pointer is:
+
+- **Move the mouse the way the limb should go.** The limb's far end follows the pointer's movement: with a knee selected in a side view, moving the mouse toward her back folds the shin back.
+- For a **twist**, and for a bend that goes straight toward or away from you in the current view, move the mouse **right for more and left for less**.
+- **Left click** (or `Enter`) keeps the result. The click belongs to the mode: whatever is under the pointer is not clicked.
+- **`Esc`**, a **right click**, or the same key again puts the joint back as it was.
+- Pressing another of the three keys drops what the running one did and starts that one. To combine two, click to keep the first, then press the next key.
+- The mouse wheel still zooms while the mode is on, and the mode is not available in the middle of a drag.
+
+Rotations stop at the joint's limits, and a rotation that would push a limb into the body stops at the body. Only the one joint turns: no balance, no planted feet (press the [Ground button](#the-ground-button) afterwards if the feet left the floor). Each kept turn is one undo step. The keys are live only while the selected joint has that motion (an elbow has no Side-Side), and a text field you are typing in keeps its letters.
+
+## The Transform tab
+
+The **Transform** tab on the side panel shows the selected joint's rotation as three dials, and lets you set it by number. Click a joint on the figure; its name appears at the top of the tab with:
+
+| Dial | What it turns |
+| --- | --- |
+| **Bend** | The joint's natural direction: a knee or an elbow folds, a finger curls, the spine, the neck and the head bend forward, a thigh or an upper arm swings forward. |
+| **Side-Side** | Its secondary direction: a thigh moves out to the side, an arm is raised or lowered, the spine leans to one side. |
+| **Twist** | The turn about the joint's own length: a forearm or a thigh rotates, the head turns. |
+
+Every dial reads on the same scale, whatever the joint:
+
+- **0** is the rest pose — the joint as the figure was imported.
+- **100** is fully bent: the joint's limit in that direction.
+- **Negative values** bend it the other way, in the same proportion, and stop where the joint's other limit is. A knee that folds a long way and straightens only a little past straight reads from about -7 to 100; a joint that turns equally far both ways reads from -100 to 100.
+
+The dials are scrub fields like the ones on the Environment tab: drag left or right across one to change it, or click it once to type a number (`Enter` confirms, `Esc` cancels). The bar fills from the rest pose toward the value, to the right for a positive value and to the left for a negative one. The small button beside a dial returns that one dial to 0, and **Reset All** returns all three.
+
+- The figure moves as you scrub. A dial turns the one joint and nothing else follows: no balance, no planted feet. Press the [Ground button](#the-ground-button) afterwards if the feet left the floor.
+- A dial stops at the joint's limits, and at the body: a rotation that would push a limb into the torso or another limb stops there, and the dial shows where it stopped.
+- A dial the joint does not have is greyed out. An elbow and the end joints of the fingers only fold, so their Side-Side is disabled.
+- On a left and a right joint the same value gives the mirrored pose: 50 on both thighs' Side-Side moves both legs outward.
+- The dials follow the figure. Drag a joint in the viewport, turn it with `B` / `S` / `T`, undo, or load a pose, and they show the selected joint's new rotation.
+- Each scrub, each typed value and each reset is one undo step.
 
 ## Joint pins
 
@@ -125,7 +166,7 @@ Pins are left alone by all five.
 
 ## Undo and redo
 
-**Edit → Undo** (`Ctrl+Z`) and **Redo** (`Ctrl+Y`) walk one history of everything you changed: each drag, each rotation, each pin toggle, each utility, each drop to the ground and each pose file loaded — and each lighting change on the Environment tab. An entry is recorded when a gesture ends, so a long drag is one step. Deleting an object clears the history.
+**Edit → Undo** (`Ctrl+Z`) and **Redo** (`Ctrl+Y`) walk one history of everything you changed: each drag, each rotation, each dial change on the Transform tab, each pin toggle, each utility, each drop to the ground and each pose file loaded — and each lighting change on the Environment tab. An entry is recorded when a gesture ends, so a long drag is one step. Deleting an object clears the history.
 
 ## Several figures
 

@@ -119,4 +119,46 @@ expect euler.lowerJaw.x == 0
 expect steps < 1
 shot 407_front_face_drag
 release
+reset
+
+# 9. EACH JOINT OF A DIGIT LIGHTS ITS OWN PART (`lit.<bone>`: the selection highlight tints that
+# bone's flesh). A finger's first two joints used to light together whichever was clicked — the
+# second, a hinge with two locked channels, was taken for the first's twist bone — and nobody
+# could tell which joint was selected. The same for a toe's two joints.
+view front
+closeup lHand 0.16
+click lIndex1@0.5
+expect selected.lIndex1 == 1
+expect lit.lIndex1 == 1
+expect lit.lIndex2 == 0
+expect lit.lIndex3 == 0
+shot 408_index_joint1_selected
+click lIndex2@0.5
+expect selected.lIndex2 == 1
+expect lit.lIndex2 == 1
+expect lit.lIndex1 == 0
+expect lit.lIndex3 == 0
+shot 409_index_joint2_selected
+click lIndex3
+expect selected.lIndex3 == 1
+expect lit.lIndex3 == 1
+expect lit.lIndex2 == 0
+shot 410_index_joint3_selected
+view top
+closeup lFoot 0.16
+click lSmallToe2@0.5
+expect selected.lSmallToe2 == 1
+expect lit.lSmallToe2 == 1
+expect lit.lSmallToe2_2 == 0
+shot 411_toe_joint1_selected
+click lSmallToe2_2 0 10
+expect selected.lSmallToe2_2 == 1
+expect lit.lSmallToe2_2 == 1
+expect lit.lSmallToe2 == 0
+shot 412_toe_joint2_selected
+# A limb's TWIST bone still lights with its bend bone: a grabbed thigh lights the whole thigh.
+view front
+click lThigh
+expect lit.lThigh == 1
+expect lit.lThighTwist == 1
 quit

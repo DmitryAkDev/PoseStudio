@@ -1,0 +1,413 @@
+/**
+ * @file armaturedials.cpp
+ * @brief Armature's TRANSFORM DIALS: a joint's rotation read and set as three dials — Bend
+ *        Forward, Bend Sideways, Twist — each on a 0-100 scale of its own limit (the Transform tab).
+ *
+ * A joint's pose is three Euler channels in its own orientation frame, in degrees, between limits
+ * that differ from joint to joint and from one figure generation to the next. A dial says the same
+ * thing in the joint's own terms: 0 is the rest pose, 100 is as far as the joint goes in its
+ * natural direction, and a negative value bends it the other way in the same proportion until the
+ * other limit stops it (a knee authored -11..155 degrees reads -7..100).
+ *
+ * WHICH channel is which dial, and which way is positive, is found by STRUCTURE — the ranges the
+ * rig authors and the way the bone lies — never by bone names, so it holds for every figure
+ * generation (checked on the eight reference rigs by the harness's `transform-dials` phase, which
+ * also gates that the same value on a left and a right joint gives mirrored poses). See
+ * Armature::jointDial in armature.h for the rules; the thresholds below are the whole tuning.
+ */
+
+#include "armature.h"
+
+#include <glm/gtc/matrix_transform.hpp>
+
+#include <algorithm>
+#include <cmath>
+
+namespace pose {
+
+namespace {
+
+/// A channel whose limits span less than this is LOCKED: it has no dial (isTwistBone's measure).
+constexpr float kDialLockedRangeDeg = 2.0f;
+/// An unlimited channel (the hips' own rotation) reads 100 at half a turn.
+constexpr float kDialUnlimitedDeg = 180.0f;
+/// BEND FORWARD is the wider of the two bend channels — unless the narrower spans this share of
+/// the wider or more, where the ranges say nothing (a shoulder's 150 and 130 degrees, a chest's
+/// 40 and 50 on the oldest generation) and the channel that swings the limb fore and aft is it.
+constexpr float kDialNearEqualShare = 0.75f;
+/// A channel whose short side is this share of its long side or less is ONE-SIDED — a fold: its
+/// long side is the way the joint bends (a knee's 155 against 11, a collar's 55 against 10).
+/// Between the measured cases: a thigh's 35 / 115 and a shoulder's 40 / 110 (0.30-0.36, their
+/// long side forward either way) below it; a head's 20 / 40 and a neck's 12 / 27 (0.44-0.50,
+/// whose LONG side is backward) above it, which bend forward by the way they lie instead.
+constexpr float kDialOneSidedShare = 0.4f;
+/// Two sides of a channel within this share of each other are EVEN (a spine joint's side bend).
+constexpr float kDialEvenShare = 0.05f;
+/// A side bend that moves what the joint carries less than this (of a unit) sideways is read by
+/// its up-and-down instead (an arm lying along the shoulders' line is raised and lowered).
+constexpr float kDialLateralMin = 0.2f;
+/// The limb's direction is read off the joint's heaviest children where they stand this share of
+/// the figure's height or more from it (a mid-foot bone sits millimetres from its ankle).
+constexpr float kDialLimbMinShare = 0.02f;
+/// A bone this share of the figure's height off the sagittal plane is a side's (armature.cpp's
+/// mirror pairing reads the same measure).
+constexpr float kDialOffPlaneShare = 0.003f;
+/// The SWEEP's lever (jointDialSweep) is the rigid segment's length — unless the next joint
+/// stands closer than this share of the figure's height, where this share of it stands in.
+constexpr float kDialSweepMinShare = 0.04f;
+constexpr float kDialSweepDefaultShare = 0.08f;
+
+int orderAxis(char c) {
+    switch (c) {
+    case 'X': case 'x': return 0;
+    case 'Y': case 'y': return 1;
+    case 'Z': case 'z': return 2;
+    default:            return -1;
+    }
+}
+
+} // namespace
+
+int Armature::dialJoint(int bone) const {
+    if (bone < 0 || bone >= static_cast<int>(m_bones.size())) {
+        return -1;
+    }
+    int joint = bone;
+    while (isTwistBone(joint) && m_bones[static_cast<std::size_t>(joint)].parent >= 0) {
+        joint = m_bones[static_cast<std::size_t>(joint)].parent;
+    }
+    return joint;
+}
+
+glm::vec3 Armature::limbDirection(int bone) const {
+    const std::size_t b = static_cast<std::size_t>(bone);
+    const Bone&       src = m_bones[b];
+    const auto bindPos = [this](int i) { return -glm::vec3(m_bones[static_cast<std::size_t>(i)].inverseBind[3]); };
+    const auto subtreeSize = [this](int root) {
+        int              size = 0;
+        std::vector<int> stack{root};
+        while (!stack.empty()) {
+            const int node = stack.back();
+            stack.pop_back();
+            ++size;
+            stack.insert(stack.end(), m_children[static_cast<std::size_t>(node)].begin(),
+                         m_children[static_cast<std::size_t>(node)].end());
+        }
+        return size;
+    };
+
+    // The bone's LENGTH AXIS is the format's own statement: the rotation order's first axis, in
+    // the bone's orientation frame. (Read off the joints instead it is wrong wherever a bone's
+    // children do not lie along it: the toes fan sideways from the ball, a mid-foot bone sits
+    // millimetres from its ankle, the chest's heaviest children are the collars.) What the
+    // joints say is only which WAY along it is distal.
+    const int       lengthAxis = std::max(0, orderAxis(src.rotationOrder.empty() ? 'X' : src.rotationOrder[0]));
+    const glm::vec3 axis = glm::normalize(glm::vec3(src.orient[lengthAxis]));
+    const glm::vec3 origin = bindPos(bone);
+
+    float lowest = origin.y, highest = origin.y;
+    for (std::size_t i = 0; i < m_bones.size(); ++i) {
+        const float y = bindPos(static_cast<int>(i)).y;
+        lowest = std::min(lowest, y);
+        highest = std::max(highest, y);
+    }
+    const float minLength = kDialLimbMinShare * std::max(highest - lowest, 1.0e-3f);
+
+    // The HEAD lies the way it stands on the neck: its children are the face rig's, in front of it.
+    bool faceBelow = false;
+    for (const int c : m_children[b]) {
+        faceBelow = faceBelow || (static_cast<std::size_t>(c) < m_boneClass.size() &&
+                                  static_cast<BoneClass>(m_boneClass[static_cast<std::size_t>(c)]) == BoneClass::Face);
+    }
+
+    // Toward the children that carry the most — a mirrored pair together (the thighs under the
+    // pelvis, the collars under the chest: their mean is on the midline) — walking down past
+    // children that sit right at the joint.
+    float along = 0.0f;
+    if (!faceBelow) {
+        for (int at = bone; !m_children[static_cast<std::size_t>(at)].empty();) {
+            const std::vector<int>& kids = m_children[static_cast<std::size_t>(at)];
+            int       best = 0;
+            int       first = -1;
+            int       count = 0;
+            glm::vec3 sum(0.0f);
+            for (const int c : kids) {
+                const int size = subtreeSize(c);
+                if (size > best) {
+                    best = size;
+                    first = c;
+                    count = 0;
+                    sum = glm::vec3(0.0f);
+                }
+                if (size == best) {
+                    sum += bindPos(c);
+                    ++count;
+                }
+            }
+            const glm::vec3 toward = sum / static_cast<float>(count) - origin;
+            if (glm::length(toward) >= minLength) {
+                along = glm::dot(axis, glm::normalize(toward));
+                break;
+            }
+            at = first;
+        }
+    }
+    if (std::abs(along) < 0.3f) {
+        // No clear answer there (a leaf, the head, children beside the bone's line): everything the
+        // joint carries, or for a leaf the way it lies from its parent.
+        glm::vec3 sum(0.0f);
+        int       count = 0;
+        if (!faceBelow) {
+            std::vector<int> stack(m_children[b].begin(), m_children[b].end());
+            while (!stack.empty()) {
+                const int node = stack.back();
+                stack.pop_back();
+                sum += bindPos(node) - origin;
+                ++count;
+                stack.insert(stack.end(), m_children[static_cast<std::size_t>(node)].begin(),
+                             m_children[static_cast<std::size_t>(node)].end());
+            }
+        }
+        const glm::vec3 toward = count > 0 ? sum / static_cast<float>(count) : glm::vec3(src.localBind[3]);
+        if (std::abs(glm::dot(axis, toward)) > 1.0e-6f) {
+            along = glm::dot(axis, toward);
+        }
+    }
+    return along >= 0.0f ? axis : -axis;
+}
+
+JointDial Armature::jointDial(int bone, JointDialKind kind) const {
+    JointDial   dial;
+    const int   joint = dialJoint(bone);
+    if (joint < 0) {
+        return dial;
+    }
+    const Bone& b = m_bones[static_cast<std::size_t>(joint)];
+
+    // A channel's limits (an unlimited channel reads half a turn either way), and the dial made
+    // of one: positive toward @p sign's limit — or, where that side has no room, the other.
+    const auto limits = [this](int which, int axis, float& lo, float& hi) {
+        const Bone& bn = m_bones[static_cast<std::size_t>(which)];
+        lo = bn.rotLimited[axis] ? bn.rotMin[axis] : -kDialUnlimitedDeg;
+        hi = bn.rotLimited[axis] ? bn.rotMax[axis] : kDialUnlimitedDeg;
+    };
+    const auto make = [&](int which, int axis, float sign) {
+        JointDial out;
+        float     lo = 0.0f, hi = 0.0f;
+        limits(which, axis, lo, hi);
+        if (hi - lo < kDialLockedRangeDeg) {
+            return out; // locked: no dial
+        }
+        float full = sign > 0.0f ? hi : lo;
+        if (std::abs(full) < 0.5f * kDialLockedRangeDeg) {
+            full = sign > 0.0f ? lo : hi;
+        }
+        const float a = lo / full * 100.0f;
+        const float c = hi / full * 100.0f;
+        out.bone = which;
+        out.axis = axis;
+        out.fullDeg = full;
+        out.minValue = std::min(a, c);
+        out.maxValue = std::max(a, c);
+        return out;
+    };
+    // Which side of the body a bone is on (0: the midline), by its bind position.
+    const auto sideOf = [this](int which) {
+        float lowest = 0.0f, highest = 0.0f;
+        for (std::size_t i = 0; i < m_bones.size(); ++i) {
+            const float y = -m_bones[i].inverseBind[3].y;
+            lowest = i == 0 ? y : std::min(lowest, y);
+            highest = i == 0 ? y : std::max(highest, y);
+        }
+        const float offPlane = kDialOffPlaneShare * std::max(highest - lowest, 1.0e-3f);
+        const float x = -m_bones[static_cast<std::size_t>(which)].inverseBind[3].x;
+        return x > offPlane ? 1 : (x < -offPlane ? -1 : 0); // +1 = her left (+X), -1 = her right
+    };
+    // A channel's longer side: +1 / -1, or 0 when the two are even.
+    const auto longerSide = [&](int which, int axis) {
+        float lo = 0.0f, hi = 0.0f;
+        limits(which, axis, lo, hi);
+        const float big = std::max(std::abs(lo), std::abs(hi));
+        if (std::abs(std::abs(hi) - std::abs(lo)) <= kDialEvenShare * std::max(big, 1.0e-6f)) {
+            return 0.0f;
+        }
+        return std::abs(hi) > std::abs(lo) ? 1.0f : -1.0f;
+    };
+
+    const int twistAxis = std::max(0, orderAxis(b.rotationOrder.empty() ? 'X' : b.rotationOrder[0]));
+
+    if (kind == JointDialKind::Twist) {
+        // The joint's own twist channel — or, where that is locked, its limb's twist bone's (the
+        // limb continues through it; one generation hangs leaf twist helpers beside the next joint).
+        int   twistBone = joint;
+        int   axis = twistAxis;
+        float lo = 0.0f, hi = 0.0f;
+        limits(joint, twistAxis, lo, hi);
+        if (hi - lo < kDialLockedRangeDeg) {
+            twistBone = -1;
+            const int main = mainChild(joint);
+            if (main >= 0 && isTwistBone(main)) {
+                twistBone = main;
+            } else {
+                for (const int c : m_children[static_cast<std::size_t>(joint)]) {
+                    if (isTwistBone(c)) {
+                        twistBone = c;
+                        break;
+                    }
+                }
+            }
+            if (twistBone < 0) {
+                return dial;
+            }
+            const Bone& t = m_bones[static_cast<std::size_t>(twistBone)];
+            for (int a = 0; a < 3; ++a) {
+                if (!(t.rotLimited[a] && (t.rotMax[a] - t.rotMin[a]) < kDialLockedRangeDeg)) {
+                    axis = a; // (a twist bone has exactly one free channel)
+                }
+            }
+        }
+        // The longer side; on an even channel a centre or left bone's positive, mirrored on the
+        // right — the sagittal mirror of a pose is (x, -y, -z) per channel (Armature::mirrorPose).
+        float sign = longerSide(twistBone, axis);
+        if (sign == 0.0f) {
+            sign = (sideOf(twistBone) < 0 && axis != 0) ? -1.0f : 1.0f;
+        }
+        return make(twistBone, axis, sign);
+    }
+
+    // The two bend channels, and how a positive turn of each moves what the joint carries: the
+    // channel's axis crossed with the way the limb lies (both at bind, where the bone's frame is
+    // its orientation).
+    const int       o0 = (twistAxis + 1) % 3;
+    const int       o1 = (twistAxis + 2) % 3;
+    const glm::vec3 limb = limbDirection(joint);
+    const auto sweep = [&](int axis) { return glm::cross(glm::normalize(glm::vec3(b.orient[axis])), limb); };
+    const auto range = [&](int axis) {
+        float lo = 0.0f, hi = 0.0f;
+        limits(joint, axis, lo, hi);
+        return hi - lo;
+    };
+    const float r0 = range(o0);
+    const float r1 = range(o1);
+    int forward = o0;
+    if (std::min(r0, r1) >= kDialNearEqualShare * std::max(r0, r1)) {
+        forward = std::abs(sweep(o0).z) >= std::abs(sweep(o1).z) ? o0 : o1; // the one that swings fore and aft
+    } else {
+        forward = r0 >= r1 ? o0 : o1; // the wider one
+    }
+    const int sideways = forward == o0 ? o1 : o0;
+
+    if (kind == JointDialKind::BendForward) {
+        float lo = 0.0f, hi = 0.0f;
+        limits(joint, forward, lo, hi);
+        const float big = std::max(std::abs(lo), std::abs(hi));
+        const float small = std::min(std::abs(lo), std::abs(hi));
+        float sign = 1.0f;
+        if (small <= kDialOneSidedShare * big) {
+            sign = std::abs(hi) >= std::abs(lo) ? 1.0f : -1.0f; // a fold: its long side
+        } else {
+            const glm::vec3 v = sweep(forward);
+            sign = std::abs(v.z) >= std::abs(v.y) ? (v.z >= 0.0f ? 1.0f : -1.0f)  // forward
+                                                  : (v.y <= 0.0f ? 1.0f : -1.0f); // ... or down
+        }
+        return make(joint, forward, sign);
+    }
+
+    // Bend Sideways: the longer side; on an even channel OUTWARD for a side's bone, toward her
+    // left for a centre one — or, for a limb that a side bend moves up and down, up.
+    float sign = longerSide(joint, sideways);
+    if (sign == 0.0f) {
+        const glm::vec3 v = sweep(sideways);
+        if (std::abs(v.x) > kDialLateralMin) {
+            const float outward = sideOf(joint) < 0 ? -v.x : v.x;
+            sign = outward >= 0.0f ? 1.0f : -1.0f;
+        } else {
+            sign = v.y >= 0.0f ? 1.0f : -1.0f;
+        }
+    }
+    return make(joint, sideways, sign);
+}
+
+float Armature::jointDialValue(const JointDial& dial) const {
+    if (!dial.valid() || dial.bone >= static_cast<int>(m_boneEuler.size()) || dial.fullDeg == 0.0f) {
+        return 0.0f;
+    }
+    return m_boneEuler[static_cast<std::size_t>(dial.bone)][dial.axis] / dial.fullDeg * 100.0f;
+}
+
+bool Armature::setJointDial(const JointDial& dial, float value) {
+    if (!dial.valid() || dial.bone >= static_cast<int>(m_boneEuler.size())) {
+        return false;
+    }
+    const float target = std::clamp(value, dial.minValue, dial.maxValue) / 100.0f * dial.fullDeg;
+    const float before = m_boneEuler[static_cast<std::size_t>(dial.bone)][dial.axis];
+    if (std::abs(target - before) < 1.0e-5f) {
+        return false;
+    }
+    glm::vec3 delta(0.0f);
+    delta[dial.axis] = target - before;
+    nudgeBone(dial.bone, delta); // the limits clamp; the body volumes stop it (the FK collision stop)
+    return m_boneEuler[static_cast<std::size_t>(dial.bone)][dial.axis] != before;
+}
+
+bool Armature::jointDialSweep(const JointDial& dial, JointDialSweep& sweep) const {
+    if (!dial.valid() || dial.bone >= static_cast<int>(m_bones.size()) ||
+        dial.bone >= static_cast<int>(m_poseGlobal.size()) || dial.bone >= static_cast<int>(m_boneWorldPos.size())) {
+        return false;
+    }
+    const std::size_t b = static_cast<std::size_t>(dial.bone);
+    const Bone&       bone = m_bones[b];
+    const auto bindPos = [this](int i) { return -glm::vec3(m_bones[static_cast<std::size_t>(i)].inverseBind[3]); };
+
+    // The channel's axis as it stands: the rotations composed OUTSIDE it (the letters before its
+    // own in the rotation order, as eulerMatrix composes them) carry it; the bone's orientation
+    // frame and its parent's posed rotation put it in the model's space.
+    glm::mat3 prefix(1.0f);
+    for (const char ch : bone.rotationOrder) {
+        const int axis = orderAxis(ch);
+        if (axis < 0) {
+            continue;
+        }
+        if (axis == dial.axis) {
+            break;
+        }
+        glm::vec3 e(0.0f);
+        e[axis] = 1.0f;
+        prefix = prefix * glm::mat3(glm::rotate(glm::mat4(1.0f), glm::radians(m_boneEuler[b][axis]), e));
+    }
+    glm::vec3 unit(0.0f);
+    unit[dial.axis] = 1.0f;
+    const glm::mat3 toWorld(m_transform);
+    const glm::mat3 parentRot =
+        bone.parent >= 0 ? glm::mat3(m_poseGlobal[static_cast<std::size_t>(bone.parent)]) : glm::mat3(1.0f);
+    const glm::vec3 axisWorld = toWorld * parentRot * glm::mat3(bone.orient) * prefix * unit;
+
+    // The lever: the way the bone lies (every bind is translation-only, so the bone's posed
+    // rotation IS its rotation away from the bind) over its rigid segment's length — to the next
+    // real joint past the limb's twist bones, or a share of the figure's height where that joint
+    // sits at this one (a mid-foot bone millimetres from its ankle) or there is none (a leaf).
+    float lowest = 0.0f, highest = 0.0f;
+    for (std::size_t i = 0; i < m_bones.size(); ++i) {
+        const float y = bindPos(static_cast<int>(i)).y;
+        lowest = i == 0 ? y : std::min(lowest, y);
+        highest = i == 0 ? y : std::max(highest, y);
+    }
+    const float height = std::max(highest - lowest, 1.0e-3f);
+    int farJoint = mainChild(dial.bone);
+    while (farJoint >= 0 && isTwistBone(farJoint)) {
+        farJoint = mainChild(farJoint);
+    }
+    float length = farJoint >= 0 ? glm::length(bindPos(farJoint) - bindPos(dial.bone)) : 0.0f;
+    if (length < kDialSweepMinShare * height) {
+        length = kDialSweepDefaultShare * height;
+    }
+    const glm::vec3 lever = toWorld * glm::mat3(m_poseGlobal[b]) * limbDirection(dial.bone) * length;
+
+    sweep.tip = m_boneWorldPos[b] + lever;
+    sweep.degreesPerUnit = std::abs(dial.fullDeg) / 100.0f;
+    // (Toward the dial's positive side: the channel's angle grows with the dial where fullDeg > 0.)
+    sweep.tipPerDegree = glm::radians(dial.fullDeg >= 0.0f ? 1.0f : -1.0f) * glm::cross(axisWorld, lever);
+    return true;
+}
+
+} // namespace pose

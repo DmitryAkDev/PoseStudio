@@ -9,6 +9,9 @@ and a pose can pass every gate and still look wrong.
 Nothing is injected into the operating system. The window's own gesture functions are called
 with a scripted cursor, so a run does not touch the mouse or keyboard and is safe on a desktop
 that is in use; frames are read back from the GPU, so the window does not need to be visible.
+And nothing comes in: while a script runs the viewport ignores real mouse, wheel and key events
+(a wheel notch from your own scrolling, the cursor merely over the window, once dollied the camera
+under a scripted drag and showed up as a pop that no rerun reproduced).
 
 ## Running
 
@@ -76,9 +79,14 @@ along the bone's limb segment — the flesh, where a user clicks — instead of 
 | `shade <row>` | Shade mode, a row of the picker. |
 | `pose <file>` / `reset` / `undo` / `ground` | Load a pose file, Reset Pose, Undo, the Ground button. |
 | `lift <metres>` | Raise the active figure that far off the floor, as posed; `ground` then drops her. The fall and the landing bounce run on the app's own timer: `wait` through them (half a metre falls in 19 ticks, the bounce lasts 21-30). |
-| `fk <bone> <dx°> <dy°> <dz°>` | Turn a joint, as the X/Y/Z wheel would (through the FK collision stop). |
+| `fk <bone> <dx°> <dy°> <dz°>` | Turn a joint about its own channels, as a Transform dial turns one (through the limits and the FK collision stop). |
+| `modal <bend\|side\|twist>` | The `B` / `S` / `T` key, as a key event handed to the viewport's own handler: the joint mouse mode on that dial of the selected joint (the same key again drops it, another switches). |
+| `app <b\|s\|t\|esc\|enter\|click\|rclick>`, `app move <dxPx> <dyPx> [steps]` | The same input arriving at the APPLICATION with the viewport not focused: the Edit menu's action for the key (only if it is enabled, as the shortcut would be), and key and mouse events delivered to the main window — where the mode's application-wide input filter must pick them up. |
+| `modalmove <dxPx> <dyPx> [steps]` | Move the mouse that far with no button held (+y down), in that many move events (20 by default) through the viewport's own handler. |
+| `modalkeep [enter]` / `modaldrop [esc]` | The left click (or `Enter`): keep, one undo entry / the right click (or `Esc`): the joint back as it was. Press and release go through the viewport's own handlers. |
+| `dial <forward\|sideways\|twist> <value>` | Set the selected joint's Transform-tab dial to that value (0 = rest, 100 = the joint's limit), the way the tab does: one bracketed, undoable edit. Select the joint first (`click`). |
 | `pin <bone>[@share]` / `unpinall` | Click there and press P; drop every pin. Like `press`, when the pick lands on another part of the body (the hanging hand covers the hip from the side) the named bone is pinned instead, and the log says `pinned by name instead`. |
-| `click <bone>[@share]` | The real pick at that pixel; prints what it found. The pixel is the NAMED bone's joint's, whatever a selection of it selects: `click lEye` clicks at the eye, and finds the head. |
+| `click <bone>[@share] [dxPx dyPx]` | The real pick at that pixel (moved by the offset where given, +y down: a toe's tip lies past its last joint's pixel); prints what it found. The pixel is the NAMED bone's joint's, whatever a selection of it selects: `click lEye` clicks at the eye, and finds the head. |
 | `pick2d on\|off` | The A/B: the 2D pick alone, as before 2026-09-26 (every joint and bone body projected to the screen, the nearest within 32px taken, no occlusion check) — a hidden part CAN be selected through another. `POSESTUDIO_PICK_2D=1` does the same for a whole run. |
 | `press <bone>[@share]` | The real press: the pick at the bone's pixel, then the press path (an IK drag begins). The pick is honest — what it finds is what is under that pixel — and on another body that can be another limb (a broad character's hanging arm covers her chest from the side, one hand covers the other). When the rig would then drag a different joint than the one named, the bone is grabbed by name at the same point instead, and the log says `the pick found <other> there`. A small bone OF the named one (a pectoral for the chest) is what a user's click finds too, and stands. |
 | `cpress <bone>[@share]` | The Ctrl press: the same pick and press path, beginning the Ctrl + drag — a SCOPED drag for a limb or the head (the grabbed chain alone moves), the FIGURE MOVE for the body itself (the hips, the abdomen, the chest: the whole figure as posed, nothing planted, the user's pins holding), the digit's own drag for a finger or a toe. |
@@ -91,6 +99,7 @@ along the bone's limb segment — the flesh, where a user clicks — instead of 
 | `report [label]` | Gaze, lowest joint, grab-to-cursor, hips/head travel since the press, pelvis angles, steps, worst single-tick joint move, and the posed channels. |
 | `expect <metric> <op> <value>` | A test assertion (`<`, `<=`, `>`, `>=`, `==`). A failure is printed and counted; the app's exit code is the count. |
 | `shot <name>` | Save the next rendered frame as `<name>.png`. |
+| `uishot <name>` | Save a picture of the application's WIDGETS as `ui/<name>.png` (and the floating viewport strip, with its mode badge, as `ui/<name>_strip.png`) — the side tabs; the native viewport is not in it (`shot` reads that off the GPU). Run with `POSESTUDIO_TAB=Transform` (any tab's title) to start on that tab. Kept in a folder of its own, out of the contact sheet and the reference comparison. |
 | `quit` | Exit (also at the end of the script). |
 
 ## Metrics (`expect`)
@@ -107,7 +116,11 @@ along the bone's limb segment — the flesh, where a user clicks — instead of 
 | `tilt.<bone>` | A bone's tilt from upright, degrees. |
 | `y.<bone>`, `moved.<bone>`, `movedxz.<bone>` | A joint's height, its travel since the last press, and that travel along the floor alone (a planted foot's place, a heel lift aside), mm. |
 | `selected.<bone>` | 1 if the selected joint is that bone or a bone of its rigid segment (what a `click` picked), else 0. |
+| `lit.<bone>` | 1 if the selection highlight tints that bone's flesh (the selected joint, or the twist bone of its limb segment), else 0. |
 | `euler.<bone>.<x\|y\|z>` | A posed channel, degrees. |
+| `dial.<forward\|sideways\|twist>` | The selected joint's Transform-tab dial as it reads now; `dialmin.<kind>` / `dialmax.<kind>` its range. Unknown (a failed `expect`) with no joint selected or for a dial the joint does not have. |
+| `dialjoint.<bone>` | 1 if the Transform tab shows that joint (a selected twist bone shows its bend joint), else 0. |
+| `modal` | The dial the joint mouse mode is turning (0 / 1 / 2 = bend / side / twist), -1 with the mode off. |
 | `palm.<bone>.<x\|y\|z>` | A hand's palm normal, that world component (+1/-1): where a hand laid on the body faces. The figures face +z, their right side is -x. |
 
 Expectations are regression guards set from what the app does today, with margin — not

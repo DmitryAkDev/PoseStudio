@@ -8,12 +8,11 @@
 #include "dragnumberbox.h"
 #include "hdriselector.h"
 #include "menupickerbutton.h"
+#include "propertyrows.h"
 #include "viewportwidget.h"
 
 #include <QCheckBox>
 #include <QFormLayout>
-#include <QGroupBox>
-#include <QHBoxLayout>
 #include <QIcon>
 #include <QPixmap>
 #include <QPushButton>
@@ -26,46 +25,12 @@
 
 namespace pose {
 
-namespace {
-// Builds a titled QGroupBox with a QFormLayout inside, appended to @p parent; returns the form.
-QFormLayout* addGroup(QVBoxLayout* parent, const QString& title) {
-    auto* box = new QGroupBox(title);
-    box->setObjectName(QStringLiteral("EnvironmentGroup"));
-    auto* form = new QFormLayout(box);
-    form->setLabelAlignment(Qt::AlignLeft);
-    form->setFormAlignment(Qt::AlignTop);
-    form->setHorizontalSpacing(10);
-    form->setVerticalSpacing(8);
-    parent->addWidget(box);
-    return form;
-}
-
-// The small restore-default icon button that sits right of every Environment row (the dials, the
-// HDRI selector, the backdrop mode). The caller wires clicked to the row's own restore behaviour.
-QToolButton* makeRestoreButton() {
-    auto* restore = new QToolButton;
-    restore->setObjectName(QStringLiteral("EnvironmentRowRestore"));
-    restore->setIcon(QIcon(QStringLiteral(":/resources/icons/default.png")));
-    restore->setIconSize(QSize(14, 14));
-    restore->setToolTip(QObject::tr("Restore default"));
-    restore->setCursor(Qt::PointingHandCursor);
-    restore->setAutoRaise(true);
-    return restore;
-}
-
-// A form row's field widget: the row's main control stretched, its restore button snug on the
-// right. One builder for every row kind so the dials, the HDRI row and the backdrop-mode row
-// can't drift apart in margins or spacing.
-QWidget* rowWithRestore(QWidget* main, QToolButton* restore) {
-    auto* field = new QWidget;
-    auto* row = new QHBoxLayout(field);
-    row->setContentsMargins(0, 0, 0, 0);
-    row->setSpacing(4);
-    row->addWidget(main, 1);
-    row->addWidget(restore, 0);
-    return field;
-}
-} // namespace
+// The group, restore-button and row builders are the properties tabs' shared ones (propertyrows.h):
+// one builder for every row kind, so the dials, the HDRI row and the backdrop-mode row — and the
+// other tabs' rows — can't drift apart in margins or spacing.
+using propertyrows::addGroup;
+using propertyrows::makeRestoreButton;
+using propertyrows::rowWithRestore;
 
 EnvironmentPanel::EnvironmentPanel(ViewportWidget* viewport, QWidget* parent)
     : QWidget(parent), m_viewport(viewport) {
@@ -185,7 +150,7 @@ void EnvironmentPanel::buildUi() {
 
     // --- Reset ---
     auto* reset = new QPushButton(tr("Restore All Defaults"));
-    reset->setObjectName(QStringLiteral("EnvironmentResetButton"));
+    reset->setObjectName(QStringLiteral("PropertyResetButton"));
     col->addWidget(reset, 0, Qt::AlignLeft);
     connect(reset, &QPushButton::clicked, this, &EnvironmentPanel::resetToDefaults);
 

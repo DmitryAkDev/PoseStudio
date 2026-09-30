@@ -1,7 +1,7 @@
 /**
  * @file vulkanwindow_ik.cpp
- * @brief VulkanWindow's full-body-IK drag loop, the animated ground fall, and the X/Y/Z wheel
- *        hold — the three interaction state machines that run on timers.
+ * @brief VulkanWindow's full-body-IK drag loop and the animated ground fall — the interaction
+ *        state machines that run on timers.
  *
  * One of the seven translation units of VulkanWindow — see vulkanwindow.h for the map. The
  * IK drag is the viewport's posing gesture and its MOTION is engineered, not just its end pose
@@ -84,7 +84,7 @@ bool VulkanWindow::beginJointGesture(const QPointF& localPos, bool scoped) {
     // following (a plain press), or with Ctrl the grabbed CHAIN alone (a limb up to the body, the
     // head and neck to the chest, the spine over a still pelvis, the hips with only their legs),
     // nothing else moving. (Until 2026-09-26 Ctrl+drag was the single-joint FK rotate; turning
-    // one joint is the X/Y/Z wheel's job.)
+    // one joint is the Transform dials' job, and the B / S / T mouse mode's.)
     beginIkDrag(scoped);
     if (dragInFlight()) {
         m_preEditPose = scene().capturePose(); // snapshot for undo (committed on release)
@@ -112,9 +112,6 @@ bool VulkanWindow::beginIkDrag(bool scoped) {
 }
 
 void VulkanWindow::beginIkRelease() {
-    if (m_axisRotateInDrag) {
-        endAxisRotate(); // a wheel hold opened inside the drag ends with it (no commit of its own)
-    }
     m_ik.hasTarget = false;
     m_ik.dragging = false;
     m_ik.settling = true; // the timer keeps ticking through the animated settle
@@ -123,9 +120,6 @@ void VulkanWindow::beginIkRelease() {
 void VulkanWindow::abortIkDrag() {
     if (!m_ik.dragging) {
         return;
-    }
-    if (m_axisRotateInDrag) {
-        endAxisRotate();
     }
     scene().endBoneIkDrag();
     m_ik.dragging = false;
@@ -315,38 +309,6 @@ void VulkanWindow::finishGroundFall() {
     if (m_renderer) {
         commitGroundDrop();
     }
-}
-
-// --- X/Y/Z wheel hold --------------------------------------------------------------------------
-
-void VulkanWindow::beginAxisRotate(int axis) {
-    if (!m_renderer || axis < 0 || axis > 2 || m_axisRotateKey == axis) {
-        return;
-    }
-    endAxisRotate(); // a different axis key while one is held: close that edit, open a new one
-    m_axisRotateInDrag = m_ik.dragging;
-    if (!m_axisRotateInDrag) {
-        m_preEditPose = scene().capturePose(); // one undo entry per hold
-    } // inside an IK drag the drag's own snapshot (taken at its press) covers the hold
-    m_axisRotateKey = axis;
-    emit axisRotateKeyChanged(axis);
-}
-
-void VulkanWindow::endAxisRotate() {
-    if (m_axisRotateKey < 0) {
-        return;
-    }
-    m_axisRotateKey = -1;
-    const bool inDrag = m_axisRotateInDrag;
-    m_axisRotateInDrag = false;
-    if (m_renderer && !inDrag) {
-        scene().finalizePose(); // the settled-pose hook (correctives already followed the wheel live)
-        commitPoseUndo();       // no-op if the wheel never moved
-    }
-    if (m_renderer) {
-        requestUpdate();
-    }
-    emit axisRotateKeyChanged(-1);
 }
 
 } // namespace pose

@@ -5,13 +5,20 @@
 
 #include "viewportwidget.h"
 
+#include "jointmodalinput.h"
+#include "scene/jointtransform.h"
 #include "scene/shademode.h"
 #include "viewportstrip.h"
 #include "vulkanwindow.h"
 
+#include <QAction>
 #include <QCoreApplication>
 #include <QDebug>
 #include <QEvent>
+#include <QKeyEvent>
+#include <QKeySequence>
+#include <QMouseEvent>
+#include <QWindow>
 #include <QHideEvent>
 #include <QLabel>
 #include <QMoveEvent>
@@ -66,6 +73,70 @@ ViewportWidget::ViewportWidget(QWidget* parent) : QWidget(parent) {
     // Signal-to-signal forward: undo/redo restoring a lighting state surfaces on the facade,
     // where the Environment panel listens.
     connect(m_window, &VulkanWindow::lightingRestored, this, &ViewportWidget::lightingRestored);
+    // ... and likewise the selected joint's transform changing, for the Transform tab.
+    connect(m_window, &VulkanWindow::jointTransformChanged, this, &ViewportWidget::jointTransformChanged);
+    // The scripted test's `uishot`: the main window's widgets as a picture (the panels beside the
+    // viewport; the native viewport itself is not in a widget grab — `shot` reads that off the GPU),
+    // and the floating strip, a window of its own, beside it as <name>_strip.png (its badge).
+    connect(m_window, &VulkanWindow::uiShotRequested, this, [this](const QString& path) {
+        if (QWidget* top = window()) {
+            top->grab().save(path);
+        }
+        if (m_strip) {
+            QString stripPath = path;
+            stripPath.replace(QStringLiteral(".png"), QStringLiteral("_strip.png"));
+            m_strip->grab().save(stripPath);
+        }
+    });
+    // THE JOINT MOUSE MODE's input wherever it lands (see jointmodalinput.h): on with the mode,
+    // off when it ends.
+    m_modalInput = new JointModalInput(m_window, this);
+    connect(m_window, &VulkanWindow::jointModalChanged, this,
+            [this](int kind) { m_modalInput->setActive(kind >= 0); });
+    // The scripted test's `app`: the mode's input as it reaches the application with the viewport
+    // NOT focused. The keys are the Edit menu's actions (found by their shortcut, and only if
+    // enabled, as the shortcut map would); Esc, Enter, the clicks and the moves are events sent
+    // to the main window, through the application's event filters like any other.
+    connect(m_window, &VulkanWindow::appInputRequested, this,
+            [this](const QString& what, const QPointF& delta, int steps) {
+        QWidget* top = window();
+        QWindow* handle = top ? top->windowHandle() : nullptr;
+        if (!handle || !m_window) {
+            return;
+        }
+        const auto sendKey = [handle](int key) {
+            QKeyEvent press(QEvent::KeyPress, key, Qt::NoModifier);
+            QCoreApplication::sendEvent(handle, &press);
+        };
+        const auto sendMouse = [this, handle](QEvent::Type type, Qt::MouseButton button, Qt::MouseButtons held) {
+            QMouseEvent e(type, handle->mapFromGlobal(m_scriptCursor), m_scriptCursor, button, held, Qt::NoModifier);
+            QCoreApplication::sendEvent(handle, &e);
+        };
+        if (what == QLatin1String("b") || what == QLatin1String("s") || what == QLatin1String("t")) {
+            const QKeySequence key(what == QLatin1String("b") ? Qt::Key_B : what == QLatin1String("s") ? Qt::Key_S : Qt::Key_T);
+            m_scriptCursor = m_window->mapToGlobal(QPointF(m_window->width() * 0.5, m_window->height() * 0.5));
+            const QList<QAction*> actions = top->findChildren<QAction*>();
+            for (QAction* action : actions) {
+                if (action->shortcut() == key && action->isEnabled()) {
+                    action->trigger();
+                    break;
+                }
+            }
+        } else if (what == QLatin1String("esc")) {
+            sendKey(Qt::Key_Escape);
+        } else if (what == QLatin1String("enter")) {
+            sendKey(Qt::Key_Return);
+        } else if (what == QLatin1String("click") || what == QLatin1String("rclick")) {
+            const Qt::MouseButton button = what == QLatin1String("click") ? Qt::LeftButton : Qt::RightButton;
+            sendMouse(QEvent::MouseButtonPress, button, button);
+            sendMouse(QEvent::MouseButtonRelease, button, Qt::NoButton);
+        } else if (what == QLatin1String("move")) {
+            for (int k = 0; k < steps; ++k) {
+                m_scriptCursor += delta / steps;
+                sendMouse(QEvent::MouseMove, Qt::NoButton, Qt::NoButton);
+            }
+        }
+    });
     m_container = QWidget::createWindowContainer(m_window, this);
     m_container->setFocusPolicy(Qt::StrongFocus); // so the viewport can receive wheel/keys
     layout->addWidget(m_container);
@@ -119,6 +190,26 @@ void ViewportWidget::mirrorPose() {
 
 void ViewportWidget::mirrorSelectedLimb() {
     withWindow([](VulkanWindow& w) { w.mirrorSelectedLimb(); });
+}
+
+JointTransform ViewportWidget::jointTransform() const {
+    return m_window ? m_window->jointTransform() : JointTransform{};
+}
+
+bool ViewportWidget::beginJointTransformEdit() {
+    return m_window && m_window->beginJointTransformEdit();
+}
+
+void ViewportWidget::setJointTransformDial(int dial, double value) {
+    withWindow([dial, value](VulkanWindow& w) { w.setJointTransformDial(dial, value); });
+}
+
+void ViewportWidget::endJointTransformEdit() {
+    withWindow([](VulkanWindow& w) { w.endJointTransformEdit(); });
+}
+
+void ViewportWidget::toggleJointModal(int kind) {
+    withWindow([kind](VulkanWindow& w) { w.toggleJointModal(kind); });
 }
 
 void ViewportWidget::setShowSkeleton(bool on) {
@@ -208,10 +299,10 @@ void ViewportWidget::createStrip() {
     connect(m_strip, &ViewportStrip::skeletonToggled, this, &ViewportWidget::setShowSkeleton);
 
     // Window -> strip: the view caption follows the camera (keys, View menu, orbit), the badge
-    // follows the X/Y/Z hold, and the Skeleton button follows the overlay state whoever changed
+    // follows the joint mouse mode, and the Skeleton button follows the overlay state whoever changed
     // it (the signal is the single source of truth).
     connect(m_window, &VulkanWindow::viewPresetChanged, m_strip, &ViewportStrip::setViewPreset);
-    connect(m_window, &VulkanWindow::axisRotateKeyChanged, m_strip, &ViewportStrip::setAxisBadge);
+    connect(m_window, &VulkanWindow::jointModalChanged, m_strip, &ViewportStrip::setJointModeBadge);
     connect(this, &ViewportWidget::skeletonVisibilityChanged, m_strip,
             &ViewportStrip::setSkeletonChecked);
     m_strip->setViewPreset(m_window->currentView());
@@ -288,12 +379,19 @@ ViewportWidget::~ViewportWidget() {
     // hence all Vulkan objects) here, explicitly, while m_instance is still alive.
     //
     // The container goes BEFORE the strip: the window's teardown (releaseVulkan) ends an open
-    // X/Y/Z hold by emitting axisRotateKeyChanged(-1), which lands on the strip's badge — with
+    // joint mouse mode by emitting jointModalChanged(-1), which lands on the strip's badge — with
     // the strip already deleted that was a use-after-free. The strip is also unhooked first so
     // that emit can't re-anchor it against a container mid-destruction.
     if (m_window && m_strip) {
         disconnect(m_window, nullptr, m_strip, nullptr);
     }
+    // The joint mouse mode's application-wide input goes first too, unhooked from the window: it
+    // holds the window's pointer, and the same teardown emit would reach it through this widget.
+    if (m_window) {
+        disconnect(m_window, nullptr, this, nullptr);
+    }
+    delete m_modalInput;
+    m_modalInput = nullptr;
     delete m_container;
     m_container = nullptr;
     m_window = nullptr; // was owned by m_container; now dangling — clear it

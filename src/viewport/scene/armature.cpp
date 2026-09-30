@@ -14,6 +14,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include <cmath>
+#include <cstdlib>
 #include <fstream>
 #include <sstream>
 
@@ -90,7 +91,17 @@ void Armature::build(const std::vector<ArmatureBone>& bones) {
         bindGlobal[i] = parentGlobal + src.localBindTranslation;
         bone.localBind = glm::translate(glm::mat4(1.0f), src.localBindTranslation);
         bone.inverseBind = glm::translate(glm::mat4(1.0f), -bindGlobal[i]);
-        bone.orient = eulerMatrix(src.orientation, "XYZ"); // rest orientation frame for pose rotations
+        // The rest orientation frame the pose rotations act in. The format gives it as Euler angles
+        // APPLIED in x, y, z order — Rz * Ry * Rx, which eulerMatrix (leftmost letter outermost)
+        // spells "ZYX". Composed the other way round (Rx * Ry * Rz, until 2026-09-30) the frame is
+        // the same wherever one angle dominates — a thigh, a shin, an upper arm: under 2 degrees off
+        // — and wrong wherever two or three are large: a forearm's bend axis stood 11 degrees off, a
+        // foot's 7, a finger's 8, and a THUMB's 44-56 (it folded sideways across the palm). The
+        // check: the frame's length axis (the rotation order's first) lies along the bone to its
+        // child to 0.1% on every limb bone of every generation this way, and only this way.
+        // (POSESTUDIO_ORIENT_XYZ is the A/B: the frames as they were.)
+        static const bool kOrientXyz = std::getenv("POSESTUDIO_ORIENT_XYZ") != nullptr;
+        bone.orient = eulerMatrix(src.orientation, kOrientXyz ? "XYZ" : "ZYX");
         bone.invOrient = glm::inverse(bone.orient);
         bone.orientationDeg = src.orientation;
         bone.rotationOrder = src.rotationOrder;
@@ -107,27 +118,6 @@ void Armature::build(const std::vector<ArmatureBone>& bones) {
     m_bonePinned.assign(m_bones.size(), 0);
     m_poseGlobal.assign(m_bones.size(), glm::mat4(1.0f));
 
-    // Highlight twins (see m_highlightTwin): a child whose two swing axes are LOCKED is a twist
-    // bone — pair it with its bend parent both ways. First twist child wins for the parent.
-    m_highlightTwin.assign(m_bones.size(), -1);
-    for (std::size_t i = 0; i < m_bones.size(); ++i) {
-        const Bone& b = m_bones[i];
-        if (b.parent < 0 || b.parent >= static_cast<int>(m_bones.size())) {
-            continue;
-        }
-        int lockedAxes = 0;
-        for (int a = 0; a < 3; ++a) {
-            if (b.rotLimited[a] && (b.rotMax[a] - b.rotMin[a]) < 2.0f) {
-                ++lockedAxes;
-            }
-        }
-        const auto parent = static_cast<std::size_t>(b.parent);
-        if (lockedAxes == 2 && m_highlightTwin[parent] < 0) {
-            m_highlightTwin[parent] = static_cast<int>(i);
-            m_highlightTwin[i] = b.parent;
-        }
-    }
-
     // Children lists (subtree walks for the reset/mirror utilities) and each bone's mirror —
     // the other side's bone by name, itself for centre bones and names without a counterpart.
     m_children.assign(m_bones.size(), {});
@@ -139,6 +129,25 @@ void Armature::build(const std::vector<ArmatureBone>& bones) {
         const std::string other = mirroredBoneName(m_boneNames[i]);
         const int j = other.empty() ? -1 : boneIndex(other);
         m_mirrorBone[i] = j >= 0 ? j : static_cast<int>(i);
+    }
+
+    // Highlight twins (see m_highlightTwin): a TWIST bone — two locked axes and the free one
+    // ALONG the bone (isTwistBone, which reads the children lists above) — is paired with its
+    // bend parent both ways; the first twist child wins for the parent. NOT any child with two
+    // locked axes, as it was until 2026-09-30: a HINGE has two locked axes too, its free one
+    // across the bone, and a finger's or a toe's middle joint is one — so the second joint of
+    // every finger was its first joint's "twin", the two lit together whichever was selected,
+    // and nobody could tell which finger joint a click had taken.
+    m_highlightTwin.assign(m_bones.size(), -1);
+    for (std::size_t i = 0; i < m_bones.size(); ++i) {
+        const int parent = m_bones[i].parent;
+        if (parent < 0 || parent >= static_cast<int>(m_bones.size()) || !isTwistBone(static_cast<int>(i))) {
+            continue;
+        }
+        if (m_highlightTwin[static_cast<std::size_t>(parent)] < 0) {
+            m_highlightTwin[static_cast<std::size_t>(parent)] = static_cast<int>(i);
+            m_highlightTwin[i] = parent;
+        }
     }
     // A name without a counterpart is not always a centre bone: one figure generation's base file
     // spells some thirty left/right ids differently on its two sides (a big toe's second joint ends
@@ -388,10 +397,14 @@ void Armature::applyBoneEuler(int index) {
 }
 
 void Armature::nudgeSelectedBone(const glm::vec3& deltaEulerDegrees) {
-    if (m_selectedBone < 0 || m_selectedBone >= static_cast<int>(m_bones.size())) {
+    nudgeBone(m_selectedBone, deltaEulerDegrees);
+}
+
+void Armature::nudgeBone(int bone, const glm::vec3& deltaEulerDegrees) {
+    if (bone < 0 || bone >= static_cast<int>(m_bones.size())) {
         return;
     }
-    const std::size_t sel = static_cast<std::size_t>(m_selectedBone);
+    const std::size_t sel = static_cast<std::size_t>(bone);
     const glm::vec3 before = m_boneEuler[sel];
     // The FK COLLISION STOP: a rotation may not push a limb's joint into a body volume (see
     // fkVolumeDepth — the same capsules the IK keeps the limbs out of). The rotation is applied
@@ -400,32 +413,32 @@ void Armature::nudgeSelectedBone(const glm::vec3& deltaEulerDegrees) {
     // joint can always rotate OUT of a penetration a loaded pose left it in, and stops at the
     // surface on the way in. The rig is built on the first rotation if no IK drag has yet.
     const bool guard = ensureIkRig() && !m_ikRig->bodyVolumes().empty();
-    const float depthBefore = guard ? fkVolumeDepth(m_selectedBone) : 0.0f;
+    const float depthBefore = guard ? fkVolumeDepth(bone) : 0.0f;
     m_boneEuler[sel] = before + deltaEulerDegrees;
-    applyBoneEuler(m_selectedBone);
+    applyBoneEuler(bone);
     if (guard) {
         constexpr float kFkCollideTol = 0.002f;
         const float allow = std::max(depthBefore, kFkCollideTol);
-        if (fkVolumeDepth(m_selectedBone) > allow) {
+        if (fkVolumeDepth(bone) > allow) {
             float lo = 0.0f; // the fraction of the rotation last known not to penetrate
             float hi = 1.0f;
             for (int k = 0; k < 8; ++k) {
                 const float mid = 0.5f * (lo + hi);
                 m_boneEuler[sel] = before + deltaEulerDegrees * mid;
-                applyBoneEuler(m_selectedBone);
-                if (fkVolumeDepth(m_selectedBone) > allow) {
+                applyBoneEuler(bone);
+                if (fkVolumeDepth(bone) > allow) {
                     hi = mid;
                 } else {
                     lo = mid;
                 }
             }
             m_boneEuler[sel] = before + deltaEulerDegrees * lo;
-            applyBoneEuler(m_selectedBone);
+            applyBoneEuler(bone);
         }
     }
-    if (m_digitDrag || m_figureMove || (m_ikRig && m_ikRig->dragActive())) {
-        holdNudgedBoneThroughDrag(m_selectedBone); // the wheel during an IK drag (see armature.h)
-    }
+    // (Never during an IK drag: every caller closes or refuses one first. Until 2026-09-30 the
+    // X/Y/Z wheel could turn the grabbed joint mid-drag, and the rotation was then made part of
+    // the solve's posture reference here — that went with the wheel.)
 }
 
 bool Armature::setBoneRotation(const std::string& boneName, const glm::vec3& eulerDegrees) {
