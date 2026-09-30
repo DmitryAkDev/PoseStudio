@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <QDebug>
 #include <QFileInfo>
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -454,6 +455,7 @@ bool VulkanWindow::captureProjectDocument(ProjectDocument& out) const {
 }
 
 bool VulkanWindow::saveProjectFile(const QString& path) {
+    closeOpenPoseEdits(); // the LANDED pose, not a transient mid-settle / mid-fall frame (as savePose)
     ProjectDocument doc;
     if (!captureProjectDocument(doc)) {
         return false;
@@ -480,14 +482,16 @@ int VulkanWindow::loadProjectFile(const QString& path,
     }
 
     // 2. LINK RECOVERY PRE-FLIGHT — every figure's source must exist on disk (after applying the
-    //    caller's re-pointed paths). Anything still missing is reported and the scene is left
-    //    exactly as it was.
+    //    caller's re-pointed paths; a source the caller mapped to "" is SKIPPED: left out of the
+    //    load, as the recovery dialog's Skip promises). Anything still missing is reported and the
+    //    scene is left exactly as it was.
     auto resolve = [&recovered](const ProjectFigure& fig) -> std::string {
         const auto it = recovered.find(fig.source);
         return it != recovered.end() ? it->second : fig.source;
     };
     for (const ProjectFigure& fig : doc.figures) {
-        if (!QFileInfo::exists(QString::fromStdString(resolve(fig)))) {
+        const std::string src = resolve(fig);
+        if (!src.empty() && !QFileInfo::exists(QString::fromStdString(src))) {
             missing.push_back(fig.source);
         }
     }
@@ -502,6 +506,9 @@ int VulkanWindow::loadProjectFile(const QString& path,
     // 4. IMPORT + RESTORE in document order (the order the user had them).
     for (const ProjectFigure& fig : doc.figures) {
         const std::string src = resolve(fig);
+        if (src.empty()) {
+            continue; // skipped in the recovery dialog
+        }
         PendingImport import;
         import.kind = QString::fromStdString(src).endsWith(QStringLiteral(".obj"), Qt::CaseInsensitive)
                           ? PendingImport::Kind::Obj
@@ -534,13 +541,23 @@ int VulkanWindow::loadProjectFile(const QString& path,
         model->applyPose(rows);
     }
 
-    // 5. ENVIRONMENT — the saved dials + HDRI (a no-op path keeps the startup bake).
+    // 5. ENVIRONMENT — the saved dials + HDRI (a no-op path keeps the startup bake, as does a
+    //    saved panorama that is no longer on disk). The Environment tab is told both ways: its
+    //    dials through lightingRestored (the undo path's signal), its HDRI caption through
+    //    environmentRestored — without either it kept showing the values from before the Open,
+    //    and the next scrub pushed those over the loaded ones.
     m_deferred.lighting = doc.environment.settings;
-    if (!doc.environment.hdri.empty()) {
-        m_deferred.environmentPath = QString::fromStdString(doc.environment.hdri);
+    const QString savedHdri = QString::fromStdString(doc.environment.hdri);
+    if (!savedHdri.isEmpty() && QFileInfo::exists(savedHdri)) {
+        m_deferred.environmentPath = savedHdri;
         beginEnvironmentBake(m_deferred.environmentPath, /*autoAimKey=*/false);
+    } else if (!savedHdri.isEmpty()) {
+        qWarning() << "[project] the saved panorama is missing, keeping the default:" << savedHdri;
     }
     m_deferred.applyTo(*m_renderer);
+    emit lightingRestored(m_deferred.lighting);
+    emit environmentRestored(m_deferred.environmentPath.isEmpty() ? defaultEnvironmentPath()
+                                                                   : m_deferred.environmentPath);
 
     // 6. CAMERA — the saved framing (target + orbit angles + distance + projection).
     m_renderer->camera().restoreFraming(doc.camera.target, doc.camera.yaw, doc.camera.pitch,

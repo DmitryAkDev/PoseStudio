@@ -41,6 +41,10 @@ EnvironmentPanel::EnvironmentPanel(ViewportWidget* viewport, QWidget* parent)
         // the dials and checkboxes track the restored state.
         connect(m_viewport, &ViewportWidget::lightingRestored, this,
                 &EnvironmentPanel::applyRestoredSettings);
+        // A loaded project's panorama (File → Open): the caption follows it — setCurrentPath, not a
+        // pick, so the selector does not ask the viewport to bake what it just baked.
+        connect(m_viewport, &ViewportWidget::environmentRestored, this,
+                [this](const QString& path) { m_hdri->setCurrentPath(path); });
     }
 }
 

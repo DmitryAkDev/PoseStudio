@@ -36,4 +36,4 @@ POSESTUDIO_NO_UPDATE_CHECK=1 ./build/PoseStudioPssProbe <figure.duf> <out.pss>
 ```
 
 Exit code 0 = the restore matches the original (3 = a divergence, printed with `DIFF` lines).
-Needs a Vulkan device; a debug import of a Genesis 9 figure takes ~20 s.
+Needs a Vulkan device; a debug import of a full figure takes ~20 s. Not built by default: configure with `-DPOSESTUDIO_BUILD_PSS_PROBE=ON` (it compiles the whole engine a second time).

@@ -139,6 +139,7 @@ ViewportWidget::ViewportWidget(QWidget* parent) : QWidget(parent) {
     });
     // Same forward for the document state: the main window's title listens on the facade.
     connect(m_window, &VulkanWindow::documentChanged, this, &ViewportWidget::documentChanged);
+    connect(m_window, &VulkanWindow::environmentRestored, this, &ViewportWidget::environmentRestored);
     m_container = QWidget::createWindowContainer(m_window, this);
     m_container->setFocusPolicy(Qt::StrongFocus); // so the viewport can receive wheel/keys
     layout->addWidget(m_container);

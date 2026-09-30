@@ -1,0 +1,36 @@
+# PROJECT FILES (.pss, 2026-09-30): the whole scene saved and opened again — `saveproject <name>`
+# is File -> Save As into the run's folder, `openproject <name>` File -> Open from it, `new` File ->
+# New's scene reset; `figures` counts the models in the scene, `dirty` reads the document's
+# unsaved-changes flag. Numbers only. The figure is re-imported on open, so this takes a while.
+view front
+expect figures == 1
+# A fresh scene with a figure imported from the command line counts as unsaved (the import is a
+# document change). A posed knee, a turned head and a pinned hand are what the file must carry.
+click lShin
+dial forward 50
+expect euler.lShin.x > 77
+fk head 0 20 0
+pin lHand
+saveproject scene.pss
+expect dirty == 0
+# New empties the scene ...
+new
+expect figures == 0
+expect dirty == 0
+# ... and Open brings it back: the figure, its pose, the pin, and a clean document.
+openproject scene.pss
+expect figures == 1
+expect dirty == 0
+click lShin
+expect dialjoint.lShin == 1
+expect euler.lShin.x > 77
+expect euler.lShin.x < 78
+expect euler.head.y > 19
+expect euler.head.y < 21
+# A pose edit after the open makes the document dirty again.
+dial forward 20
+expect dirty == 1
+# A file that is not a project is refused, and the scene stays as it is.
+openproject not-a-project.pss
+expect figures == 1
+expect euler.lShin.x > 30

@@ -418,9 +418,7 @@ void MenuManager::setEnvironmentPanel(pose::EnvironmentPanel *panel) {
 
 void MenuManager::importObjFile() {
     if (!viewportWidget) return;
-    if (!confirmDiscardChanges()) {
-        return; // importing over a dirty scene asks first
-    }
+    // (No unsaved-changes prompt: an import ADDS to the scene, it replaces nothing.)
 
     const QString path = QFileDialog::getOpenFileName(
         mainWindow, QStringLiteral("Import OBJ"), rememberedStartDir(Constants::PREF_LAST_IMPORT_DIR),
@@ -435,9 +433,7 @@ void MenuManager::importObjFile() {
 
 void MenuManager::importFigureFile() {
     if (!viewportWidget) return;
-    if (!confirmDiscardChanges()) {
-        return; // importing over a dirty scene asks first
-    }
+    // (No unsaved-changes prompt: an import ADDS to the scene, it replaces nothing.)
 
     const QString path = QFileDialog::getOpenFileName(
         mainWindow, QStringLiteral("Import Character Figure"),
@@ -552,9 +548,9 @@ bool MenuManager::confirmDiscardChanges() {
     box.addButton(QStringLiteral("Cancel"), QMessageBox::RejectRole);
     box.exec();
     if (box.clickedButton() == save) {
-        saveProject(); // its own dialog; a failed write leaves the flag up, so proceed anyway —
-        return true;  // the user explicitly chose to save, and Save already asked nothing more
-    }
+        saveProject();                           // its own dialog (Save As for a new document)
+        return !viewportWidget->isProjectDirty(); // a cancelled Save As or a failed write: nothing
+    }                                            // was saved, so the scene is NOT let go of
     return box.clickedButton() == discard;
 }
 
@@ -608,11 +604,13 @@ void MenuManager::openProjectFile() {
                 QStringLiteral("Figure Files (*.duf *.dsf *.obj)"));
             if (replacement.isEmpty()) {
                 skipped << original;
+                recovered[src] = std::string(); // "" = leave this figure out of the load
                 continue;
             }
             recovered[src] = replacement.toStdString();
         } else if (box.clickedButton() == skipButton) {
             skipped << original; // the row is skipped, the rest of the project still loads
+            recovered[src] = std::string(); // (the load's pre-flight no longer reports it missing)
         } else if (box.clickedButton() &&
                    box.buttonRole(box.clickedButton()) == QMessageBox::RejectRole) {
             return; // Cancel: the whole open is aborted, the scene stays as it was

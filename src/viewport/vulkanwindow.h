@@ -132,6 +132,8 @@ public:
     int loadProjectFile(const QString& path, const std::map<std::string, std::string>& recovered,
                         std::vector<std::string>& missing, std::string& error);
 
+    /// (loadProjectFile: a source the caller maps to "" in @p recovered is SKIPPED — left out of
+    /// the load — which is what the recovery dialog's Skip means.)
     /// The .pss document this window last saved/opened ("" = unsaved).
     QString projectPath() const;
     void setProjectPath(const QString& path);
@@ -279,6 +281,10 @@ signals:
     /// transitioned) — ProjectState de-duplicates, so a pose edit on an already-dirty scene is
     /// not re-announced. ViewportWidget re-emits it for the window-title update.
     void documentChanged();
+    /// Emitted when a loaded project put a panorama up (File → Open): @p path is the environment
+    /// now in use (the default's when the document named none). The Environment tab's HDRI
+    /// caption follows it — a caption, not a pick, so nothing re-bakes.
+    void environmentRestored(const QString& path);
 
 protected:
     void exposeEvent(QExposeEvent* event) override;

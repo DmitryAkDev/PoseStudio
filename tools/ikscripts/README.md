@@ -51,6 +51,7 @@ The scripts:
 | `gallery_scoped.txt` | Ctrl + drag. On a limb or the head, the SCOPED drag: a hand, a knee and the head each moved with only their own chain, the rest of the body asserted still (`movedxz.<bone>`, `moved.<bone>`). On the body itself, the FIGURE MOVE: the chest lifted and the hips carried with the whole figure going along as posed (no channel turned, the feet travelling with the grab), the Ground button bringing her back down, the floor stopping a push down, and a pinned hand staying where it is pinned while the body moves. |
 | `gallery_digits.txt` | Fingers, toes and the face, in close-up: a fingertip curled, a finger pulled far beyond its reach, the thumb, a Ctrl-drag of a finger, a toe raised — each with the hand, the foot and the body asserted still (`moved.<bone>` under 0.01mm) — the back of the hand still dragging the arm, and clicks on the eye, the jaw and an ear each selecting the head (`selected.head`), a drag from the face moving the head with the face's bones untouched. |
 | `gallery_landing.txt` | The Ground button's landing bounce: a figure lifted and dropped 5cm, 50cm and 2m, shot falling, at the deepest of the dip and after — the knees' fold asserted deeper for the higher drop, the pose afterwards asserted exactly the pose she was dropped in, the skin on the floor — a posed figure keeping her pose through it, and a kneeling one landing with no bounce. |
+| `check_project.txt` | Numbers only: a posed scene saved as a `.pss` project, emptied with New and opened again — the figure re-imported, its pose and pin restored, the document clean; a pose edit dirties it; a bad file is refused with the scene intact. |
 | `check_picking.txt` | Numbers only: what a click selects (`selected.<bone>`) — hidden parts are never selected through the part in front, a click on a joint's own pixel takes that joint (the hip's, though its skin is the pelvis bone's). |
 
 Useful beside it: `QT_LOGGING_TO_CONSOLE=1` (the `[ikscript]` lines reach a redirected stderr),
@@ -78,6 +79,7 @@ along the bone's limb segment — the flesh, where a user clicks — instead of 
 | `closeup <bone> <radius m>` | Frame the camera on that joint, the given radius filling the view — a hand, a foot, the face, before posing a finger. |
 | `shade <row>` | Shade mode, a row of the picker. |
 | `pose <file>` / `reset` / `undo` / `ground` | Load a pose file, Reset Pose, Undo, the Ground button. |
+| `saveproject <name.pss>` / `openproject <name.pss>` / `new` | File → Save As into the run's folder / File → Open from it (the scene reset, every figure re-imported and restored; the missing-file dialog is not driven) / File → New's scene reset (no prompt, no panel reset). |
 | `lift <metres>` | Raise the active figure that far off the floor, as posed; `ground` then drops her. The fall and the landing bounce run on the app's own timer: `wait` through them (half a metre falls in 19 ticks, the bounce lasts 21-30). |
 | `fk <bone> <dx°> <dy°> <dz°>` | Turn a joint about its own channels, as a Transform dial turns one (through the limits and the FK collision stop). |
 | `modal <bend\|side\|twist>` | The `B` / `S` / `T` key, as a key event handed to the viewport's own handler: the joint mouse mode on that dial of the selected joint (the same key again drops it, another switches). |
@@ -121,6 +123,7 @@ along the bone's limb segment — the flesh, where a user clicks — instead of 
 | `dial.<forward\|sideways\|twist>` | The selected joint's Transform-tab dial as it reads now; `dialmin.<kind>` / `dialmax.<kind>` its range. Unknown (a failed `expect`) with no joint selected or for a dial the joint does not have. |
 | `dialjoint.<bone>` | 1 if the Transform tab shows that joint (a selected twist bone shows its bend joint), else 0. |
 | `modal` | The dial the joint mouse mode is turning (0 / 1 / 2 = bend / side / twist), -1 with the mode off. |
+| `figures` / `dirty` | The models in the scene / 1 while the `.pss` document has unsaved changes. Neither needs a figure. |
 | `palm.<bone>.<x\|y\|z>` | A hand's palm normal, that world component (+1/-1): where a hand laid on the body faces. The figures face +z, their right side is -x. |
 
 Expectations are regression guards set from what the app does today, with margin — not

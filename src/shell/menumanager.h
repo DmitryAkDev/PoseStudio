@@ -58,9 +58,9 @@ public:
     /// Asset Manager's "Manage Asset Folders" context menu action).
     void openPreferencesDialog(const QString &initialTab = QString());
 
-    /// The shared unsaved-changes gate before replacing the scene (New / Open / importing over a
-    /// dirty scene, and window close): Save / Don't save / Cancel. True = proceed, false =
-    /// cancelled. Public because main.cpp's close guard calls it.
+    /// The shared unsaved-changes gate before replacing the scene (New / Open, and window close):
+    /// Save / Discard Changes / Cancel. True = proceed — after Save only if the save actually
+    /// happened; false = cancelled. Public because main.cpp's close guard calls it.
     bool confirmDiscardChanges();
 
 private:

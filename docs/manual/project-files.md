@@ -39,9 +39,11 @@ The file is versioned JSON and can be read by hand:
   "figures": [
     {
       "source": "C:/figures/hero.duf",
-      "translation": [0.0, 0.31, -0.12],
-      "rotation": [0.0, 0.7071, 0.0, 0.7071],
-      "scale": [1.0, 1.0, 1.0],
+      "transform": {
+        "translation": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
       "rootBone": "hip",
       "rootTranslation": [0.0, -0.31, 0.12],
       "pose": [
@@ -57,12 +59,12 @@ The file is versioned JSON and can be read by hand:
   },
   "camera": {
     "target": [0.0, 1.0, 0.0],
-    "yaw": 35.0,
-    "pitch": 12.0,
+    "yaw": 0.61,
+    "pitch": 0.21,
     "distance": 4.2,
-    "orthographic": false
+    "ortho": false
   }
 }
 ```
 
-Each figure row carries its pose the same way a `.pose` file does (bone rotations, the root's `@trans:` offset, pins), plus its transform — translation, rotation as a quaternion, scale. Unknown fields are ignored on load, so files written by a newer version open in an older one; a file from a newer major version is rejected with an explanation rather than guessed at. A damaged file — bad JSON, a missing section, a non-numeric value — is rejected whole: the current scene is never half-replaced.
+Each figure row carries its pose the same way a `.pose` file does (bone rotations, the root's `@trans:` offset, pins), plus its transform — translation, rotation as a quaternion `[x, y, z, w]`, scale. The camera's `yaw` and `pitch` are in radians. Figure and panorama paths are absolute: a project opened on another computer, or after the files were moved, asks where each one is (above). Unknown fields are ignored on load, so files written by a newer version open in an older one; a file from a newer major version is rejected with an explanation rather than guessed at. A damaged file — bad JSON, a missing section, a non-numeric value — is rejected whole: the current scene is never half-replaced.

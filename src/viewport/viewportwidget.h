@@ -181,6 +181,9 @@ signals:
     /// flag transitioned), so the main window can keep its title in sync. The window-title update
     /// listens to this; the state itself is read back through projectPath() / isProjectDirty().
     void documentChanged();
+    /// Re-emitted from the viewport when a loaded project put a panorama up (File → Open): the
+    /// environment now in use, for the Environment tab's HDRI caption (VulkanWindow::environmentRestored).
+    void environmentRestored(const QString& path);
 
 protected:
     // The control strip is a *top-level* window floating over the native viewport (a child widget

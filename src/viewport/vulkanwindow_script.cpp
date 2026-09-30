@@ -294,6 +294,25 @@ void VulkanWindow::scriptStep() {
                 QMouseEvent up(QEvent::MouseButtonRelease, at, mapToGlobal(at), button, Qt::NoButton, Qt::NoModifier);
                 mouseReleaseEvent(&up);
             }
+        } else if (cmd == QLatin1String("saveproject") && w.size() > 1) {
+            // saveproject <name.pss>: File -> Save As into the run's folder (the .pss document).
+            const QString path = QDir(s.outDir).filePath(w[1]);
+            const bool    saved = saveProjectFile(path);
+            if (saved) {
+                setProjectPath(path); // as the menu's Save As does: the document's path, and clean
+                setProjectClean();
+            }
+            say("[ikscript]   project %s: %s\n", saved ? "saved" : "NOT saved", qPrintable(path));
+        } else if (cmd == QLatin1String("openproject") && w.size() > 1) {
+            // openproject <name.pss>: File -> Open from the run's folder — the scene reset and every
+            // figure re-imported and restored (the recovery dialog's re-pointing is not driven here).
+            std::vector<std::string> missing;
+            std::string              error;
+            const int status = loadProjectFile(QDir(s.outDir).filePath(w[1]), {}, missing, error);
+            say("[ikscript]   project %s%s%s\n", status == 0 ? "opened" : status == 1 ? "has missing sources" : "NOT opened: ",
+                status < 0 ? error.c_str() : "", status == 1 ? (" " + missing.front()).c_str() : "");
+        } else if (cmd == QLatin1String("new")) {
+            resetToEmptyScene(); // File -> New's scene reset (the menu's prompt and panel reset are not driven here)
         } else if (cmd == QLatin1String("uishot") && w.size() > 1) {
             // uishot <name>: ui/<name>.png of the application's widgets — the side tabs (start on
             // one with POSESTUDIO_TAB=<title>); in a folder of its own, beside the viewport's shots
@@ -611,8 +630,18 @@ void VulkanWindow::scriptFrameRendered() {
 ///   dial.<forward|sideways|twist>  the selected joint's Transform-tab dial, as it reads now
 ///   dialmin.<kind>, dialmax.<kind>  that dial's range     dialjoint.<bone>  1 if the tab shows that joint
 ///   modal                  the dial the joint mouse mode turns (0/1/2 = bend / side / twist), -1 when off
+///   figures                models in the scene          dirty  1 if the .pss document has unsaved changes
 bool VulkanWindow::scriptMetric(const QString& name, double& value) {
     IkScript&       s = *m_script;
+    // (The two document metrics need no figure: an empty scene is what they are asked about.)
+    if (name.compare(QLatin1String("figures"), Qt::CaseInsensitive) == 0) {
+        value = m_renderer ? static_cast<double>(scene().modelCount()) : 0.0;
+        return true;
+    }
+    if (name.compare(QLatin1String("dirty"), Qt::CaseInsensitive) == 0) {
+        value = isProjectDirty() ? 1.0 : 0.0;
+        return true;
+    }
     const Armature* arm = scene().figureArmature();
     if (arm == nullptr) {
         return false;

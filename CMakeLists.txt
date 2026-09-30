@@ -637,8 +637,12 @@ target_include_directories(PoseStudioProjectFileCheck PRIVATE
 )
 add_test(NAME project-file-check COMMAND PoseStudioProjectFileCheck)
 
-# Temporary .pss save/restore diagnostic (see probe.cpp): runs the real import + scene classes
-# headless and prints which document fields diverge across a save/load round-trip.
+# .pss save/restore diagnostic (see tools/projectfile/probe.cpp): runs the real import + scene
+# classes headless and prints which document fields diverge across a save/load round-trip. OPT-IN:
+# it compiles the whole engine a second time, which no ordinary build (or the release workflow)
+# should pay for.
+option(POSESTUDIO_BUILD_PSS_PROBE "Build the .pss save/restore diagnostic (tools/projectfile/probe.cpp)" OFF)
+if(POSESTUDIO_BUILD_PSS_PROBE)
 file(GLOB PSS_PROBE_RENDERING src/viewport/rendering/*.cpp)
 file(GLOB PSS_PROBE_SCENE src/viewport/scene/*.cpp src/viewport/scene/ik/*.cpp)
 file(GLOB PSS_PROBE_FIGURE src/viewport/import/figure/*.cpp)
@@ -696,6 +700,7 @@ target_link_libraries(PoseStudioPssProbe PRIVATE
     Vulkan::Vulkan
 )
 add_dependencies(PoseStudioPssProbe PoseStudioShaders)
+endif()
 
 # The user manual's checker (docs/manual/README.md): the manifest, the pages, every link, and a
 # warning per menu action the manual does not mention. Needs only Python.
