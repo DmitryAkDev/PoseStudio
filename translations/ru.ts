@@ -1478,4 +1478,108 @@ Could not create a Vulkan instance — check that your GPU supports Vulkan and t
         <translation type="unfinished"></translation>
     </message>
 </context>
+
+    <context>
+        <name>ViewportStrip</name>
+        <message>
+            <source>PBR Shaded</source>
+            <translation type="unfinished"></translation>
+        </message>
+        <message>
+            <source>Texture Shaded</source>
+            <translation type="unfinished"></translation>
+        </message>
+        <message>
+            <source>Flat Texture Shaded</source>
+            <translation type="unfinished"></translation>
+        </message>
+        <message>
+            <source>Cartoon Shaded</source>
+            <translation type="unfinished"></translation>
+        </message>
+        <message>
+            <source>Matcap</source>
+            <translation type="unfinished"></translation>
+        </message>
+        <message>
+            <source>Clay Shaded</source>
+            <translation type="unfinished"></translation>
+        </message>
+        <message>
+            <source>Lighting Only</source>
+            <translation type="unfinished"></translation>
+        </message>
+        <message>
+            <source>Silhouette</source>
+            <translation type="unfinished"></translation>
+        </message>
+        <message>
+            <source>Wireframe</source>
+            <translation type="unfinished"></translation>
+        </message>
+        <message>
+            <source>Hidden Line Wireframe</source>
+            <translation type="unfinished"></translation>
+        </message>
+        <message>
+            <source>Clay Shaded Wireframe</source>
+            <translation type="unfinished"></translation>
+        </message>
+        <message>
+            <source>Texture Shaded Wireframe</source>
+            <translation type="unfinished"></translation>
+        </message>
+        <message>
+            <source>Albedo</source>
+            <translation type="unfinished"></translation>
+        </message>
+        <message>
+            <source>Ambient Occlusion</source>
+            <translation type="unfinished"></translation>
+        </message>
+        <message>
+            <source>Roughness Map</source>
+            <translation type="unfinished"></translation>
+        </message>
+        <message>
+            <source>Specular Only</source>
+            <translation type="unfinished"></translation>
+        </message>
+        <message>
+            <source>Normals</source>
+            <translation type="unfinished"></translation>
+        </message>
+        <message>
+            <source>UV Checker</source>
+            <translation type="unfinished"></translation>
+        </message>
+        <message>
+            <source>Home View</source>
+            <translation type="unfinished"></translation>
+        </message>
+        <message>
+            <source>Top View</source>
+            <translation type="unfinished"></translation>
+        </message>
+        <message>
+            <source>Bottom View</source>
+            <translation type="unfinished"></translation>
+        </message>
+        <message>
+            <source>Front View</source>
+            <translation type="unfinished"></translation>
+        </message>
+        <message>
+            <source>Back View</source>
+            <translation type="unfinished"></translation>
+        </message>
+        <message>
+            <source>Left View</source>
+            <translation type="unfinished"></translation>
+        </message>
+        <message>
+            <source>Right View</source>
+            <translation type="unfinished"></translation>
+        </message>
+    </context>
 </TS>
