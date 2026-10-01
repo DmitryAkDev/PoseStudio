@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """Shared LLM pipeline infrastructure for the i18n tools (stdlib only).
 
-Model pool and locale config live in this directory:
+Model config lives in this directory:
 
-    .env                shared LLM model pool (LLM_MODEL_<NAME>_API_BASE/_MODEL/...);
+    .env                base model config (API_BASE, MODEL, TEMPERATURE, ...);
                         must exist — create it from .env.template
-    locales/<lang>/.env per-language overlay: MODEL=<name> picks the pool entry
-                        that translates the language
+    locales/<lang>/.env optional per-language overlay of the same keys
 
-The DEFAULT pool entry is used when a language has no MODEL= of its own.
+The locale overlay wins over the base config when both set a key.
 Imported by translate.py —
 keep this module free of CLI logic and side effects at import time.
 """
@@ -22,7 +21,7 @@ HERE = Path(__file__).resolve().parent
 
 
 # --------------------------------------------------------------------------
-# Config: top-level .env (model pool) + locales/<lang>/.env (MODEL selection)
+# Config: base .env + locales/<lang>/.env overlay (same keys, overlay wins)
 # --------------------------------------------------------------------------
 
 def _parse_env_file(path: Path, env: dict) -> None:
@@ -35,8 +34,12 @@ def _parse_env_file(path: Path, env: dict) -> None:
         env[key.strip()] = value.strip().strip("'\"")
 
 
-def load_env(lang: str | None) -> dict:
-    """Top-level .env (model pool), then the locale overlay for <lang>."""
+def load_model_config(lang: str | None) -> dict:
+    """Merge the base .env and the <lang> overlay into one model config.
+
+    The overlay wins on a key-by-key basis. Exits when API_BASE or MODEL
+    is missing after the merge — the tool cannot run without both.
+    """
     env = {}
     env_file = HERE / ".env"
     if not env_file.exists():
@@ -46,44 +49,20 @@ def load_env(lang: str | None) -> dict:
         locale_env = HERE / "locales" / lang / ".env"
         if locale_env.exists():
             _parse_env_file(locale_env, env)
-    return env
-
-
-def load_models(env: dict) -> dict:
-    """Build the model pool from LLM_MODEL_<NAME>_* variables."""
-    models = {}
-    for key, value in env.items():
-        if not key.startswith("LLM_MODEL_"):
-            continue
-        remainder = key[len("LLM_MODEL_"):]
-        name, _, field = remainder.partition("_")
-        name, field = name.upper(), field.upper()
-        models.setdefault(name, {})
-        models[name][field] = value.strip()
-    for name, raw in models.items():
-        models[name] = {
-            "api_base": raw.get("API_BASE", ""),
-            "model": raw.get("MODEL", ""),
-            "temperature": float(raw.get("TEMPERATURE", 1.0)),
-            "reasoning_effort": raw.get("REASONING_EFFORT") or None,
-            "no_thinking": raw.get("NO_THINKING", "").strip().lower() in ("1", "true", "yes"),
-        }
-    if not models:
-        sys.exit("no LLM_MODEL_* entries in .env")
-    return models
-
-
-def resolve_model(models, key=None):
-    """Resolve a model name to its config; falls back to the DEFAULT entry.
-
-    Returns (None, None) when neither the requested nor the DEFAULT entry
-    exists — the caller skips the language.
-    """
-    name = (key or "DEFAULT").upper()
-    if name in models:
-        return name, models[name]
-    return None, None
-
+    api_base = env.get("API_BASE", "").rstrip("/")
+    model = env.get("MODEL", "")
+    if not api_base or not model:
+        sys.exit(
+            "incomplete model config in .env (and locale overlay): "
+            "API_BASE and MODEL are required"
+        )
+    return {
+        "api_base": api_base,
+        "model": model,
+        "temperature": float(env.get("TEMPERATURE", 1.0)),
+        "reasoning_effort": env.get("REASONING_EFFORT") or None,
+        "no_thinking": env.get("NO_THINKING", "").strip().lower() in ("1", "true", "yes"),
+    }
 
 # --------------------------------------------------------------------------
 # LLM call (OpenAI-compatible chat/completions, stdlib urllib)

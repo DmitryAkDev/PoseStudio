@@ -4,11 +4,10 @@
 Everything lives in this directory — the script reads nothing outside it:
 
     translate.py        this script (stdlib only, no pip packages)
-    .env                shared LLM model pool (LLM_MODEL_<NAME>_...; the DEFAULT
-                        entry is used when a language has no MODEL= of its own)
+    .env                base model config (API_BASE, MODEL, TEMPERATURE, ...);
+                        must exist — create it from .env.template
     locales/<lang>/     per-language folder: translator.md (system prompt) and
-                        .env (MODEL=<name> — which pool model translates it)
-
+                        .env (optional overlay of the same config keys)
 Parses the .ts with xml.etree, asks the LLM (one short request per
 message) for every <message> whose translation is empty, and writes the answer
 back into its <translation>, dropping the "unfinished" marker (lrelease skips
@@ -32,7 +31,7 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from llm_pool import HERE, load_env, load_models, llm_chat, resolve_model
+from llm_pool import HERE, load_model_config, llm_chat
 PLACEHOLDER_RE = re.compile(r"%\d+")
 TAG_TOKEN_RE = re.compile(r"\{T(\d+)\}")
 TAG_RE = re.compile(r"</?[a-zA-Z][^>]*>")
@@ -300,8 +299,8 @@ def main() -> int:
                              "resolved from the catalog name; not needed with "
                              "--check/--dry-run)")
     parser.add_argument("--model", default=None,
-                        help="model name from .env "
-                             "(default: MODEL from locales/<lang>/.env, then the DEFAULT entry)")
+                        help="override the MODEL from .env (the locale overlay "
+                             "wins over the base config when both set it)")
     parser.add_argument("--dry-run", action="store_true",
                         help="list the messages that would be translated")
     parser.add_argument("--limit", type=int, default=0,
@@ -367,13 +366,9 @@ def main() -> int:
 
     prompt_text = prompt_file.read_text(encoding="utf-8")
 
-    env = load_env(lang)
-    models = load_models(env)
-    name, cfg = resolve_model(models, key=args.model or env.get("MODEL"))
-    if cfg is None:
-        print(f"no model for '{lang}': neither MODEL= in locales/{lang}/.env "
-              f"nor a LLM_MODEL_DEFAULT_* entry — skipping", file=sys.stderr)
-        return 0
+    cfg = load_model_config(lang)
+    if args.model:
+        cfg["model"] = args.model
     print(f"model: {cfg['model']} @ {cfg['api_base']}", file=sys.stderr)
 
     done = []

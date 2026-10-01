@@ -351,7 +351,7 @@
     <message>
         <location filename="../src/preferences/generalpreferencespanel.cpp" line="68"/>
         <source>This build has no ping key, so nothing is sent regardless of this setting.</source>
-        <translation>В этой сборке нет клавиши пинга, поэтому при любом значении этой настройки ничего не отправляется.</translation>
+        <translation>В этой сборке нет ключа пинга, поэтому при любом значении этой настройки ничего не отправляется.</translation>
     </message>
     <message>
         <location filename="../src/preferences/generalpreferencespanel.cpp" line="76"/>
@@ -361,17 +361,17 @@
     <message>
         <location filename="../src/preferences/generalpreferencespanel.cpp" line="80"/>
         <source>A few seconds after it starts, PoseStudio asks GitHub for the latest release and, when a newer </source>
-        <translation>Спустя несколько секунд после запуска PoseStudio запрашивает у GitHub последнюю версию, и если доступна более новая, </translation>
+        <translation>Спустя несколько секунд после запуска PoseStudio спрашивает у GitHub, есть ли новая версия, и если она есть, </translation>
     </message>
     <message>
         <location filename="../src/preferences/generalpreferencespanel.cpp" line="81"/>
         <source>one exists, shows a message with a link to its download page. Nothing but the request itself </source>
-        <translation>Если есть один, отображается сообщение со ссылкой на страницу загрузки. Только сам запрос </translation>
+        <translation>показывает сообщение со ссылкой на страницу загрузки. Отправляется только </translation>
     </message>
     <message>
         <location filename="../src/preferences/generalpreferencespanel.cpp" line="82"/>
         <source>is sent. Help → Check for Updates… does the same on demand.</source>
-        <translation>отправлено. Помощь → Проверить обновления… — делает то же самое по запросу.</translation>
+        <translation>сам запрос. Помощь → Проверить обновления… делает то же самое по требованию.</translation>
     </message>
     <message>
         <location filename="../src/preferences/generalpreferencespanel.cpp" line="90"/>
@@ -507,7 +507,7 @@
     <message>
         <location filename="../src/shell/menumanager.cpp" line="166"/>
         <source>Undo History...</source>
-        <translation>История отмены...</translation>
+        <translation>История отмен...</translation>
     </message>
     <message>
         <location filename="../src/shell/menumanager.cpp" line="169"/>
@@ -552,7 +552,7 @@
     <message>
         <location filename="../src/shell/menumanager.cpp" line="208"/>
         <source>Side-Side</source>
-        <translation>Вид сбоку-сбоку</translation>
+        <translation>Боковой изгиб</translation>
     </message>
     <message>
         <location filename="../src/shell/menumanager.cpp" line="208"/>
@@ -1271,7 +1271,7 @@ Details: %2</source>
     <message>
         <location filename="../src/properties/environmentpanel.cpp" line="151"/>
         <source>Skin &amp;&amp; Rim</source>
-        <translation>Кожа &amp;&amp; Ободок</translation>
+        <translation>Кожа &amp;&amp; Контур</translation>
     </message>
     <message>
         <location filename="../src/properties/environmentpanel.cpp" line="152"/>
@@ -1306,7 +1306,7 @@ Details: %2</source>
     <message>
         <location filename="../src/properties/environmentpanel.cpp" line="201"/>
         <source>Ground-projected dome: the figure stands on the environment&apos;s floor</source>
-        <translation>Проекция купола на пол: фигура стоит на полу окружения</translation>
+        <translation>Проекция купола на пол: фигура стоит на поверхности</translation>
     </message>
     <message>
         <location filename="../src/properties/environmentpanel.cpp" line="211"/>
@@ -1342,7 +1342,7 @@ Details: %2</source>
     <message>
         <location filename="../src/viewport/jointmodebadge.cpp" line="36"/>
         <source>Side-Side</source>
-        <translation>Вид сбоку-сбоку</translation>
+        <translation>Боковой изгиб</translation>
     </message>
     <message>
         <location filename="../src/viewport/jointmodebadge.cpp" line="37"/>
@@ -1370,7 +1370,7 @@ Details: %2</source>
     <message>
         <location filename="../src/properties/transformpanel.cpp" line="56"/>
         <source>Side-Side</source>
-        <translation>Вид сбоку-сбоку</translation>
+        <translation>Боковой изгиб</translation>
     </message>
     <message>
         <location filename="../src/properties/transformpanel.cpp" line="56"/>
@@ -1388,7 +1388,7 @@ In the viewport: press B and move the mouse.</source>
         <location filename="../src/properties/transformpanel.cpp" line="61"/>
         <source>Bends the joint in its secondary direction. 0 is the rest pose, 100 is the joint&apos;s limit; negative values bend it the other way, as far as the joint allows.
 In the viewport: press S and move the mouse.</source>
-        <translation>Сгибает сустав во втором направлении. 0 — исходная поза, 100 — предел сустава; отрицательные значения сгибают в другую сторону, насколько позволяет сустав.
+        <translation>Сгибает сустав в дополнительном направлении. 0 — исходная поза, 100 — предел сгиба; отрицательные значения сгибают в обратную сторону, насколько позволяет сустав.
 Во вьюпорте: нажмите S и двигайте мышью.</translation>
     </message>
     <message>
@@ -1449,7 +1449,7 @@ In the viewport: press T and move the mouse.</source>
     <message>
         <location filename="../src/viewport/viewportstrip.cpp" line="200"/>
         <source>Toggle the skeleton overlay</source>
-        <translation>Показать/скрыть скелет</translation>
+        <translation>Показать/скрыть оверлей скелета</translation>
     </message>
     <message>
         <location filename="../src/viewport/viewportstrip.cpp" line="237"/>
