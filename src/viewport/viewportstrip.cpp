@@ -16,6 +16,7 @@
 #include "menupickerbutton.h"
 #include "scene/shademode.h"
 
+#include <QCoreApplication>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QList>
@@ -133,9 +134,12 @@ ViewportStrip::ViewportStrip(QWidget* owner)
     m_shaderPicker->setObjectName(QStringLiteral("ShaderModeButton"));
     m_shaderPicker->setToolTip(tr("Viewport shading mode"));
     m_shaderPicker->setStyleSheet(pickerStyle(QStringLiteral("ShaderModeButton"), 168));
+    // The table's names are the single source of truth (Qt-free const char*); they are looked up
+    // at run time, so their .ts entries come from the i18n pipeline's table import, not lupdate.
     QList<MenuPickerButton::Item> shadeItems;
     for (const ShadeMode& mode : kShadeModes) {
-        shadeItems.append({QString::fromUtf8(mode.name), mode.separatorAfter, QString()});
+        shadeItems.append({QCoreApplication::translate("ViewportStrip", mode.name),
+                           mode.separatorAfter, QString()});
     }
     m_shaderPicker->setItems(shadeItems);
     m_shaderPicker->setCaptionPrefix(captionPrefix);
@@ -152,8 +156,11 @@ ViewportStrip::ViewportStrip(QWidget* owner)
     m_viewPicker->setToolTip(tr("Camera view"));
     m_viewPicker->setStyleSheet(pickerStyle(QStringLiteral("ViewPresetButton"), 132));
     QList<MenuPickerButton::Item> viewItems;
+    // Same single-source rule as the shader picker: the table owns the labels, the pipeline's
+    // table import owns their .ts entries.
     for (const ViewEntry& entry : kViewEntries) {
-        viewItems.append({tr(entry.label), entry.separatorAfter, QString()});
+        viewItems.append({QCoreApplication::translate("ViewportStrip", entry.label),
+                          entry.separatorAfter, QString()});
     }
     m_viewPicker->setItems(viewItems);
     m_viewPicker->setCaptionPrefix(captionPrefix);

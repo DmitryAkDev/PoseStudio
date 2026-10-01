@@ -13,21 +13,21 @@
 #include <QProcess>
 
 FactoryResetPreferencesPanel::FactoryResetPreferencesPanel(QWidget* parent)
-    : PreferencesPanel(QStringLiteral("Factory Reset"), parent) {
+    : PreferencesPanel(tr("Factory Reset"), parent) {
 
     addDescription(
-        "Permanently deletes all your asset libraries, collections, and preferences. "
-        "This cannot be undone. PoseStudio will restart automatically once the reset is complete.");
+        tr("Permanently deletes all your asset libraries, collections, and preferences. ") +
+        tr("This cannot be undone. PoseStudio will restart automatically once the reset is complete."));
 
-    addDescription("To confirm, type RESET into the box below, then click \"Factory Reset\".");
+    addDescription(tr("To confirm, type RESET into the box below, then click \"Factory Reset\"."));
 
     auto* confirmInput = new QLineEdit(this);
     confirmInput->setObjectName(QStringLiteral("FactoryResetConfirmInput"));
-    confirmInput->setPlaceholderText(QStringLiteral("Type RESET to confirm"));
+    confirmInput->setPlaceholderText(tr("Type RESET to confirm"));
     confirmInput->setMaximumWidth(240);
     contentLayout()->addWidget(confirmInput);
 
-    auto* resetButton = new QPushButton(QStringLiteral("Factory Reset"), this);
+    auto* resetButton = new QPushButton(tr("Factory Reset"), this);
     resetButton->setObjectName(QStringLiteral("FactoryResetButton"));
     resetButton->setEnabled(false);
     contentLayout()->addWidget(resetButton, 0, Qt::AlignLeft);

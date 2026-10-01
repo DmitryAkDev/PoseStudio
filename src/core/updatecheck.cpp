@@ -145,8 +145,8 @@ void UpdateCheck::handleReply(QNetworkReply* reply, bool interactive) {
     if (reply->error() != QNetworkReply::NoError || status < 200 || status >= 300) {
         qInfo() << "[update] check failed:" << reply->errorString() << "HTTP" << status;
         if (interactive && m_window) {
-            QMessageBox::warning(m_window, QStringLiteral("Check for Updates"),
-                                 QStringLiteral("PoseStudio couldn't check for updates right now.\n\n%1")
+            QMessageBox::warning(m_window, tr("Check for Updates"),
+                                 tr("PoseStudio couldn't check for updates right now.\n\n%1")
                                      .arg(reply->errorString()));
         }
         return;
@@ -157,8 +157,8 @@ void UpdateCheck::handleReply(QNetworkReply* reply, bool interactive) {
     if (tag.isEmpty()) {
         qInfo() << "[update] check failed: no tag_name in the response";
         if (interactive && m_window) {
-            QMessageBox::warning(m_window, QStringLiteral("Check for Updates"),
-                                 QStringLiteral("PoseStudio couldn't read the release information."));
+            QMessageBox::warning(m_window, tr("Check for Updates"),
+                                 tr("PoseStudio couldn't read the release information."));
         }
         return;
     }
@@ -174,8 +174,8 @@ void UpdateCheck::handleReply(QNetworkReply* reply, bool interactive) {
     if (compareVersions(version, current) <= 0) {
         qInfo() << "[update] up to date:" << current << "(latest release" << version << ")";
         if (interactive && m_window) {
-            QMessageBox::information(m_window, QStringLiteral("Check for Updates"),
-                                     QStringLiteral("You are running the latest release (PoseStudio %1).")
+            QMessageBox::information(m_window, tr("Check for Updates"),
+                                     tr("You are running the latest release (PoseStudio %1).")
                                          .arg(current));
         }
         return;
@@ -196,18 +196,18 @@ void UpdateCheck::promptNewer(const QString& version, const QUrl& page) {
     // session, and must never hold up a pending import or the event loop. Deleted on close.
     auto* box = new QMessageBox(m_window);
     box->setAttribute(Qt::WA_DeleteOnClose);
-    box->setWindowTitle(QStringLiteral("Update Available"));
+    box->setWindowTitle(tr("Update Available"));
     box->setIcon(QMessageBox::Information);
     box->setTextFormat(Qt::RichText);
     // Qt's QSS engine does not style <a> inside a QLabel: the link colour goes inline, the
     // app's accent (see the same pattern in the Asset Manager's hint label).
-    box->setText(QStringLiteral("<b>PoseStudio %1 is available.</b><br>You are running %2.<br><br>"
-                                "<a href=\"%3\" style=\"color:%4;\">%3</a>")
+    box->setText(tr("<b>PoseStudio %1 is available.</b><br>You are running %2.<br><br>"
+                    "<a href=\"%3\" style=\"color:%4;\">%3</a>")
                      .arg(version.toHtmlEscaped(), QLatin1String(Constants::APP_VERSION),
                           page.toString().toHtmlEscaped(), QLatin1String(Constants::COLOR_ACCENT)));
-    QPushButton* openButton = box->addButton(QStringLiteral("Open Download Page"), QMessageBox::AcceptRole);
-    QPushButton* skipButton = box->addButton(QStringLiteral("Skip This Version"), QMessageBox::DestructiveRole);
-    box->addButton(QStringLiteral("Later"), QMessageBox::RejectRole);
+    QPushButton* openButton = box->addButton(tr("Open Download Page"), QMessageBox::AcceptRole);
+    QPushButton* skipButton = box->addButton(tr("Skip This Version"), QMessageBox::DestructiveRole);
+    box->addButton(tr("Later"), QMessageBox::RejectRole);
     box->setDefaultButton(openButton);
     connect(box, &QDialog::finished, box, [box, openButton, skipButton, page, version]() {
         if (box->clickedButton() == openButton) {

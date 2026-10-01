@@ -13,12 +13,8 @@
 #include <QMenu>
 #include <QResizeEvent>
 
-namespace {
-const QString kIdlePrompt = QStringLiteral("Select a folder to view assets...");
-}
-
 AssetBreadcrumbLabel::AssetBreadcrumbLabel(QWidget* parent)
-    : QLabel(kIdlePrompt, parent)
+    : QLabel(tr("Select a folder to view assets..."), parent)
     , m_openIcon(QStringLiteral(":/resources/icons/open-item.png"))
     , m_browseIcon(QStringLiteral(":/resources/icons/browse-folder.png")) {
     setObjectName("AssetManagerTitle");
@@ -80,7 +76,7 @@ void AssetBreadcrumbLabel::clearTitle() {
     m_folderPath.clear();
     m_plainTitle.clear();
     m_hoveredLink.clear();
-    setText(kIdlePrompt);
+    setText(tr("Select a folder to view assets..."));
 }
 
 void AssetBreadcrumbLabel::resizeEvent(QResizeEvent* event) {
@@ -98,10 +94,10 @@ void AssetBreadcrumbLabel::contextMenuEvent(QContextMenuEvent* event) {
 
     QMenu menu(this);
     menu.setObjectName("AssetManagerContextMenu");
-    QAction* openAction = menu.addAction(m_openIcon, "Open");
+    QAction* openAction = menu.addAction(m_openIcon, tr("Open"));
     openAction->setEnabled(!m_hoveredLink.isEmpty());
     menu.addSeparator();
-    QAction* browseAction = menu.addAction(m_browseIcon, "Browse Folder");
+    QAction* browseAction = menu.addAction(m_browseIcon, tr("Browse Folder"));
     QAction* selected = menu.exec(event->globalPos());
     if (selected == openAction) emit navigateRequested(targetPath);
     else if (selected == browseAction) emit browseRequested(targetPath);

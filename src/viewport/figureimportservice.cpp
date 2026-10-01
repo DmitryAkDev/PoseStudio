@@ -241,16 +241,16 @@ void persistContentRoot(const QString& dir) {
 QString promptLocateContentFolder(const QString& path) {
     QMessageBox box(QApplication::activeWindow());
     box.setIcon(QMessageBox::Warning);
-    box.setWindowTitle(QStringLiteral("Content Folder Needed"));
-    box.setText(QStringLiteral("PoseStudio couldn't find the geometry and morph data for:\n%1")
+    box.setWindowTitle(QObject::tr("Content Folder Needed"));
+    box.setText(QObject::tr("PoseStudio couldn't find the geometry and morph data for:\n%1")
                     .arg(QFileInfo(path).fileName()));
-    box.setInformativeText(QStringLiteral(
-        "The folder you imported from contains the figure's presets but not its \"data\" folder "
-        "(where the mesh, skeleton, morphs and skin weights live).\n\n"
-        "Point PoseStudio at the figure's content folder — the folder that directly contains the "
-        "\"data\" folder — and it will be remembered for future imports."));
+    box.setInformativeText(
+        QObject::tr("The folder you imported from contains the figure's presets but not its \"data\" folder ") +
+        QObject::tr("(where the mesh, skeleton, morphs and skin weights live).\n\n") +
+        QObject::tr("Point PoseStudio at the figure's content folder — the folder that directly contains the ") +
+        QObject::tr("\"data\" folder — and it will be remembered for future imports."));
     QPushButton* locateBtn =
-        box.addButton(QStringLiteral("Locate Content Folder…"), QMessageBox::AcceptRole);
+        box.addButton(QObject::tr("Locate Content Folder…"), QMessageBox::AcceptRole);
     box.addButton(QMessageBox::Cancel);
     box.exec();
     if (box.clickedButton() != locateBtn) {
@@ -260,7 +260,7 @@ QString promptLocateContentFolder(const QString& path) {
     // Browse starting near the imported file (the library root is often an ancestor of the presets).
     const QString dir = QFileDialog::getExistingDirectory(
         QApplication::activeWindow(),
-        QStringLiteral("Select the Content Folder (the one containing \"data\")"),
+        QObject::tr("Select the Content Folder (the one containing \"data\")"),
         QFileInfo(path).absolutePath());
     if (dir.isEmpty()) {
         return QString();
@@ -268,10 +268,10 @@ QString promptLocateContentFolder(const QString& path) {
     if (!QDir(dir).exists(QStringLiteral("data"))) {
         // Not fatal — accept it anyway, but warn so a still-failing retry isn't a mystery.
         QMessageBox::information(
-            QApplication::activeWindow(), QStringLiteral("No \"data\" Folder"),
-            QStringLiteral("The selected folder doesn't directly contain a \"data\" folder, so the "
-                           "figure's geometry may still not be found. It has been added anyway — "
-                           "pick the folder that directly contains \"data\" if the import fails."));
+            QApplication::activeWindow(), QObject::tr("No \"data\" Folder"),
+            QObject::tr("The selected folder doesn't directly contain a \"data\" folder, so the ") +
+            QObject::tr("figure's geometry may still not be found. It has been added anyway — ") +
+            QObject::tr("pick the folder that directly contains \"data\" if the import fails."));
     }
     return dir;
 }
@@ -281,20 +281,20 @@ void showImportFailureMessage(const QString& path, const QString& detail, bool n
                               bool missingContent) {
     QString body;
     if (notAFigure) {
-        body = QStringLiteral("Could not import a character figure from:\n%1\n\nThis file may be a "
-                              "pose, material, or other preset rather than a figure.\n\nDetails: %2")
-                   .arg(QFileInfo(path).fileName(), detail);
+        body = (QObject::tr("Could not import a character figure from:\n%1\n\nThis file may be a ") +
+               QObject::tr("pose, material, or other preset rather than a figure.\n\nDetails: %2"))
+            .arg(QFileInfo(path).fileName(), detail);
     } else if (missingContent) {
-        body = QStringLiteral("Could not import a character figure from:\n%1\n\nThe figure's geometry "
-                              "and morph data (its \"data\" folder) couldn't be found. Import again "
-                              "and choose \"Locate Content Folder…\" to point PoseStudio at the folder "
-                              "that contains \"data\".\n\nDetails: %2")
-                   .arg(QFileInfo(path).fileName(), detail);
+        body = (QObject::tr("Could not import a character figure from:\n%1\n\nThe figure's geometry ") +
+               QObject::tr("and morph data (its \"data\" folder) couldn't be found. Import again ") +
+               QObject::tr("and choose \"Locate Content Folder…\" to point PoseStudio at the folder ") +
+               QObject::tr("that contains \"data\".\n\nDetails: %2"))
+            .arg(QFileInfo(path).fileName(), detail);
     } else {
-        body = QStringLiteral("Could not import a character figure from:\n%1\n\nDetails: %2")
-                   .arg(QFileInfo(path).fileName(), detail);
+        body = QObject::tr("Could not import a character figure from:\n%1\n\nDetails: %2")
+            .arg(QFileInfo(path).fileName(), detail);
     }
-    QMessageBox::warning(QApplication::activeWindow(), QStringLiteral("Import Failed"), body);
+    QMessageBox::warning(QApplication::activeWindow(), QObject::tr("Import Failed"), body);
 }
 
 // One import attempt with a fixed set of content roots: roots -> FigureImporter::load ->
@@ -303,8 +303,8 @@ void showImportFailureMessage(const QString& path, const QString& detail, bool n
 // the modal staged progress dialog when showProgress is set.
 void runFigureImport(VulkanRenderer& renderer, const QString& path,
                      const std::vector<std::string>& roots, bool showProgress) {
-    ModelImportService::ImportProgress progress(showProgress, QStringLiteral("Importing Figure"),
-                                                QStringLiteral("Reading figure…"));
+    ModelImportService::ImportProgress progress(showProgress, QObject::tr("Importing Figure"),
+                                                QObject::tr("Reading figure…"));
 
     if (roots.empty()) {
         qWarning() << "[viewport] Figure import: no content root (a folder containing 'data') "
@@ -317,7 +317,7 @@ void runFigureImport(VulkanRenderer& renderer, const QString& path,
     progress.parsed();
 
     ModelData data = toModelData(std::move(figure));
-    const QString counts = QStringLiteral(", %1 zones, %2 pose correctives")
+    const QString counts = QObject::tr(", %1 zones, %2 pose correctives")
                                .arg(data.meshes.size())
                                .arg(data.correctives.size());
     ModelImportService::uploadModelData(renderer, data, progress, "figure ", path, counts);

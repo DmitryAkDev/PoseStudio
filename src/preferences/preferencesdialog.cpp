@@ -16,11 +16,12 @@
 #include <QVBoxLayout>
 #include <QFrame>
 #include <QDialogButtonBox>
+#include <QPushButton>
 
 PreferencesDialog::PreferencesDialog(QWidget* parent)
     : QDialog(parent) {
     setObjectName(QStringLiteral("PreferencesDialog"));
-    setWindowTitle(QStringLiteral("Preferences"));
+    setWindowTitle(tr("Preferences"));
     setMinimumSize(640, 460);
 
     auto* outer = new QVBoxLayout(this);
@@ -49,6 +50,8 @@ PreferencesDialog::PreferencesDialog(QWidget* parent)
     auto* footer = new QHBoxLayout();
     footer->setContentsMargins(16, 12, 16, 12);
     auto* buttonBox = new QDialogButtonBox(QDialogButtonBox::Close, Qt::Horizontal, this);
+    // The standard Close label comes from Qt's own (absent) translation; give it ours.
+    buttonBox->button(QDialogButtonBox::Close)->setText(tr("Close"));
     footer->addStretch(1);
     footer->addWidget(buttonBox);
     outer->addLayout(footer);
@@ -66,25 +69,25 @@ PreferencesDialog::PreferencesDialog(QWidget* parent)
         accept(); // close so the navigation in the main window behind us is actually visible
     });
 
-    addPanel(QStringLiteral("General"),       new GeneralPreferencesPanel(this));
-    addPanel(QStringLiteral("Interface"),
+    addPanel(tr("General"),       new GeneralPreferencesPanel(this));
+    addPanel(tr("Interface"),
              new PlaceholderPreferencesPanel(
-                 QStringLiteral("Interface"),
-                 QStringLiteral("Interface and appearance settings will appear here."), this));
-    addPanel(QStringLiteral("Assets"),        assetsPanel);
-    addPanel(QStringLiteral("Input"),
+                 tr("Interface"),
+                 tr("Interface and appearance settings will appear here."), this));
+    addPanel(tr("Assets"),        assetsPanel);
+    addPanel(tr("Input"),
              new PlaceholderPreferencesPanel(
-                 QStringLiteral("Input"),
-                 QStringLiteral("Keyboard and input settings will appear here."), this));
-    addPanel(QStringLiteral("Navigation"),
+                 tr("Input"),
+                 tr("Keyboard and input settings will appear here."), this));
+    addPanel(tr("Navigation"),
              new PlaceholderPreferencesPanel(
-                 QStringLiteral("Navigation"),
-                 QStringLiteral("Viewport navigation settings will appear here."), this));
-    addPanel(QStringLiteral("System"),
+                 tr("Navigation"),
+                 tr("Viewport navigation settings will appear here."), this));
+    addPanel(tr("System"),
              new PlaceholderPreferencesPanel(
-                 QStringLiteral("System"),
-                 QStringLiteral("System, performance, and storage settings will appear here."), this));
-    addPanel(QStringLiteral("Factory Reset"), new FactoryResetPreferencesPanel(this));
+                 tr("System"),
+                 tr("System, performance, and storage settings will appear here."), this));
+    addPanel(tr("Factory Reset"), new FactoryResetPreferencesPanel(this));
 
     m_nav->setCurrentRow(0);
 }
