@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+* **Interface language (Preferences → General → Language).** The UI language is now a setting, picked from the languages this build ships catalogs for (English and Russian to start). A change takes effect the next time the app starts; until then everything stays in the current language. The shade-mode and view-preset pickers follow the chosen language too — their names are catalog entries seeded from the source tables by `tools/i18n/add_runtime_strings.py`, so a renamed or added mode/view is picked up on the next seeding run instead of drifting away from the catalog.
+* **Translation catalogs in the build.** The CMake build now finds the Qt Linguist tools when present, keeps `translations/ru.ts` current with an `lupdate` target and compiles it to the embedded `:/translations/ru.qm` with `lrelease`. Missing tooling or a missing catalog never breaks the build or the start — the app warns and stays in English. The committed Russian catalog is the lupdate skeleton: every string is extracted and ready, translations arrive with the translation pipeline.
+
 ## [0.3.16] - 2026-09-30
 
 Project files and joint-by-joint posing. The whole scene — every figure with its pose, the

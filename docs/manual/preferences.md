@@ -4,6 +4,8 @@
 
 ## General
 
+**Language** (English by default). The interface language, picked from the languages this build ships catalogs for. A change takes effect the next time PoseStudio starts — the page says so right below the picker; until then every string stays in the current language.
+
 **Send an anonymous install ping** (on by default). Each time it starts, PoseStudio lets the project's server know that this installation exists. The page lists exactly what the ping carries — an install ID, the version, your operating system and CPU type, installer or portable, the Qt version and the time — and nothing else. Below the toggle the page shows your **Install ID**, or *not created yet* if no ping has been sent. Builds without a ping key say so and never send anything. See [Privacy and Updates](privacy-updates.md).
 
 **Check for updates at startup** (on by default). A few seconds after launch PoseStudio asks GitHub for the latest release and tells you when a newer one exists. Nothing but the request is sent. **Help → Check for Updates…** does the same on demand.
