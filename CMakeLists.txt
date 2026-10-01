@@ -35,6 +35,25 @@ endif()
 # Locate required Qt modules. The build will fatally abort if these are missing.
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Sql Concurrent Network)
 
+# Translation tooling (lupdate/lrelease) is OPTIONAL: a machine without it still builds the
+# app, just without the compiled translation catalog (the UI then stays English). Two routes,
+# in order of preference: Qt6's LinguistTools CMake package (some distributions ship the tools
+# with their CMake config), else the bare executables — some Linux distributions put those
+# under /usr/lib/qt6/bin, outside find_program's default PATH, hence the explicit HINTS.
+find_package(Qt6 QUIET COMPONENTS LinguistTools)
+if(NOT Qt6LinguistTools_FOUND)
+    find_program(POSESTUDIO_LRELEASE_EXECUTABLE NAMES lrelease HINTS /usr/lib/qt6/bin)
+    find_program(POSESTUDIO_LUPDATE_EXECUTABLE  NAMES lupdate  HINTS /usr/lib/qt6/bin)
+endif()
+if(Qt6LinguistTools_FOUND OR POSESTUDIO_LRELEASE_EXECUTABLE)
+    set(POSESTUDIO_I18N_AVAILABLE ON)
+else()
+    set(POSESTUDIO_I18N_AVAILABLE OFF)
+    message(WARNING "Qt Linguist tools (lupdate/lrelease) were not found - building without the"
+                    "compiled translation catalog; the UI will stay English. Install Qt's"
+                    "Linguist tools and re-run CMake to enable the Russian translation.")
+endif()
+
 # Automatically invoke Qt's pre-processors during the build:
 set(CMAKE_AUTOMOC ON) # Meta-Object Compiler (Handles Signals & Slots)
 set(CMAKE_AUTOUIC ON) # User Interface Compiler (Handles .ui XML files)
@@ -455,6 +474,74 @@ qt_add_resources(PoseStudio "manual"
     PREFIX "/manual"
     BASE "${CMAKE_SOURCE_DIR}/docs/manual"
     FILES ${POSESTUDIO_MANUAL_FILES} "${CMAKE_SOURCE_DIR}/CHANGELOG.md")
+
+# ---------------------------------------------------------------------------------------------
+# TRANSLATION CATALOGS (translations/<lang>.ts -> build-tree <lang>.qm, embedded as qrc:/translations/).
+# The .ts is the translatable source (committed); the .qm is compiled at build time and never
+# committed. qt_add_resources gets its own call here - NOT an extension of resources.qrc - because
+# rcc resolves <file> entries relative to the .qrc file, while the .qm lives in the build tree.
+# Without Linguist tooling (POSESTUDIO_I18N_AVAILABLE OFF) nothing is wired and the app runs
+# English: the translator simply finds no embedded catalog to load.
+if(POSESTUDIO_I18N_AVAILABLE)
+    # Languages are data: adding one is a single line in this list plus its
+    # translations/<lang>.ts catalog (and a row in Constants::AVAILABLE_LANGUAGES).
+    set(POSESTUDIO_I18N_LANGS ru)
+    set(POSESTUDIO_TS_FILES "")
+    set(POSESTUDIO_QM_FILES "")
+    foreach(lang IN LISTS POSESTUDIO_I18N_LANGS)
+        list(APPEND POSESTUDIO_TS_FILES "translations/${lang}.ts")
+        list(APPEND POSESTUDIO_QM_FILES "${CMAKE_CURRENT_BINARY_DIR}/translations/${lang}.qm")
+    endforeach()
+    if(Qt6LinguistTools_FOUND)
+        # The macro compiles each .ts into a build-tree .qm, embeds it in the target's
+        # resources under /translations/, and creates the PoseStudio_lupdate /
+        # PoseStudio_lrelease convenience targets. TS_FILES is explicit: a bare positional
+        # path would be ignored and the macro would fall back to <project>_<lang>.ts files
+        # in the source root.
+        qt6_add_translations(PoseStudio RESOURCE_PREFIX "/translations" TS_FILES ${POSESTUDIO_TS_FILES})
+    else()
+        # Same two targets qt6_add_translations() would create, driven by the found executables.
+        foreach(lang IN LISTS POSESTUDIO_I18N_LANGS)
+            add_custom_command(
+                OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/translations/${lang}.qm"
+                COMMAND ${POSESTUDIO_LRELEASE_EXECUTABLE} "${CMAKE_SOURCE_DIR}/translations/${lang}.ts" -qm "${CMAKE_CURRENT_BINARY_DIR}/translations/${lang}.qm"
+                DEPENDS "${CMAKE_SOURCE_DIR}/translations/${lang}.ts" ${POSESTUDIO_LRELEASE_EXECUTABLE}
+                COMMENT "Compiling translations/${lang}.ts -> ${lang}.qm"
+                VERBATIM
+            )
+            add_custom_target(PoseStudio_${lang}_qm_file DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/translations/${lang}.qm")
+        endforeach()
+        # lupdate is only needed to refresh the catalogs after new tr() strings land; it may be
+        # absent (lrelease alone is enough to build), so the target then just says so.
+        set(POSESTUDIO_LUPDATE_TS_ARGS "")
+        foreach(lang IN LISTS POSESTUDIO_I18N_LANGS)
+            list(APPEND POSESTUDIO_LUPDATE_TS_ARGS -ts "${CMAKE_SOURCE_DIR}/translations/${lang}.ts")
+        endforeach()
+        if(POSESTUDIO_LUPDATE_EXECUTABLE)
+            add_custom_target(
+                PoseStudio_lupdate
+                COMMAND ${POSESTUDIO_LUPDATE_EXECUTABLE} -no-obsolete -recursive
+                        "${CMAKE_SOURCE_DIR}/src" ${POSESTUDIO_LUPDATE_TS_ARGS}
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+                COMMENT "Updating the translation catalogs from the sources (lupdate)"
+                VERBATIM
+            )
+        else()
+            add_custom_target(PoseStudio_lupdate COMMAND ${CMAKE_COMMAND} -E echo_no_color
+                            "lupdate not found - run it manually to refresh translations/")
+        endif()
+        add_dependencies(PoseStudio ${POSESTUDIO_QM_FILES})
+        # The .qm lives in the build tree (absolute path), so Qt needs an explicit alias to
+        # expose it as /translations/<lang>.qm inside the resource system.
+        foreach(qm_file IN LISTS POSESTUDIO_QM_FILES)
+            get_filename_component(qm_name "${qm_file}" NAME)
+            set_source_files_properties("${qm_file}" PROPERTIES QT_RESOURCE_ALIAS "${qm_name}")
+        endforeach()
+        qt_add_resources(PoseStudio "translations"
+            PREFIX "/translations"
+            FILES ${POSESTUDIO_QM_FILES})
+    endif()
+endif()
 
 # The Windows executable icon resource (.rc) is understood only by the Windows resource
 # compiler. On macOS/Linux (Clang/GCC) CMake has no RC language enabled, so listing it
