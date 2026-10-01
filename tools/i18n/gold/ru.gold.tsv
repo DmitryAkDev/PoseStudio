@@ -9,3 +9,8 @@ GS-007	Pin Joint\tP	Закрепить сустав\tP	pin
 GS-008	Frame Selected	Вписать выделенное	frame-selected
 GS-009	Subsurface	Подповерхностное рассеивание	subsurface
 GS-010	New	Новый	menu-new
+GS-011	Release Notes	Список изменений	release-notes
+GS-012	Twist	Скручивание	twist
+GS-013	Ambient fill	Заполняющий свет	ambient-fill
+GS-014	ACES filmic tonemap	Тональная компрессия ACES filmic	tonemap
+GS-015	Exposure &amp;&amp; Tone	Экспозиция &amp;&amp; Затенение	tone-marker
