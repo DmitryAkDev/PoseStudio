@@ -12,30 +12,32 @@ and every catalog that ships has been read through by a human first.
 | `translate.py` | Self-contained translator: stdlib only, reads config and prompt from this directory |
 | `dump.py` | Manual-review dump of a catalog (source -> translation pairs, control chars visible); the dump ends with a consistency audit; `--audit` runs that check alone and exits 1 on divergence |
 | `clear.py` | Empties every `<translation>` in one catalog (keeps the XML structure) — for re-rolling it from scratch |
+| `gold_check.py` | Gold-set regression check: compares every row of `gold/<lang>.gold.tsv` against a catalog, exits 1 on a missing source or a drifted translation |
 | `add_language.py` | One-shot language onboarding (CMake list + prompt template + .env + lupdate) |
-| `llm_pool.py` | Shared pipeline infrastructure imported by `translate.py` (env loading, model pool, the chat/completions call) — stdlib only, no CLI logic |
-| `.env` | Shared LLM model pool — `LLM_MODEL_<NAME>_API_BASE/_MODEL/_TEMPERATURE`. Must exist (create it from `.env.template`); machine-specific values never go into git |
-| `.env.template` | Clean copy of the pool format |
+| `llm_pool.py` | Shared pipeline infrastructure imported by `translate.py` (config loading, the chat/completions call) — stdlib only, no CLI logic |
+| `.env` | Base model config — `API_BASE`, `MODEL`, `TEMPERATURE`, ... Must exist (create it from `.env.template`); machine-specific values never go into git |
+| `.env.template` | Clean copy of the base config format |
 | `locales/template.md` | Language-neutral English prompt template; `add_language.py` fills in the language name and code |
 | `locales/<lang>/translator.md` | Per-language system prompt (output contract + domain context + terminology table) — the single source of translation style for that language |
-| `locales/<lang>/.env` | Per-language model config: a full `LLM_MODEL_DEFAULT_API_BASE/_MODEL/_TEMPERATURE` set and/or `MODEL=<name>` to pick a pool entry by name (not committed) |
+| `locales/<lang>/.env` | Optional per-language overlay of the same config keys — the overlay wins on a key-by-key basis (not committed) |
 | `gold/` | Per-language gold sets (`<lang>.gold.tsv`): pinned source strings with the expected translation — the regression check for model/prompt drift, see `gold/README.md` |
 
-## Model resolution
+## Config
 
 The language is inferred from the catalog file name (Qt convention: `ru.ts` → `ru`).
-Config is loaded as top-level `.env` + `locales/<lang>/.env` overlay (the top-level
-file must exist — create it from `.env.template`; machine-specific values never go
-into git), then:
+Config is loaded as `.env` + `locales/<lang>/.env` overlay — the base file must exist
+(create it from `.env.template`; machine-specific values never go into git), and the
+overlay wins on a key-by-key basis, so a language can use its own model without
+touching the base config. Then:
 
 - prompt: `locales/<lang>/translator.md` (an explicit prompt file as a second argument always wins);
-- model: `MODEL=` from the locale `.env` if present, otherwise the `DEFAULT` entry;
-  `--model <name>` overrides both. No resolvable model = the language is skipped.
+- model: `MODEL=` from the merged config; `--model <name>` overrides it.
+  A config without `API_BASE` or `MODEL` is an error, not a skip;
 - hybrid reasoning models think by default: every label pays for a chain-of-thought
   pass (10-50x slower), and the CoT tends to override the terminology table with its own
-  reasoning. `LLM_MODEL_<NAME>_NO_THINKING=1` in the model's `.env` sends
-  `chat_template_kwargs: {"enable_thinking": false}` and skips the pass;
-  for label translation the prompt carries all the context, so nothing is lost.
+  reasoning. `NO_THINKING=1` in the config sends `chat_template_kwargs: {"enable_thinking": false}`
+  and skips the pass; for label translation the prompt carries all the context, so
+  nothing is lost.
 
 ## Working on a catalog
 
@@ -47,9 +49,11 @@ cmake --build build --target PoseStudio_lupdate -j4
 python3 tools/i18n/translate.py translations/<lang>.ts
 
 # 3. Automated audits: placeholders (%1, %2, ... must survive in every filled
-#    entry) and consistency (one source -> one translation; exit 1 otherwise).
+#    entry), consistency (one source -> one translation; exit 1 otherwise) and the
+#    gold set (pinned strings must not have drifted; exit 1 on a hit).
 python3 tools/i18n/translate.py translations/<lang>.ts --check
 python3 tools/i18n/dump.py translations/<lang>.ts --audit
+python3 tools/i18n/gold_check.py translations/<lang>.ts
 
 # 4. Read the whole catalog once; fix style drift and lost accelerators by hand
 #    directly in the .ts (\tDel and the like are part of the UI text).
@@ -108,9 +112,9 @@ The script does every mechanical step:
   generated from that list, so this is the only CMake edit that exists;
 - creates `locales/<lang>/translator.md` from `locales/template.md` with the language
   name/code filled in (terminology table left as TODO);
-- writes `MODEL=<model>` into `locales/<lang>/.env` (when a model is given) — if your
-  model is not in the top-level pool, add its full `LLM_MODEL_DEFAULT_API_BASE/_MODEL/
-  _TEMPERATURE` set to that file instead;
+- writes `MODEL=<model>` into `locales/<lang>/.env` (when a model is given) — an
+  overlay of the base config, so the language can use its own model without touching
+  `.env`;
 - reconfigures the build and runs `PoseStudio_lupdate`, which generates the empty
   `translations/<lang>.ts`.
 

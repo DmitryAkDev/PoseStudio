@@ -14,3 +14,10 @@ GS-012	Twist	Скручивание	twist
 GS-013	Ambient fill	Заполняющий свет	ambient-fill
 GS-014	ACES filmic tonemap	Тональная компрессия ACES filmic	tonemap
 GS-015	Exposure &amp;&amp; Tone	Экспозиция &amp;&amp; Затенение	tone-marker
+GS-016	This build has no ping key, so nothing is sent regardless of this setting.	В этой сборке нет ключа пинга, поэтому при любом значении этой настройки ничего не отправляется.	ping-key
+GS-017	Side-Side	Боковой изгиб	side-side-mode
+GS-018	Skin &amp;&amp; Rim	Кожа &amp;&amp; Контур	rim-term
+GS-019	Undo History...	История отмен...	undo-history
+GS-020	Ground-projected dome: the figure stands on the environment's floor	Проекция купола на пол: фигура стоит на поверхности	ground-dome
+GS-021	Bends the joint in its secondary direction. 0 is the rest pose, 100 is the joint's limit; negative values bend it the other way, as far as the joint allows.\nIn the viewport: press S and move the mouse.	Сгибает сустав в дополнительном направлении. 0 — исходная поза, 100 — предел сгиба; отрицательные значения сгибают в обратную сторону, насколько позволяет сустав.\nВо вьюпорте: нажмите S и двигайте мышью.	side-side-tooltip
+GS-022	Toggle the skeleton overlay	Показать/скрыть оверлей скелета	skeleton-overlay

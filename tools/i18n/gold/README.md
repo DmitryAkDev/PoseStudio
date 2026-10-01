@@ -21,10 +21,14 @@ is a regression: it appears as an M1 hit in the review report, not a silent chan
 
 ## Checking a catalog
 
-Dump the catalog with `dump.py`, then compare each gold `source` against its
-`expected_ru`; any mismatch is reported as a regression. The set is a check on the
-pipeline (model + prompt), not a queue of edits: fixing a hit means fixing the
-prompt or the table, re-running, and only then touching the catalog.
+`gold_check.py <catalog.ts>` reads the gold set (default `gold/<lang>.gold.tsv`,
+language inferred from the catalog name) and compares every row against the
+catalog after normalizing both sides (HTML entities unescaped, the two-character
+\t of the TSV read back as a real tab). It reports rows whose source is missing
+from the catalog and rows whose translation differs from `expected_ru`, and exits
+1 on any hit. The set is a check on the pipeline (model + prompt), not a queue of
+edits: fixing a hit means fixing the prompt or the table, re-running, and only
+then touching the catalog.
 
 ## Extending the set
 

@@ -5,7 +5,7 @@ Usage:
     add_language.py <lang> [model]
 
         <lang>   Qt locale code (zh_CN, de, fr, ...)
-        [model]  optional pool entry name from .env (default: the DEFAULT entry)
+        [model]  optional model name written as MODEL=<model> into locales/<lang>/.env
 
 Does every mechanical step of the README "Adding a new language" section:
 
