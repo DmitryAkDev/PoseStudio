@@ -293,82 +293,92 @@
 <context>
     <name>GeneralPreferencesPanel</name>
     <message>
-        <location filename="../src/preferences/generalpreferencespanel.cpp" line="16"/>
+        <location filename="../src/preferences/generalpreferencespanel.cpp" line="19"/>
         <source>General</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/preferences/generalpreferencespanel.cpp" line="21"/>
+        <location filename="../src/preferences/generalpreferencespanel.cpp" line="25"/>
+        <source>Language</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/preferences/generalpreferencespanel.cpp" line="38"/>
+        <source>Restart the app to apply the new language.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/preferences/generalpreferencespanel.cpp" line="48"/>
         <source>Send an anonymous install ping</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/preferences/generalpreferencespanel.cpp" line="26"/>
+        <location filename="../src/preferences/generalpreferencespanel.cpp" line="53"/>
         <source>Each time it starts, PoseStudio lets posestudio.io know that this installation exists, so we can </source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/preferences/generalpreferencespanel.cpp" line="27"/>
+        <location filename="../src/preferences/generalpreferencespanel.cpp" line="54"/>
         <source>see how many people use it and which versions are out there. The ping carries a random </source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/preferences/generalpreferencespanel.cpp" line="28"/>
+        <location filename="../src/preferences/generalpreferencespanel.cpp" line="55"/>
         <source>install ID, the app version, your operating system and CPU type, whether the app was </source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/preferences/generalpreferencespanel.cpp" line="29"/>
+        <location filename="../src/preferences/generalpreferencespanel.cpp" line="56"/>
         <source>installed or is running portable, the Qt library version, and the time of the ping — </source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/preferences/generalpreferencespanel.cpp" line="30"/>
+        <location filename="../src/preferences/generalpreferencespanel.cpp" line="57"/>
         <source>nothing else: no names, no files, no usage data, and the ID isn&apos;t linked to you in any way.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/preferences/generalpreferencespanel.cpp" line="35"/>
+        <location filename="../src/preferences/generalpreferencespanel.cpp" line="62"/>
         <source>Install ID: not created yet (assigned when the first ping is sent)</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/preferences/generalpreferencespanel.cpp" line="36"/>
+        <location filename="../src/preferences/generalpreferencespanel.cpp" line="63"/>
         <source>Install ID: %1</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/preferences/generalpreferencespanel.cpp" line="41"/>
+        <location filename="../src/preferences/generalpreferencespanel.cpp" line="68"/>
         <source>This build has no ping key, so nothing is sent regardless of this setting.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/preferences/generalpreferencespanel.cpp" line="49"/>
+        <location filename="../src/preferences/generalpreferencespanel.cpp" line="76"/>
         <source>Check for updates at startup</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/preferences/generalpreferencespanel.cpp" line="53"/>
+        <location filename="../src/preferences/generalpreferencespanel.cpp" line="80"/>
         <source>A few seconds after it starts, PoseStudio asks GitHub for the latest release and, when a newer </source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/preferences/generalpreferencespanel.cpp" line="54"/>
+        <location filename="../src/preferences/generalpreferencespanel.cpp" line="81"/>
         <source>one exists, shows a message with a link to its download page. Nothing but the request itself </source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/preferences/generalpreferencespanel.cpp" line="55"/>
+        <location filename="../src/preferences/generalpreferencespanel.cpp" line="82"/>
         <source>is sent. Help → Check for Updates… does the same on demand.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/preferences/generalpreferencespanel.cpp" line="63"/>
+        <location filename="../src/preferences/generalpreferencespanel.cpp" line="90"/>
         <source>Count camera changes as unsaved</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/preferences/generalpreferencespanel.cpp" line="68"/>
+        <location filename="../src/preferences/generalpreferencespanel.cpp" line="95"/>
         <source>When on, moving the camera (orbit, pan, zoom, the view hotkeys) marks the scene as having unsaved changes — the close prompt and File → New will ask before discarding it. Off by default: looking around is not an edit.</source>
         <translation type="unfinished"></translation>
     </message>
@@ -892,22 +902,22 @@
 <context>
     <name>QObject</name>
     <message>
-        <location filename="../src/main.cpp" line="72"/>
+        <location filename="../src/main.cpp" line="73"/>
         <source> [Debug build — slow imports]</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/main.cpp" line="143"/>
+        <location filename="../src/main.cpp" line="161"/>
         <source>Asset Manager</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/main.cpp" line="145"/>
+        <location filename="../src/main.cpp" line="163"/>
         <source>Transform</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/main.cpp" line="148"/>
+        <location filename="../src/main.cpp" line="166"/>
         <source>Environment</source>
         <translation type="unfinished"></translation>
     </message>

@@ -8,7 +8,8 @@
 
 #include "preferencespanel.h"
 
-/// General application settings. Today: the anonymous install ping toggle (see installping.h).
+/// General application settings: the UI language, the anonymous install ping toggle (see
+/// installping.h) and the startup update check.
 class GeneralPreferencesPanel : public PreferencesPanel {
     Q_OBJECT
 

@@ -29,6 +29,7 @@
 #include <QSplitter>
 #include <QTimer>
 #include <QTabWidget>
+#include <QTranslator>
 #include <QCloseEvent>
 #include <QFileInfo>
 #include <QString>
@@ -94,6 +95,23 @@ int main(int argc, char *argv[]) {
     }
 
     PreferencesManager::instance().loadFromDatabase();
+
+    // UI language (Constants::PREF_LANGUAGE): any value other than "en" installs the embedded
+    // catalog for that locale; an unknown code or a missing .qm (a build without the Linguist
+    // tools) leaves the UI in English. Must happen before the first widget is constructed.
+    {
+        const QString language = PreferencesManager::instance()
+                                     .getValue(Constants::PREF_LANGUAGE, QStringLiteral("en")).toString();
+        if (language != QLatin1String("en")) {
+            static QTranslator translator;
+            if (translator.load(QStringLiteral(":/translations/%1.qm").arg(language))) {
+                app.installTranslator(&translator);
+            } else {
+                qWarning() << "Translation catalog not found for" << language
+                           << "- continuing in English.";
+            }
+        }
+    }
 
     // --- 2. Branding & theming (window icon, Fusion proxy style, the QSS modules, menu shadows) ---
     AppTheme::install(app);

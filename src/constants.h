@@ -13,7 +13,8 @@
 #define CONSTANTS_H
 
 #include <QString>
-
+#include <utility>
+#include <vector>
 // The version string is stamped by CMake from project(PoseStudio VERSION x.y.z) — the ONE place
 // a release bump edits (CHANGELOG.md is the human-readable record of the same number). A build
 // outside CMake would show the placeholder below, which the install ping's server rejects.
@@ -72,6 +73,17 @@ namespace Constants {
     // release version the user chose to skip ("0.3.14"), silenced at startup until a newer one.
     inline constexpr const char* PREF_UPDATE_CHECK_ENABLED = "UpdateCheckEnabled";
     inline constexpr const char* PREF_UPDATE_SKIPPED_VERSION = "UpdateCheckSkippedVersion";
+
+    // BCP-47 code of the UI language, "en" (default) or "ru". Applied at startup by installing
+    // the matching embedded .qm; an unknown value simply installs no translator (English).
+    inline constexpr const char* PREF_LANGUAGE = "Language";
+
+    // The languages the app can run in: BCP-47 code -> display name in its own language
+    // (endonyms), as shown in Preferences -> General.
+    inline const std::vector<std::pair<const char*, const char*>> AVAILABLE_LANGUAGES = {
+        {"en", "English"},
+        {"ru", "Русский"},
+    };
 
     // =========================================================================
     // UI DIMENSIONS & LAYOUT

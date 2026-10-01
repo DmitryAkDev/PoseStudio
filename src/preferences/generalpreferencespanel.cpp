@@ -4,16 +4,43 @@
  */
 
 #include "generalpreferencespanel.h"
-#include "installping.h"
-#include "updatecheck.h"
 #include "constants.h"
+#include "installping.h"
 #include "preferencesmanager.h"
+#include "updatecheck.h"
 
 #include <QCheckBox>
+#include <QComboBox>
+#include <QHBoxLayout>
+#include <QLabel>
 #include <QVBoxLayout>
 
 GeneralPreferencesPanel::GeneralPreferencesPanel(QWidget* parent)
     : PreferencesPanel(tr("General"), parent) {
+
+    // --- UI language ---
+    // Saved immediately; the translator itself is only installed at startup (see main.cpp), so
+    // a new choice takes effect after a restart.
+    auto* languageRow = new QHBoxLayout();
+    languageRow->addWidget(new QLabel(tr("Language"), this));
+    auto* languageCombo = new QComboBox(this);
+    for (const auto& [code, name] : Constants::AVAILABLE_LANGUAGES) {
+        languageCombo->addItem(QString::fromUtf8(name), QString::fromUtf8(code));
+    }
+    // An unknown stored value yields -1 from findData; fall back to the first entry (English).
+    int index = languageCombo->findData(PreferencesManager::instance()
+                                           .getValue(Constants::PREF_LANGUAGE,
+                                                   QStringLiteral("en")));
+    languageCombo->setCurrentIndex(index < 0 ? 0 : index);
+    languageRow->addWidget(languageCombo);
+    languageRow->addStretch();
+    contentLayout()->addLayout(languageRow);
+    addDescription(tr("Restart the app to apply the new language."));
+    connect(languageCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [languageCombo](int i) {
+        PreferencesManager::instance().setValue(Constants::PREF_LANGUAGE,
+                                               languageCombo->itemData(i).toString());
+    });
 
     // --- Anonymous install ping ---
     // The toggle is the user-facing half of InstallPing; the copy below is the disclosure of
