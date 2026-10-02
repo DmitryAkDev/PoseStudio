@@ -38,7 +38,7 @@ sys.path.insert(0, str(HERE))
 GOLD_DIR = I18N / "gold"
 
 from catalog import load_catalog                       # noqa: E402
-from translate_manual import UI_NAMES, UI_LABELS, MENU_ITEMS  # noqa: E402
+from translate_manual import UI_NAMES, UI_LABELS, MENU_ITEMS, _catalog_form  # noqa: E402
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
 FENCE_RE = re.compile(r"^\s*(```|~~~)")
@@ -315,7 +315,7 @@ def audit_ui_labels(ru_corpus: str, catalog: dict, errors: list) -> None:
     if not catalog:
         return  # no catalog - nothing to compare against
     for en in UI_NAMES + UI_LABELS:
-        ru = catalog.get(en)
+        ru = _catalog_form(catalog, en)
         if not ru:
             continue  # the item is not (yet) in the catalog - not a drift we can judge
         hits = len(re.findall(r"\b" + re.escape(en) + r"\b", ru_corpus))

@@ -33,3 +33,12 @@ def load_catalog(ts_path: Path) -> dict:
         if src and tr:
             catalog[src] = tr
     return catalog
+
+
+def bare_form(source: str) -> str:
+    """The on-screen form of a catalog source string.
+
+    Menu entries carry their accelerator after a tab ("Pin Joint\tP"); only the
+    part before the tab is shown, so that is the form the manual quotes. A
+    source without an accelerator is returned as-is."""
+    return source.split("\t", 1)[0]

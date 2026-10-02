@@ -69,7 +69,7 @@ I18N = HERE.parent                                     # tools/i18n
 sys.path.insert(0, str(I18N))
 
 from llm_pool import load_model_config, llm_chat      # noqa: E402
-from catalog import load_catalog                      # noqa: E402
+from catalog import load_catalog, bare_form           # noqa: E402
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
 FENCE_RE = re.compile(r"^\s*(```|~~~)")
@@ -633,6 +633,8 @@ UI_LABELS = (
     "Choose File…",
     "Discard Changes",
     "Unpin All Joints",
+    "Pin Joint",
+    "Unpin Joint",
     "Later",
     # On-screen tool / menu / setting names that appear in the manual prose.
     "Turn Joint with Mouse",
@@ -729,9 +731,19 @@ def _catalog_form(catalog: dict, en: str) -> str | None:
     en_ellipsized = en.endswith(("\u2026", "..."))
     matches = [(s, t) for s, t in catalog.items() if norm(s) == key]
     if not matches:
-        return None
+        # Menu entries carry their accelerator after a tab ("Pin Joint\tP"); the manual
+        # quotes the bare on-screen form, so match against the accelerator-stripped
+        # sources and return their stripped translations.
+        bare_matches = [
+            (bare_form(s), bare_form(t))
+            for s, t in catalog.items()
+            if "\t" in s and norm(bare_form(s)) == key
+        ]
+        if not bare_matches:
+            return None
+        matches = bare_matches
 
-    # The catalog can hold both a bare label and its ellipsized button form ("Add Asset
+    # The catalog can hold both a bare label and its ellipsized button form ("Add Asset"
     # Folder" vs "Add Asset Folder..."); they normalize to the same key. Prefer the
     # candidate whose own trailing-ellipsis presence matches the EN name's, so a button does
     # not resolve to the bare link label and vice versa.
@@ -742,7 +754,6 @@ def _catalog_form(catalog: dict, en: str) -> str | None:
     elif en.endswith("...") and form.endswith("\u2026"):
         form = form[:-1] + "..."
     return form
-
 
 def normalize_ui_names(text: str, catalog: dict) -> str:
     """Replace EN UI element names with the catalog's target-language forms, word-boundary safe.
