@@ -77,8 +77,9 @@ is a progress check, `--context NAME` a slice.
 
 The English user manual (`docs/manual/`, `manual.json` + Markdown pages) is the
 source of truth. Each language gets a parallel tree under `docs/i18n/<lang>/manual/`
-with the same file names, translated titles in its own `manual.json`, and a static
-`changelog.md` stub that points at the English release notes (they stay English).
+with the same file names and translated titles in its own `manual.json`. The
+English-only changelog is never copied into a language tree: `HelpManual` falls
+back to the English page when the language tree has no copy.
 The trees are embedded as Qt resources (`qrc:/i18n/<lang>/manual/`) and loaded by
 `HelpManual` when the UI language matches.
 
@@ -113,6 +114,38 @@ python3 tools/i18n/manual/audit_manual.py --lang <lang>
   menu titles) with their catalog forms — every form is resolved from
   `translations/<lang>.ts` via `catalog.py`, so a new language needs no code edit; the
   audit re-checks the same name set as a post-gate.
+
+### On-screen name lists
+
+The three EN-name tuples in `translate_manual.py` are language-neutral: they name the
+English on-screen forms, and every target form is resolved from the catalog at run
+time — a new language never edits them.
+
+| List | Matching | What it carries |
+|---|---|---|
+| `UI_NAMES` | word-boundary, case-insensitive (the match's capitalization is preserved) | on-screen tab names quoted in the prose (`Transform`, `Asset Manager`, `Environment`) |
+| `UI_LABELS` | exact, case-sensitive substring; order keeps a longer label ahead of any shorter one it contains | shading modes, menu items, dialog and tool labels (`PBR Shaded`, `Pin Joint`, `Undo`, ...) |
+| `MENU_ITEMS` | only in a menu-reference context (below) | top-level menu titles (`File`, `Edit`, `View`, `Help`) |
+
+A name resolves through `_catalog_form`, three levels: exact catalog key, then
+ellipsis-insensitive (the code writes `...`, the prose `…`; the returned form matches
+the EN name's own style), then accelerator-stripped — a menu entry whose source carries
+its accelerator after a tab (`Pin Joint\tP`) is matched on the bare on-screen form, the
+part before the tab that Qt shows and the manual quotes. A name that resolves to no
+catalog row is left in English: `audit_manual.py` 5.5 reports it, so a missing catalog
+entry surfaces instead of silently shipping an untranslated name.
+
+`MENU_ITEMS` replaces only where the word introduces a menu reference — at the start
+of an arrow chain (`File → Save`), right after the word «меню»/`menu` (`меню File`),
+before the word `menu` (`the File menu`), or in an enumeration of top-level titles
+(`File, Edit, View and Help`). Ordinary English uses stay untouched: `file formats`,
+`your files`, `(DUF File)`.
+
+Adding a name: put its exact EN on-screen form into the matching tuple (longer labels
+ahead of any shorter one they contain), make sure the catalog translates it (a bare
+form is fine when the source carries a `\t` accelerator), and re-run the pipeline for
+the affected pages — pass 3 then substitutes it, and the audit judges it like any
+other name.
 - **Drift procedure.** When an English page changes, `--dry-run` lists it as stale;
   run the pipeline and only that page is retranslated. A structural change (headings,
   links) that the guards cannot absorb needs a human look at the page afterwards.
