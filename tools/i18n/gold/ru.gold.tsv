@@ -1,0 +1,11 @@
+id	source	expected_ru	category
+GS-001	Elevation°	Высота°	elevation
+GS-002	PoseStudio couldn&apos;t read the release information.	PoseStudio не удалось считать информацию о выпуске.	release
+GS-003	Clay Shaded Wireframe	Каркас глиняного затенения	wireframe-clay
+GS-004	Ambient Occlusion	Окружающая окклюзия (AO)	ao
+GS-005	Rim light	Контурный свет	rim-light
+GS-006	Hidden Line Wireframe	Каркас с невидимыми линиями	wireframe-hidden-line
+GS-007	Pin Joint\tP	Закрепить сустав\tP	pin
+GS-008	Frame Selected	Вписать выделенное	frame-selected
+GS-009	Subsurface	Подповерхностное рассеивание	subsurface
+GS-010	New	Новый	menu-new
