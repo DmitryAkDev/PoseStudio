@@ -4,3 +4,7 @@ GS-M-002	Choose File…	Выбрать файл…	ui-choose-file
 GS-M-003	Discard Changes	Отменить изменения	ui-discard-changes
 GS-M-004	Unpin All Joints	Открепить все суставы	ui-unpin-all-joints
 GS-M-005	Later	Позже	ui-later
+GS-M-006	Help	Справка	ui-help-menu
+GS-M-007	File	Файл	ui-file-menu
+GS-M-008	Edit	Правка	ui-edit-menu
+GS-M-009	View	Вид	ui-view-menu

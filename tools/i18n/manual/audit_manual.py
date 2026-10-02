@@ -29,6 +29,7 @@ import argparse
 import json
 import re
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent                 # tools/i18n/manual
@@ -248,6 +249,103 @@ def audit_gold(lang: str, en_corpus: str, ru_corpus: str, errors: list) -> None:
             errors.append(f"gold {_row_id}: {source!r} -> {expected_ru!r} is missing from the tree")
 
 
+MENU_TITLES = ("File", "Edit", "View", "Help")
+
+# On-screen tool / menu / setting names that must appear in their RU catalog form when
+# referenced in the manual prose (the same set the pipeline's deterministic pass and the
+# translator prompt carry). Checked case-sensitively: a lowercase ordinary word is not a UI
+# reference, and these are matched whole so "Reset Joint" does not fire inside "Reset All".
+UI_LABELS = (
+    ("Turn Joint with Mouse", "Поворачивать сустав мышью"),
+    ("Reset Selected Joint", "Сбросить выбранный сустав"),
+    ("Reset Limb", "Сбросить конечность"),
+    ("Reset All", "Сбросить всё"),
+    ("Reset Joint", "Сбросить сустав"),
+    ("Mirror Pose", "Отразить позу"),
+    ("Mirror Limb to Other Side", "Отразить конечность на другую сторону"),
+    ("Show Skeleton", "Показать скелет"),
+    ("Image-Based Lighting", "Освещение на основе изображений"),
+    ("Preferences", "Настройки"),
+    ("Undo", "Отменить"),
+    ("Redo", "Повторить"),
+    ("Import", "Импорт"),
+    ("Bend", "Изгиб"),
+    ("Twist", "Скручивание"),
+    ("Side-Side", "Боковой изгиб"),
+    ("Specular", "Блик"),
+    ("Exposure", "Экспозиция"),
+)
+
+
+def load_catalog(root: Path, lang: str):
+    """Parse translations/<lang>.ts into a {source: translation} map.
+
+    Returns an empty dict when the catalog is absent or unreadable - the menu check is
+    then skipped (a build without catalogs keeps the English manual anyway)."""
+    ts = root / "translations" / f"{lang}.ts"
+    if not ts.exists():
+        return {}
+    try:
+        tree = ET.parse(ts)
+    except ET.ParseError:
+        return {}
+    catalog = {}
+    for msg in tree.getroot().iter("message"):
+        src = msg.findtext("source") or ""
+        tr = msg.findtext("translation") or ""
+        if src and tr:
+            catalog[src] = tr
+    return catalog
+
+
+def audit_menu_ui(ru_corpus: str, catalog: dict, errors: list) -> None:
+    """5.4 - a top-level menu title in a menu-reference context must use the catalog's
+    RU form, not the English one. Catches the drift where a page keeps "File → Save"
+    while another writes "Файл": both are invisible to the corpus-level gold check.
+
+    A menu-reference context is the same one the pipeline's deterministic pass rewrites:
+    the start of an arrow chain, right after the word "меню"/"menu", before the word
+    "menu", or in an enumeration of top-level titles."""
+    if not catalog:
+        return  # no catalog - nothing to compare against
+    for en in MENU_TITLES:
+        ru = catalog.get(en)
+        if not ru:
+            continue  # the item is not (yet) in the catalog - not a drift we can judge
+        patterns = (
+            r"\b" + en + r"(?=\s*(?:→|->))",
+            r"(меню|menu)\s+" + en + r"\b",
+            r"\b" + en + r"(?=\s+menu\b)",
+            # Enumeration of top-level titles ("File, Edit, View and Help"): capitalized only
+            # (no IGNORECASE) and not preceded by a letter/digit, so an ordinary word such as
+            # "pose file." is not mistaken for the menu title.
+            r"(?<![A-Za-z0-9])" + en + r"(?=\s*(?:,| and | and\b|\.))",
+        )
+        hits = 0
+        for i, pat in enumerate(patterns):
+            # The enum pattern (last) is case-sensitive: only the capitalized menu title counts.
+            flags = 0 if i == len(patterns) - 1 else re.IGNORECASE
+            hits += len(re.findall(pat, ru_corpus, flags=flags))
+        if hits:
+            errors.append(
+                f"menu-ui: {en!r} appears {hits}x in a menu context; use the catalog "
+                f"form {ru!r}")
+
+def audit_ui_labels(ru_corpus: str, errors: list) -> None:
+    """5.5 - an on-screen UI name in the prose must use its RU catalog form, not the English
+    one. Catches drift the menu-title check (5.4) does not see: a tool or setting name left in
+    English while the rest of the page is Russian.
+
+    Each label is matched whole and case-sensitively, so a lowercase ordinary word ("bend",
+    "twist") is not a UI reference and "Reset Joint" does not fire inside "Reset All". One error
+    per label with its occurrence count."""
+    for en, ru in UI_LABELS:
+        hits = len(re.findall(r"\b" + re.escape(en) + r"\b", ru_corpus))
+        if hits:
+            errors.append(
+                f"ui-label: {en!r} appears {hits}x in the prose; use the catalog form {ru!r}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Audit a translated manual tree against the English original")
@@ -303,6 +401,12 @@ def main() -> int:
 
     # 5.3 — gold terminology.
     audit_gold(lang, en_corpus, ru_corpus, errors)
+
+    # 5.4 - menu items in the prose use the catalog's RU form (menu x UI consistency).
+    audit_menu_ui(ru_corpus, load_catalog(root, lang), errors)
+
+    # 5.5 - on-screen UI names in the prose use their RU catalog form (tool / setting drift).
+    audit_ui_labels(ru_corpus, errors)
 
     return finish(errors)
 

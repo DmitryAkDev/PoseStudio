@@ -21,3 +21,7 @@ GS-019	Undo History...	История отмен...	undo-history
 GS-020	Ground-projected dome: the figure stands on the environment's floor	Проекция купола на пол: фигура стоит на поверхности	ground-dome
 GS-021	Bends the joint in its secondary direction. 0 is the rest pose, 100 is the joint's limit; negative values bend it the other way, as far as the joint allows.\nIn the viewport: press S and move the mouse.	Сгибает сустав в дополнительном направлении. 0 — исходная поза, 100 — предел сгиба; отрицательные значения сгибают в обратную сторону, насколько позволяет сустав.\nВо вьюпорте: нажмите S и двигайте мышью.	side-side-tooltip
 GS-022	Toggle the skeleton overlay	Показать/скрыть оверлей скелета	skeleton-overlay
+GS-023	File	Файл	menu-file
+GS-024	Edit	Правка	menu-edit
+GS-025	View	Вид	menu-view
+GS-026	Help	Справка	menu-help

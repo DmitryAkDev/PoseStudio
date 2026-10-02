@@ -628,7 +628,82 @@ UI_LABEL_REPLACEMENTS = (
     ("Discard Changes", "Отменить изменения"),
     ("Unpin All Joints", "Открепить все суставы"),
     ("Later", "Позже"),
+    # On-screen tool / menu / setting names that appear in the manual prose. Order keeps a
+    # longer label ahead of any shorter one it contains ("Specular Only" precedes "Specular").
+    ("Turn Joint with Mouse", "Поворачивать сустав мышью"),
+    ("Reset Selected Joint", "Сбросить выбранный сустав"),
+    ("Reset Limb", "Сбросить конечность"),
+    ("Reset All", "Сбросить всё"),
+    ("Reset Joint", "Сбросить сустав"),
+    ("Mirror Pose", "Отразить позу"),
+    ("Mirror Limb to Other Side", "Отразить конечность на другую сторону"),
+    ("Show Skeleton", "Показать скелет"),
+    ("Image-Based Lighting", "Освещение на основе изображений"),
+    ("Preferences", "Настройки"),
+    ("Undo", "Отменить"),
+    ("Redo", "Повторить"),
+    ("Import", "Импорт"),
+    ("Bend", "Изгиб"),
+    ("Twist", "Скручивание"),
+    ("Side-Side", "Боковой изгиб"),
+    ("Specular", "Блик"),
+    ("Exposure", "Экспозиция"),
 )
+MENU_ITEMS = (
+    # Top-level menu titles. Replaced only in a menu-reference context (the start of an
+    # arrow chain "X → …" or right after the word "меню"/"menu") so that ordinary English
+    # words are left alone: "file formats", "your files", "(DUF File)" keep their form.
+    ("File", "Файл"),
+    ("Edit", "Правка"),
+    ("View", "Вид"),
+    ("Help", "Справка"),
+)
+
+def repair_anchors(ru_text: str, en_text: str, anchor_maps: dict) -> str:
+    """Fix cross-page link anchors that the model got wrong.
+
+    The model writes Russian slugs directly for cross-page links and is usually right, but
+    occasionally produces a half-translated slug (\u00abвкладка-transform\u00bb instead of \u00abвкладка-трансформация\u00bb).
+    Link positions are stable between the English and Russian trees (the guards hold the
+    link counts equal), so each Russian link is matched against its English counterpart by
+    position: where both carry an anchor, the correct Russian anchor is looked up from the
+    English one via anchor_maps, and a mismatching Russian anchor is rewritten to it.
+
+    Links without anchors, image links, and links whose English counterpart has no anchor are
+    left alone. Fenced code is untouched. Deterministic \u2014 no LLM."""
+    en_links = links_of(en_text)
+    ru_links = links_of(ru_text)
+    if len(en_links) != len(ru_links):
+        return ru_text  # structure off; the guards report it, do not guess here
+    fixes = {}   # ru target -> corrected target
+    for (e_img, e_txt, e_tgt), (r_img, r_txt, r_tgt) in zip(en_links, ru_links):
+        if r_img or "#" not in e_tgt or "#" not in r_tgt:
+            continue
+        e_file, e_anchor = e_tgt.split("#", 1)
+        r_file, r_anchor = r_tgt.split("#", 1)
+        if e_file != r_file or r_anchor == "":
+            continue
+        correct = (anchor_maps.get(e_file) or {}).get(e_anchor)
+        if correct and correct != r_anchor:
+            fixes[r_tgt] = f"{r_file}#{correct}"
+    if not fixes:
+        return ru_text
+    out, in_fence = [], False
+    for line in ru_text.splitlines():
+        if FENCE_RE.match(line):
+            in_fence = not in_fence
+            out.append(line)
+            continue
+        if in_fence:
+            out.append(line)
+            continue
+        for bad, good in fixes.items():
+            line = line.replace(bad, good)
+        out.append(line)
+    result = "\n".join(out)
+    if ru_text.endswith("\n"):
+        result += "\n"
+    return result
 def normalize_ui_names(text: str) -> str:
     """Replace EN UI element names with the RU catalog forms, word-boundary safe.
 
@@ -655,6 +730,22 @@ def normalize_ui_names(text: str) -> str:
             line = re.sub(r"\b" + re.escape(en) + r"\b", repl, line, flags=re.IGNORECASE)
         for en, ru in UI_LABEL_REPLACEMENTS:
             line = line.replace(en, ru)
+        # Top-level menu titles: replace only where the word introduces a menu reference - at
+        # the start of an arrow chain ("File → Save") or right after the word "меню"/"menu".
+        # Ordinary English uses ("file formats", "your files", "(DUF File)") are left alone.
+        for en, ru in MENU_ITEMS:
+            # The start of an arrow chain ("File → Save").
+            line = re.sub(r"\b" + en + r"(?=\s*(?:→|->))", ru, line)
+            # Right after the word "меню"/"menu" ("меню File").
+            line = re.sub(
+                r"(меню|menu)\s+" + en + r"\b",
+                lambda m, ru=ru: m.group(1) + " " + ru, line, flags=re.IGNORECASE)
+            # The item before the word "menu" ("the File menu").
+            line = re.sub(r"\b" + en + r"(?=\s+menu\b)", ru, line)
+            # An enumeration of top-level titles ("File, Edit, View and Help"): the item is
+            # capitalized, followed by a comma / "and" / full stop, and not preceded by a
+            # letter or digit (so an ordinary word such as "pose file." is left alone).
+            line = re.sub(r"(?<![A-Za-z0-9])" + en + r"(?=\s*(?:,| and | and\b|\.))", ru, line)
         line = re.sub(
             r"(\x00\d+\x00)", lambda m: targets[int(m.group(1)[1:-1])], line)
         return line
@@ -987,6 +1078,10 @@ def main() -> int:
                                         for (_, _, es), (_, rt, _) in zip(en_h, ru_h)}
         ru_text = rewrite_anchors(ru_text, anchor_maps, file_name,
                                  en_headings_by_file, heading_texts)
+        # The model writes Russian slugs directly for cross-page links; where one is
+        # half-translated (\u00abвкладка-transform\u00bb), repair it against the English original by
+        # matching link positions (the guards keep the counts equal).
+        ru_text = repair_anchors(ru_text, en_text, anchor_maps)
         # Page-title links get the manifest's Russian titles (the model leaves
         # them in English; the guard reports whatever this does not cover).
         ru_text = normalize_link_texts(ru_text, en_pages, titles)
