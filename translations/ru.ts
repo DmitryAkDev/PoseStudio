@@ -1548,7 +1548,7 @@ Could not create a Vulkan instance — check that your GPU supports Vulkan and t
         </message>
         <message>
             <source>Hidden Line Wireframe</source>
-            <translation>Каркас с невидимыми линиями</translation>
+            <translation>Каркас со скрытыми линиями</translation>
         </message>
         <message>
             <source>Clay Shaded Wireframe</source>

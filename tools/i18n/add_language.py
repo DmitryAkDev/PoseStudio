@@ -10,12 +10,12 @@ Usage:
 Does every mechanical step of the README "Adding a new language" section:
 
     1. CMakeLists.txt  — appends <lang> to POSESTUDIO_I18N_LANGS
-    2. locales/<lang>/translator.md — created from locales/template.md
+    2. locales/<lang>/ prompts (translator.md, headings.md, manual.md) — created from the locales templates
     3. locales/<lang>/.env  — writes MODEL=<model> (when given)
     4. reconfigures the build and runs PoseStudio_lupdate, which generates
        the empty translations/<lang>.ts
 
-Left for a human: rewrite the terminology table in translator-<lang>.md,
+Left for a human: fill the terminology tables in the three prompt files,
 add {"<lang>", "<Endonym>"} to Constants::AVAILABLE_LANGUAGES in src/constants.h
 (the Preferences -> General language picker is driven by that list), then run
 translate.py on the new catalog.
@@ -58,21 +58,30 @@ def add_to_cmake(lang: str) -> None:
     print(f"CMakeLists.txt: language list is now: {' '.join(langs)}")
 
 
-def make_prompt_template(lang: str) -> None:
-    source = HERE / "locales" / "template.md"
-    if not source.exists():
-        sys.exit(f"template not found: {source}")
+# (template, per-language prompt file): the catalog translator and the manual pipeline's two passes
+PROMPT_TEMPLATES = (
+    ("template.md", "translator.md"),
+    ("manual/headings.template.md", "headings.md"),
+    ("manual/manual.template.md", "manual.md"),
+)
+
+
+def make_prompt_templates(lang: str) -> None:
     locale_dir = HERE / "locales" / lang
-    target = locale_dir / "translator.md"
-    if target.exists():
-        print(f"{target.name}: already exists — skipped")
-        return
-    locale_dir.mkdir(parents=True, exist_ok=True)
-    text = (source.read_text(encoding="utf-8")
-            .replace("{{LANG_NAME}}", lang_name(lang))
-            .replace("{{LANG_CODE}}", lang))
-    target.write_text(text, encoding="utf-8")
-    print(f"locales/{lang}/translator.md: created from locales/template.md (TODO: terminology table)")
+    for template_name, prompt_name in PROMPT_TEMPLATES:
+        source = HERE / "locales" / template_name
+        if not source.exists():
+            sys.exit(f"template not found: {source}")
+        target = locale_dir / prompt_name
+        if target.exists():
+            print(f"{prompt_name}: already exists — skipped")
+            continue
+        locale_dir.mkdir(parents=True, exist_ok=True)
+        text = (source.read_text(encoding="utf-8")
+                .replace("{{LANG_NAME}}", lang_name(lang))
+                .replace("{{LANG_CODE}}", lang))
+        target.write_text(text, encoding="utf-8")
+        print(f"locales/{lang}/{prompt_name}: created from locales/{template_name} (TODO: terminology table)")
 
 def add_env_model(lang: str, model: str | None) -> None:
     """Write the per-language model selection into locales/<lang>/.env."""
@@ -103,12 +112,12 @@ def main() -> int:
         sys.exit(f"unusual locale code: {lang!r} (expected e.g. zh_CN, de, fr)")
 
     add_to_cmake(lang)
-    make_prompt_template(lang)
+    make_prompt_templates(lang)
     add_env_model(lang, model)
     generate_catalog()
 
     print(f"\nDone. Next steps:")
-    print(f"  1. Fill the terminology table in tools/i18n/locales/{lang}/translator.md")
+    print(f"  1. Fill the terminology tables in tools/i18n/locales/{lang}/ (translator.md, headings.md, manual.md)")
     print(f"  2. Add {{\"{lang}\", \"<Endonym>\"}} to Constants::AVAILABLE_LANGUAGES in src/constants.h")
     print(f"  3. python3 tools/i18n/translate.py translations/{lang}.ts")
     return 0
