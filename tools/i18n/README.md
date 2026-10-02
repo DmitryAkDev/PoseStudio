@@ -19,7 +19,9 @@ and every catalog that ships has been read through by a human first.
 | `.env` | Base model config — `API_BASE`, `MODEL`, `TEMPERATURE`, ... Must exist (create it from `.env.template`); machine-specific values never go into git |
 | `.env.template` | Clean copy of the base config format |
 | `locales/template.md` | Language-neutral English prompt template; `add_language.py` fills in the language name and code |
+| `locales/manual/headings.template.md`, `locales/manual/manual.template.md` | Language-neutral English prompt templates for the manual pipeline's two passes (one heading per call / a whole page); instantiated the same way |
 | `locales/<lang>/translator.md` | Per-language system prompt (output contract + domain context + terminology table) — the single source of translation style for that language |
+| `locales/<lang>/headings.md`, `locales/<lang>/manual.md` | Per-language system prompts of the manual pipeline, created from the templates above with the terminology tables filled in |
 | `locales/<lang>/.env` | Optional per-language overlay of the same config keys — the overlay wins on a key-by-key basis (not committed) |
 | `gold/` | Per-language gold sets (`<lang>.gold.tsv`): pinned source strings with the expected translation — the regression check for model/prompt drift, see `gold/README.md` |
 
@@ -151,8 +153,8 @@ other name.
   links) that the guards cannot absorb needs a human look at the page afterwards.
 - **Prompts.** `locales/<lang>/headings.md` (one heading per call, short TOC-style
   lines) and `locales/<lang>/manual.md` (the whole-page markdown contract: what is
-  verbatim, what is translated). The terminology table in `locales/<lang>/translator.md`
-  applies to both.
+  verbatim, what is translated). Both are created from the language-neutral templates
+  (`locales/manual/*.template.md`) by `add_language.py`; the terminology tables are filled in per language.
 - **Gold.** Terminology hits confirmed during the review of a tree go into
   `gold/manual_<lang>.gold.tsv` (`GS-M-NNN` ids) and are checked by the audit; see
   `gold/README.md`.
@@ -195,8 +197,9 @@ The script does every mechanical step:
 - appends `<lang>` to `set(POSESTUDIO_I18N_LANGS ...)` in `CMakeLists.txt` — both build
   branches (lrelease targets, lupdate args, resource aliases, `qt_add_resources`) are
   generated from that list, so this is the only CMake edit that exists;
-- creates `locales/<lang>/translator.md` from `locales/template.md` with the language
-  name/code filled in (terminology table left as TODO);
+- creates `locales/<lang>/translator.md`, `headings.md` and `manual.md` from
+  `locales/template.md` and `locales/manual/*.template.md` with the language
+  name/code filled in (terminology tables left as TODO);
 - writes `MODEL=<model>` into `locales/<lang>/.env` (when a model is given) — an
   overlay of the base config, so the language can use its own model without touching
   `.env`;
@@ -205,7 +208,7 @@ The script does every mechanical step:
 
 Left for a human:
 
-1. Fill the terminology table in `locales/<lang>/translator.md`.
+1. Fill the terminology tables in `locales/<lang>/translator.md`, `headings.md` and `manual.md`.
 2. Make sure `locales/<lang>/.env` points at a working model.
 3. Add `{"<lang>", "<Endonym>"}` to `Constants::AVAILABLE_LANGUAGES` in `src/constants.h`
    (the Preferences -> General language picker is driven by that list). Translator
