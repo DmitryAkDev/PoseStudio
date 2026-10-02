@@ -28,7 +28,7 @@
 | environment | окружение |
 | wireframe | каркас |
 | clay shaded wireframe | каркас глиняного затенения |
-| hidden line wireframe | каркас с невидимыми линиями |
+| hidden line wireframe | каркас со скрытыми линиями |
 | subsurface scattering | подповерхностное рассеивание |
 | ambient occlusion | окружающая окклюзия (AO); далее — AO |
 | rim light | контурный свет |
