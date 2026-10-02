@@ -69,6 +69,7 @@ I18N = HERE.parent                                     # tools/i18n
 sys.path.insert(0, str(I18N))
 
 from llm_pool import load_model_config, llm_chat      # noqa: E402
+from catalog import load_catalog                      # noqa: E402
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
 FENCE_RE = re.compile(r"^\s*(```|~~~)")
@@ -296,9 +297,13 @@ def pass_headings(cfg, headings_prompt: str, page: dict, text: str):
 # Pass 2 — the body, with markdown guards
 # --------------------------------------------------------------------------
 
-def heading_table_for(page_headings: dict, text: str) -> str:
-    """The "EN heading -> RU heading" table for the page's prompt."""
-    lines = ["| English | Russian |", "|---|---|"]
+def heading_table_for(page_headings: dict, text: str, lang: str) -> str:
+    """The "EN heading -> translated heading" table for the page's prompt.
+
+    The column header carries the language code: the per-language system prompt
+    already names the target language in prose, so the code is enough here and
+    keeps this builder free of a language-name table."""
+    lines = [f"| English | {lang} |", "|---|---|"]
     for level, en_text, en_slug in headings_of(text):
         if level < 2 or en_slug not in page_headings:
             continue
@@ -347,8 +352,8 @@ def guard_body(en_text: str, ru_text: str, page_headings: dict, ru_titles: dict 
     if untrans:
         hint = "; ".join(f"{t!r} (in a link to {f})" for t, f in sorted(untrans.items()))
         problems.append(
-            "link texts left untranslated - translate the visible text to Russian, "
-            "keep the target file as-is: " + hint)
+            "link texts left untranslated - translate the visible text to the target "
+            "language, keep the target file as-is: " + hint)
 
     en_h = [h for h in headings_of(en_text)]
     ru_h = [h for h in headings_of(ru_text)]
@@ -376,12 +381,12 @@ def guard_body(en_text: str, ru_text: str, page_headings: dict, ru_titles: dict 
     return problems
 
 
-def pass_body(cfg, manual_prompt: str, page: dict, en_text: str,
+def pass_body(cfg, manual_prompt: str, lang: str, page: dict, en_text: str,
               page_headings: dict, ru_titles: dict | None = None,
               en_pages: list | None = None) -> str | None:
     """Translate the whole page; guards + retry (GUARD_RETRIES), then None."""
-    table = heading_table_for(page_headings, en_text)
-    query = (f"Table of this page's headings (use the Russian column exactly where the "
+    table = heading_table_for(page_headings, en_text, lang)
+    query = (f"Table of this page's headings (use the {lang} column exactly where the "
              f"English heading stands):\n\n{table}\n\n"
              f"Translate this page:\n\n{en_text}")
     last_problem = None
@@ -578,86 +583,88 @@ def normalize_link_texts(text: str, en_pages: list, ru_titles: dict) -> str:
         result += "\n"
     return result
 
-UI_NAME_REPLACEMENTS = (
-    # (EN UI element name, RU form from the ru.ts catalog). Word-boundary
-    # replacements over prose and headings: the model keeps on-screen names in
-    # English, but the Russian app shows the catalog forms.
-    ("Transform", "Трансформация"),
-    ("Asset Manager", "Менеджер ассетов"),
-    ("Environment", "Окружение"),
+UI_NAMES = (
+    # On-screen tab names quoted in the prose. Word-boundary replacements over prose and
+    # headings: the model keeps on-screen names in English, but the app shows the catalog
+    # forms, which normalize_ui_names resolves from the catalog at run time.
+    "Transform",
+    "Asset Manager",
+    "Environment",
 )
 
-UI_LABEL_REPLACEMENTS = (
+UI_LABELS = (
     # Exact-match app strings (shading modes, menu items, dialog labels).
-    # Case-sensitive: they appear verbatim as on-screen names.
-    ("PBR Shaded", "PBR-затенение"),
-    ("Flat Texture Shaded", "Затенение текстурой (плоское)"),
-    ("Texture Shaded", "Текстурное затенение"),
-    ("Cartoon Shaded", "Мультяшное затенение"),
-    ("Clay Shaded", "Глиняное затенение"),
-    ("Lighting Only", "Только свет"),
-    ("Hidden Line Wireframe", "Каркас с невидимыми линиями"),
-    ("Wireframe", "Каркас"),
-    ("Silhouette", "Силуэт"),
-    ("Albedo", "Альбедо"),
-    ("Ambient Occlusion", "Окружающая окклюзия (AO)"),
-    ("Roughness Map", "Карта шероховатости"),
-    ("Specular Only", "Только блики"),
-    ("Normals", "Нормали"),
-    ("UV Checker", "Проверка UV"),
-    ("Send an anonymous install ping", "Отправлять анонимный сигнал об установке"),
-    ("Check for updates at startup", "Проверять обновления при запуске"),
-    ("Count camera changes as unsaved", "Считать смену камеры изменением сцены"),
-    ("Add Asset Folder…", "Добавить папку ассетов…"),
-    ("Remove Selected", "Удалить выделенное"),
-    ("Factory Reset", "Сброс до заводских настроек"),
-    ("Open Download Page", "Открыть страницу загрузки"),
-    ("Skip This Version", "Пропустить эту версию"),
-    ("Manage Asset Folders", "Управление папками ассетов"),
-    ("New Collection", "Новая коллекция"),
-    ("Find In Library", "Найти в библиотеке"),
-    ("Browse Folder", "Обзор папки"),
-    ("Add To Collection", "Добавить в коллекцию"),
-    ("Move To Collection", "Переместить в коллекцию"),
-    ("Copy To Collection", "Копировать в коллекцию"),
-    ("Refresh", "Обновить"),
-    ("Locate Content Folder…", "Найти папку контента…"),
-    ("Content Folder Needed", "Нужна папка с контентом"),
-    ("Reset Pose", "Сбросить позу"),
-    ("Choose File…", "Выбрать файл…"),
-    ("Discard Changes", "Отменить изменения"),
-    ("Unpin All Joints", "Открепить все суставы"),
-    ("Later", "Позже"),
-    # On-screen tool / menu / setting names that appear in the manual prose. Order keeps a
-    # longer label ahead of any shorter one it contains ("Specular Only" precedes "Specular").
-    ("Turn Joint with Mouse", "Поворачивать сустав мышью"),
-    ("Reset Selected Joint", "Сбросить выбранный сустав"),
-    ("Reset Limb", "Сбросить конечность"),
-    ("Reset All", "Сбросить всё"),
-    ("Reset Joint", "Сбросить сустав"),
-    ("Mirror Pose", "Отразить позу"),
-    ("Mirror Limb to Other Side", "Отразить конечность на другую сторону"),
-    ("Show Skeleton", "Показать скелет"),
-    ("Image-Based Lighting", "Освещение на основе изображений"),
-    ("Preferences", "Настройки"),
-    ("Undo", "Отменить"),
-    ("Redo", "Повторить"),
-    ("Import", "Импорт"),
-    ("Bend", "Изгиб"),
-    ("Twist", "Скручивание"),
-    ("Side-Side", "Боковой изгиб"),
-    ("Specular", "Блик"),
-    ("Exposure", "Экспозиция"),
+    # Case-sensitive: they appear verbatim as on-screen names. Order keeps a longer label
+    # ahead of any shorter one it contains ("Specular Only" precedes "Specular").
+    "PBR Shaded",
+    "Flat Texture Shaded",
+    "Texture Shaded",
+    "Cartoon Shaded",
+    "Clay Shaded",
+    "Lighting Only",
+    "Hidden Line Wireframe",
+    "Wireframe",
+    "Silhouette",
+    "Albedo",
+    "Ambient Occlusion",
+    "Roughness Map",
+    "Specular Only",
+    "Normals",
+    "UV Checker",
+    "Send an anonymous install ping",
+    "Check for updates at startup",
+    "Count camera changes as unsaved",
+    "Add Asset Folder…",
+    "Remove Selected",
+    "Factory Reset",
+    "Open Download Page",
+    "Skip This Version",
+    "Manage Asset Folders",
+    "New Collection",
+    "Find In Library",
+    "Browse Folder",
+    "Add To Collection",
+    "Move To Collection",
+    "Copy To Collection",
+    "Refresh",
+    "Locate Content Folder…",
+    "Content Folder Needed",
+    "Reset Pose",
+    "Choose File…",
+    "Discard Changes",
+    "Unpin All Joints",
+    "Later",
+    # On-screen tool / menu / setting names that appear in the manual prose.
+    "Turn Joint with Mouse",
+    "Reset Selected Joint",
+    "Reset Limb",
+    "Reset All",
+    "Reset Joint",
+    "Mirror Pose",
+    "Mirror Limb to Other Side",
+    "Show Skeleton",
+    "Image-Based Lighting",
+    "Preferences",
+    "Undo",
+    "Redo",
+    "Import",
+    "Bend",
+    "Twist",
+    "Side-Side",
+    "Specular",
+    "Exposure",
 )
+
 MENU_ITEMS = (
     # Top-level menu titles. Replaced only in a menu-reference context (the start of an
-    # arrow chain "X → …" or right after the word "меню"/"menu") so that ordinary English
+    # arrow chain "X → …" or right after the word for "menu") so that ordinary English
     # words are left alone: "file formats", "your files", "(DUF File)" keep their form.
-    ("File", "Файл"),
-    ("Edit", "Правка"),
-    ("View", "Вид"),
-    ("Help", "Справка"),
+    "File",
+    "Edit",
+    "View",
+    "Help",
 )
+
 
 def repair_anchors(ru_text: str, en_text: str, anchor_maps: dict) -> str:
     """Fix cross-page link anchors that the model got wrong.
@@ -704,12 +711,57 @@ def repair_anchors(ru_text: str, en_text: str, anchor_maps: dict) -> str:
     if ru_text.endswith("\n"):
         result += "\n"
     return result
-def normalize_ui_names(text: str) -> str:
-    """Replace EN UI element names with the RU catalog forms, word-boundary safe.
+def _catalog_form(catalog: dict, en: str) -> str | None:
+    """Resolve an EN on-screen name to its catalog form, ellipsis-insensitive.
+
+    The catalog and the manual disagree on the trailing ellipsis (the code uses
+    "...", the prose uses the single glyph "\\u2026"), so the lookup normalizes it. The returned
+    form matches the EN name's own ellipsis style, keeping the prose consistent with the
+    English original it was translated from."""
+    if en in catalog:
+        return catalog[en]
+
+    def norm(s: str) -> str:
+        # Strip every trailing dot / ellipsis glyph so "..." and "\u2026" compare equal.
+        return s.rstrip(".\u2026").rstrip()
+
+    key = norm(en)
+    en_ellipsized = en.endswith(("\u2026", "..."))
+    matches = [(s, t) for s, t in catalog.items() if norm(s) == key]
+    if not matches:
+        return None
+
+    # The catalog can hold both a bare label and its ellipsized button form ("Add Asset
+    # Folder" vs "Add Asset Folder..."); they normalize to the same key. Prefer the
+    # candidate whose own trailing-ellipsis presence matches the EN name's, so a button does
+    # not resolve to the bare link label and vice versa.
+    matches.sort(key=lambda st: st[0].endswith(("\u2026", "...")) != en_ellipsized)
+    form = matches[0][1]
+    if en.endswith("\u2026") and form.endswith("..."):
+        form = form[:-3] + "\u2026"
+    elif en.endswith("...") and form.endswith("\u2026"):
+        form = form[:-1] + "..."
+    return form
+
+
+def normalize_ui_names(text: str, catalog: dict) -> str:
+    """Replace EN UI element names with the catalog's target-language forms, word-boundary safe.
 
     Fenced code and inline code spans are content — untouched. Runs in pass 3,
     after anchors and link labels, so it also fixes headings; the audit then
-    re-checks structure against the English original."""
+    re-checks structure against the English original. Every form is resolved from
+    `catalog` (the .ts translation), so a new language needs no edit here."""
+    def resolved(names):
+        out = []
+        for en in names:
+            form = _catalog_form(catalog, en)
+            if form:
+                out.append((en, form))
+        return out
+    ui_names = resolved(UI_NAMES)
+    ui_labels = resolved(UI_LABELS)
+    menu_items = resolved(MENU_ITEMS)
+
     def sub_prose(line):
         # Protect markdown link targets: UI names must not rewrite file parts
         # ("environment.md" is a file name, not the Environment tab).
@@ -719,7 +771,7 @@ def normalize_ui_names(text: str) -> str:
             targets.append(target)
             return "%s[%s](\x00%d\x00)" % (bang, label, len(targets) - 1)
         line = re.sub(r"(!?)\[([^\]]*)\]\(([^)]+)\)", stash, line)
-        for en, ru in UI_NAME_REPLACEMENTS:
+        for en, ru in ui_names:
             # Case-insensitive: the model may lowercase a name ("Вкладка environment").
             # Preserve the match's capitalization on the first letter.
             def repl(m, ru=ru):
@@ -728,12 +780,12 @@ def normalize_ui_names(text: str) -> str:
                     return ru[0].lower() + ru[1:]
                 return ru
             line = re.sub(r"\b" + re.escape(en) + r"\b", repl, line, flags=re.IGNORECASE)
-        for en, ru in UI_LABEL_REPLACEMENTS:
+        for en, ru in ui_labels:
             line = line.replace(en, ru)
         # Top-level menu titles: replace only where the word introduces a menu reference - at
         # the start of an arrow chain ("File → Save") or right after the word "меню"/"menu".
         # Ordinary English uses ("file formats", "your files", "(DUF File)") are left alone.
-        for en, ru in MENU_ITEMS:
+        for en, ru in menu_items:
             # The start of an arrow chain ("File → Save").
             line = re.sub(r"\b" + en + r"(?=\s*(?:→|->))", ru, line)
             # Right after the word "меню"/"menu" ("меню File").
@@ -970,6 +1022,10 @@ def main() -> int:
     if not en_manifest.exists():
         sys.exit(f"English manifest not found: {en_manifest}")
 
+    # The catalog is the single source of truth for on-screen names: the deterministic
+    # pass resolves every UI name's target-language form from here (no hardcoded forms).
+    catalog = load_catalog(root / "translations" / f"{lang}.ts")
+
     en_pages, en_nested, _ru_pages = load_manifest(root, lang)
 
     # --dry-run: the list of missing/stale pages, zero LLM calls.
@@ -1052,7 +1108,7 @@ def main() -> int:
         page_headings = heading_maps[file_name]
 
         # Pass 2 — the body, with guards.
-        ru_text = pass_body(cfg, manual_prompt, page, en_text, page_headings,
+        ru_text = pass_body(cfg, manual_prompt, lang, page, en_text, page_headings,
                             titles, en_pages)
         if ru_text is None:
             print(f"STOP: {file_name} — the guards rejected every attempt; "
@@ -1062,7 +1118,7 @@ def main() -> int:
         # Pass 3 — deterministic. Order matters: UI names first (they settle the
         # final RU heading texts, hence the slugs), then anchors against maps
         # covering the whole tree, then link labels and the H1 title.
-        ru_text = normalize_ui_names(ru_text)
+        ru_text = normalize_ui_names(ru_text, catalog)
         anchor_maps, heading_texts = build_anchor_maps(root, en_pages, tree)
         for f, m in heading_maps.items():
             anchor_maps[f] = {es: slug_for(rt) for es, rt in m.items()}

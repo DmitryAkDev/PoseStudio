@@ -15,6 +15,7 @@ and every catalog that ships has been read through by a human first.
 | `gold_check.py` | Gold-set regression check: compares every row of `gold/<lang>.gold.tsv` against a catalog, exits 1 on a missing source or a drifted translation |
 | `add_language.py` | One-shot language onboarding (CMake list + prompt template + .env + lupdate) |
 | `llm_pool.py` | Shared pipeline infrastructure imported by `translate.py` (config loading, the chat/completions call) — stdlib only, no CLI logic |
+| `catalog.py` | Shared `.ts` loader imported by the manual tools: parses a catalog into `{source: translation}` — the single source of target-language UI names for the pipeline's deterministic pass and the audit; stdlib only, no CLI logic |
 | `.env` | Base model config — `API_BASE`, `MODEL`, `TEMPERATURE`, ... Must exist (create it from `.env.template`); machine-specific values never go into git |
 | `.env.template` | Clean copy of the base config format |
 | `locales/template.md` | Language-neutral English prompt template; `add_language.py` fills in the language name and code |
@@ -108,6 +109,10 @@ python3 tools/i18n/manual/audit_manual.py --lang <lang>
   heading maps of the whole tree (already-translated pages read from disk, this run's
   pages from pass 1); an anchor that cannot be resolved is left as-is and reported by
   the audit.
+- **UI names.** Pass 3 also substitutes the curated on-screen names (tab, button and
+  menu titles) with their catalog forms — every form is resolved from
+  `translations/<lang>.ts` via `catalog.py`, so a new language needs no code edit; the
+  audit re-checks the same name set as a post-gate.
 - **Drift procedure.** When an English page changes, `--dry-run` lists it as stale;
   run the pipeline and only that page is retranslated. A structural change (headings,
   links) that the guards cannot absorb needs a human look at the page afterwards.
