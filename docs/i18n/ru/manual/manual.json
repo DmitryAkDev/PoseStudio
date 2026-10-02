@@ -1,0 +1,92 @@
+{
+  "_comment": "Translated table of contents for the ru manual: ids and files repeat the English manifest verbatim; titles are translated by tools/i18n/manual/translate_manual.py. The 'What's New' entry keeps its English title on purpose — the changelog is maintained in English.",
+  "pages": [
+    {
+      "id": "welcome",
+      "file": "welcome.md",
+      "title": "Добро пожаловать"
+    },
+    {
+      "id": "getting-started",
+      "file": "getting-started.md",
+      "title": "Начало работы"
+    },
+    {
+      "id": "interface",
+      "file": "interface.md",
+      "title": "Интерфейс"
+    },
+    {
+      "id": "importing",
+      "file": "importing.md",
+      "title": "Импорт контента"
+    },
+    {
+      "id": "navigation",
+      "file": "navigation.md",
+      "title": "Навигация во вьюпорте"
+    },
+    {
+      "id": "shading",
+      "file": "shading.md",
+      "title": "Затенение и отображение"
+    },
+    {
+      "id": "environment",
+      "file": "environment.md",
+      "title": "Освещение и окружение"
+    },
+    {
+      "id": "posing",
+      "file": "posing.md",
+      "title": "Позирование",
+      "children": [
+        {
+          "id": "poses",
+          "file": "poses.md",
+          "title": "Создание поз шаг за шагом"
+        },
+        {
+          "id": "pose-files",
+          "file": "pose-files.md",
+          "title": "Файлы поз"
+        },
+        {
+          "id": "project-files",
+          "file": "project-files.md",
+          "title": "Файлы проекта"
+        }
+      ]
+    },
+    {
+      "id": "asset-manager",
+      "file": "asset-manager.md",
+      "title": "Менеджер ассетов"
+    },
+    {
+      "id": "preferences",
+      "file": "preferences.md",
+      "title": "Настройки"
+    },
+    {
+      "id": "shortcuts",
+      "file": "shortcuts.md",
+      "title": "Справочник по клавиатуре и мыши"
+    },
+    {
+      "id": "privacy-updates",
+      "file": "privacy-updates.md",
+      "title": "Конфиденциальность и обновления"
+    },
+    {
+      "id": "troubleshooting",
+      "file": "troubleshooting.md",
+      "title": "Устранение неполадок"
+    },
+    {
+      "id": "whats-new",
+      "file": "changelog.md",
+      "title": "What's New"
+    }
+  ]
+}

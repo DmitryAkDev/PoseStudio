@@ -1,0 +1,6 @@
+id	source	expected_ru	category
+GS-M-001	Reset Pose	Сбросить позу	ui-reset-pose
+GS-M-002	Choose File…	Выбрать файл…	ui-choose-file
+GS-M-003	Discard Changes	Отменить изменения	ui-discard-changes
+GS-M-004	Unpin All Joints	Открепить все суставы	ui-unpin-all-joints
+GS-M-005	Later	Позже	ui-later

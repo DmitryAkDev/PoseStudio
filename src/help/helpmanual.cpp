@@ -7,6 +7,7 @@
 #include "helpmanual.h"
 
 #include "constants.h"
+#include "preferencesmanager.h"
 
 #include <QColor>
 #include <QFile>
@@ -23,7 +24,20 @@
 
 namespace {
 
-const QString kManualRoot = QStringLiteral(":/manual/");
+/**
+ * The root of the manual tree to read from: the UI language's translated tree when it is embedded
+ * in this build, the English one otherwise (the default tree is always present). A language with
+ * no embedded tree simply reads the English manual - no per-language code anywhere.
+ */
+QString manualRootFor(const QString& language) {
+    if (!language.isEmpty() && language != QLatin1String("en")) {
+        const QString root = QStringLiteral(":/i18n/%1/manual/").arg(language);
+        if (QFile::exists(root + QStringLiteral("manual.json"))) {
+            return root;
+        }
+    }
+    return QStringLiteral(":/manual/");
+}
 
 /// The page palette. The body text and background come from the browser's QSS (_help.qss);
 /// these are the parts a QTextDocument carries in its own formats.
@@ -69,7 +83,10 @@ bool isFence(const QString& line) {
 bool HelpManual::load() {
     m_pages.clear();
     m_error.clear();
-    const QString text = readResource(kManualRoot + QStringLiteral("manual.json"));
+    const QString language = PreferencesManager::instance()
+                                 .getValue(Constants::PREF_LANGUAGE, QStringLiteral("en")).toString();
+    m_root = manualRootFor(language);
+    const QString text = readResource(m_root + QStringLiteral("manual.json"));
     if (text.isEmpty()) {
         m_error = QStringLiteral("The manual's table of contents (manual.json) is not embedded in this build.");
         return false;
@@ -132,7 +149,13 @@ QString HelpManual::markdownOf(const QString& file) {
     if (it != m_markdownCache.end()) {
         return it.value();
     }
-    const QString text = readResource(kManualRoot + file);
+    // Read the page from the UI language's tree. A page that is not part of that tree (the
+    // English-only "What's New" changelog) falls back to the default English tree, which is
+    // always embedded - so the release notes are never a per-language copy.
+    QString text = readResource(m_root + file);
+    if (text.isEmpty() && m_root != QStringLiteral(":/manual/")) {
+        text = readResource(QStringLiteral(":/manual/") + file);
+    }
     m_markdownCache.insert(file, text);
     return text;
 }

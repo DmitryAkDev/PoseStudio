@@ -492,6 +492,20 @@ if(POSESTUDIO_I18N_AVAILABLE)
         list(APPEND POSESTUDIO_TS_FILES "translations/${lang}.ts")
         list(APPEND POSESTUDIO_QM_FILES "${CMAKE_CURRENT_BINARY_DIR}/translations/${lang}.qm")
     endforeach()
+    # Localized manual trees (docs/i18n/<lang>/manual/), one qt_add_resources per language, embedded
+    # under qrc:/i18n/<lang>/manual/. HelpManual::load() picks the tree of the UI language when it is
+    # embedded here and falls back to qrc:/manual/ otherwise. manual.json is listed EXPLICITLY - the
+    # *.md glob does not take it, and without it the fallback would silently read the English manual.
+    foreach(lang IN LISTS POSESTUDIO_I18N_LANGS)
+        file(GLOB_RECURSE POSESTUDIO_I18N_MANUAL_FILES CONFIGURE_DEPENDS
+            "${CMAKE_SOURCE_DIR}/docs/i18n/${lang}/manual/*.md")
+        list(FILTER POSESTUDIO_I18N_MANUAL_FILES EXCLUDE REGEX "/README\.md$")
+        qt_add_resources(PoseStudio "manual_${lang}"
+            PREFIX "/i18n/${lang}/manual"
+            BASE "${CMAKE_SOURCE_DIR}/docs/i18n/${lang}/manual"
+            FILES ${POSESTUDIO_I18N_MANUAL_FILES}
+                  "${CMAKE_SOURCE_DIR}/docs/i18n/${lang}/manual/manual.json")
+    endforeach()
     if(Qt6LinguistTools_FOUND)
         # The macro compiles each .ts into a build-tree .qm, embeds it in the target's
         # resources under /translations/, and creates the PoseStudio_lupdate /
