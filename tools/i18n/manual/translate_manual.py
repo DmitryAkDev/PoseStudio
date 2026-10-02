@@ -938,7 +938,7 @@ def sync_manifest(root: Path, lang: str, en_nested: list, titles: dict) -> bool:
             entry = {"id": page["id"], "file": page["file"]}
             title = titles.get(page["file"], "")
             if not title and page["file"] == CHANGELOG_FILE:
-                # The conscious EN title of the stub page.
+                # The changelog is never translated: keep its English title.
                 title = next(p.get("title", "") for p in en_nested if p["file"] == CHANGELOG_FILE)
             entry["title"] = title
             children = page.get("children")
@@ -964,7 +964,7 @@ def sync_manifest(root: Path, lang: str, en_nested: list, titles: dict) -> bool:
 
 def prune_tree(tree: Path, en_pages: list) -> None:
     """Remove pages the English manifest no longer lists (file + hash row)."""
-    keep = {p["file"] for p in en_pages} | {CHANGELOG_FILE}
+    keep = {p["file"] for p in en_pages}
     for path in tree.glob("*.md"):
         if path.name not in keep:
             path.unlink()
@@ -986,24 +986,6 @@ def write_hashes(tree: Path, updated: dict) -> None:
     stored.update(updated)
     hashes_path.write_text(json.dumps(dict(sorted(stored.items())), indent=2) + "\n",
                            encoding="utf-8")
-
-
-# --------------------------------------------------------------------------
-# The changelog stub (hand-written, never through the LLM)
-# --------------------------------------------------------------------------
-
-def ensure_changelog_stub(tree: Path, lang: str) -> None:
-    """The static "What's New" page: the changelog stays English.
-
-    The link is absolute on purpose — a relative `changelog.md` from the
-    language tree would resolve to the stub itself."""
-    stub = tree / CHANGELOG_FILE
-    text = ("# What's New\n"
-            "\n"
-            "The release notes are maintained in English and are not translated. "
-            "Open the English page: [What's New](qrc:/manual/changelog.md)\n")
-    if not stub.exists() or stub.read_text(encoding="utf-8") != text:
-        stub.write_text(text, encoding="utf-8")
 
 
 # --------------------------------------------------------------------------
@@ -1051,7 +1033,6 @@ def main() -> int:
     # The tree and its manifest.
     ensure_tree(root, lang, en_nested)
     prune_tree(tree, en_pages)
-    ensure_changelog_stub(tree, lang)
 
     pending = pending_pages(root, en_pages, tree)
     if args.limit > 0:

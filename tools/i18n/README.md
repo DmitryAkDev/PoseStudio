@@ -15,10 +15,13 @@ and every catalog that ships has been read through by a human first.
 | `gold_check.py` | Gold-set regression check: compares every row of `gold/<lang>.gold.tsv` against a catalog, exits 1 on a missing source or a drifted translation |
 | `add_language.py` | One-shot language onboarding (CMake list + prompt template + .env + lupdate) |
 | `llm_pool.py` | Shared pipeline infrastructure imported by `translate.py` (config loading, the chat/completions call) — stdlib only, no CLI logic |
+| `catalog.py` | Shared `.ts` loader imported by the manual tools: parses a catalog into `{source: translation}` — the single source of target-language UI names for the pipeline's deterministic pass and the audit; stdlib only, no CLI logic |
 | `.env` | Base model config — `API_BASE`, `MODEL`, `TEMPERATURE`, ... Must exist (create it from `.env.template`); machine-specific values never go into git |
 | `.env.template` | Clean copy of the base config format |
 | `locales/template.md` | Language-neutral English prompt template; `add_language.py` fills in the language name and code |
+| `locales/manual/headings.template.md`, `locales/manual/manual.template.md` | Language-neutral English prompt templates for the manual pipeline's two passes (one heading per call / a whole page); instantiated the same way |
 | `locales/<lang>/translator.md` | Per-language system prompt (output contract + domain context + terminology table) — the single source of translation style for that language |
+| `locales/<lang>/headings.md`, `locales/<lang>/manual.md` | Per-language system prompts of the manual pipeline, created from the templates above with the terminology tables filled in |
 | `locales/<lang>/.env` | Optional per-language overlay of the same config keys — the overlay wins on a key-by-key basis (not committed) |
 | `gold/` | Per-language gold sets (`<lang>.gold.tsv`): pinned source strings with the expected translation — the regression check for model/prompt drift, see `gold/README.md` |
 
@@ -76,8 +79,9 @@ is a progress check, `--context NAME` a slice.
 
 The English user manual (`docs/manual/`, `manual.json` + Markdown pages) is the
 source of truth. Each language gets a parallel tree under `docs/i18n/<lang>/manual/`
-with the same file names, translated titles in its own `manual.json`, and a static
-`changelog.md` stub that points at the English release notes (they stay English).
+with the same file names and translated titles in its own `manual.json`. The
+English-only changelog is never copied into a language tree: `HelpManual` falls
+back to the English page when the language tree has no copy.
 The trees are embedded as Qt resources (`qrc:/i18n/<lang>/manual/`) and loaded by
 `HelpManual` when the UI language matches.
 
@@ -108,13 +112,49 @@ python3 tools/i18n/manual/audit_manual.py --lang <lang>
   heading maps of the whole tree (already-translated pages read from disk, this run's
   pages from pass 1); an anchor that cannot be resolved is left as-is and reported by
   the audit.
+- **UI names.** Pass 3 also substitutes the curated on-screen names (tab, button and
+  menu titles) with their catalog forms — every form is resolved from
+  `translations/<lang>.ts` via `catalog.py`, so a new language needs no code edit; the
+  audit re-checks the same name set as a post-gate.
+
+### On-screen name lists
+
+The three EN-name tuples in `translate_manual.py` are language-neutral: they name the
+English on-screen forms, and every target form is resolved from the catalog at run
+time — a new language never edits them.
+
+| List | Matching | What it carries |
+|---|---|---|
+| `UI_NAMES` | word-boundary, case-insensitive (the match's capitalization is preserved) | on-screen tab names quoted in the prose (`Transform`, `Asset Manager`, `Environment`) |
+| `UI_LABELS` | exact, case-sensitive substring; order keeps a longer label ahead of any shorter one it contains | shading modes, menu items, dialog and tool labels (`PBR Shaded`, `Pin Joint`, `Undo`, ...) |
+| `MENU_ITEMS` | only in a menu-reference context (below) | top-level menu titles (`File`, `Edit`, `View`, `Help`) |
+
+A name resolves through `_catalog_form`, three levels: exact catalog key, then
+ellipsis-insensitive (the code writes `...`, the prose `…`; the returned form matches
+the EN name's own style), then accelerator-stripped — a menu entry whose source carries
+its accelerator after a tab (`Pin Joint\tP`) is matched on the bare on-screen form, the
+part before the tab that Qt shows and the manual quotes. A name that resolves to no
+catalog row is left in English: `audit_manual.py` 5.5 reports it, so a missing catalog
+entry surfaces instead of silently shipping an untranslated name.
+
+`MENU_ITEMS` replaces only where the word introduces a menu reference — at the start
+of an arrow chain (`File → Save`), right after the word «меню»/`menu` (`меню File`),
+before the word `menu` (`the File menu`), or in an enumeration of top-level titles
+(`File, Edit, View and Help`). Ordinary English uses stay untouched: `file formats`,
+`your files`, `(DUF File)`.
+
+Adding a name: put its exact EN on-screen form into the matching tuple (longer labels
+ahead of any shorter one they contain), make sure the catalog translates it (a bare
+form is fine when the source carries a `\t` accelerator), and re-run the pipeline for
+the affected pages — pass 3 then substitutes it, and the audit judges it like any
+other name.
 - **Drift procedure.** When an English page changes, `--dry-run` lists it as stale;
   run the pipeline and only that page is retranslated. A structural change (headings,
   links) that the guards cannot absorb needs a human look at the page afterwards.
 - **Prompts.** `locales/<lang>/headings.md` (one heading per call, short TOC-style
   lines) and `locales/<lang>/manual.md` (the whole-page markdown contract: what is
-  verbatim, what is translated). The terminology table in `locales/<lang>/translator.md`
-  applies to both.
+  verbatim, what is translated). Both are created from the language-neutral templates
+  (`locales/manual/*.template.md`) by `add_language.py`; the terminology tables are filled in per language.
 - **Gold.** Terminology hits confirmed during the review of a tree go into
   `gold/manual_<lang>.gold.tsv` (`GS-M-NNN` ids) and are checked by the audit; see
   `gold/README.md`.
@@ -157,8 +197,9 @@ The script does every mechanical step:
 - appends `<lang>` to `set(POSESTUDIO_I18N_LANGS ...)` in `CMakeLists.txt` — both build
   branches (lrelease targets, lupdate args, resource aliases, `qt_add_resources`) are
   generated from that list, so this is the only CMake edit that exists;
-- creates `locales/<lang>/translator.md` from `locales/template.md` with the language
-  name/code filled in (terminology table left as TODO);
+- creates `locales/<lang>/translator.md`, `headings.md` and `manual.md` from
+  `locales/template.md` and `locales/manual/*.template.md` with the language
+  name/code filled in (terminology tables left as TODO);
 - writes `MODEL=<model>` into `locales/<lang>/.env` (when a model is given) — an
   overlay of the base config, so the language can use its own model without touching
   `.env`;
@@ -167,7 +208,7 @@ The script does every mechanical step:
 
 Left for a human:
 
-1. Fill the terminology table in `locales/<lang>/translator.md`.
+1. Fill the terminology tables in `locales/<lang>/translator.md`, `headings.md` and `manual.md`.
 2. Make sure `locales/<lang>/.env` points at a working model.
 3. Add `{"<lang>", "<Endonym>"}` to `Constants::AVAILABLE_LANGUAGES` in `src/constants.h`
    (the Preferences -> General language picker is driven by that list). Translator
