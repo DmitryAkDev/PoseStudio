@@ -43,8 +43,8 @@ QMenu* AssetManagerWidget::newContextMenu(QWidget* parent) {
 }
 
 QPair<QAction*, QAction*> AssetManagerWidget::addManageRefreshActions(QMenu* menu) {
-    QAction* manage = menu->addAction(icon(QStringLiteral("preferences")), "Manage Asset Folders");
-    QAction* refresh = menu->addAction(icon(QStringLiteral("refresh")), "Refresh");
+    QAction* manage = menu->addAction(icon(QStringLiteral("preferences")), tr("Manage Asset Folders"));
+    QAction* refresh = menu->addAction(icon(QStringLiteral("refresh")), tr("Refresh"));
     return {manage, refresh};
 }
 
@@ -54,15 +54,15 @@ AssetManagerWidget::ExpandActions AssetManagerWidget::addExpandCollapseActions(Q
     const bool hasChildren = proxyModel->hasChildren(proxyIndex);
 
     if (!isExpanded) {
-        actions.expand = menu->addAction(icon(QStringLiteral("expand")), "Expand");
+        actions.expand = menu->addAction(icon(QStringLiteral("expand")), tr("Expand"));
         actions.expand->setEnabled(hasChildren);
     }
     if (withBranch) {
-        actions.expandBranch = menu->addAction(icon(QStringLiteral("expand-branch")), "Expand Branch");
+        actions.expandBranch = menu->addAction(icon(QStringLiteral("expand-branch")), tr("Expand Branch"));
         actions.expandBranch->setEnabled(hasChildren);
     }
     if (isExpanded) {
-        actions.collapse = menu->addAction(icon(QStringLiteral("collapse")), "Collapse");
+        actions.collapse = menu->addAction(icon(QStringLiteral("collapse")), tr("Collapse"));
     }
     return actions;
 }
@@ -76,8 +76,8 @@ bool AssetManagerWidget::handleExpandCollapse(QAction* selected, const ExpandAct
 }
 
 QPair<QAction*, QAction*> AssetManagerWidget::addFindAndBrowseActions(QMenu* menu) {
-    QAction* find = menu->addAction(icon(QStringLiteral("tree")), "Find In Library");
-    QAction* browse = menu->addAction(icon(QStringLiteral("browse-folder")), "Browse Folder");
+    QAction* find = menu->addAction(icon(QStringLiteral("tree")), tr("Find In Library"));
+    QAction* browse = menu->addAction(icon(QStringLiteral("browse-folder")), tr("Browse Folder"));
     return {find, browse};
 }
 
@@ -115,10 +115,10 @@ void AssetManagerWidget::collapseNodeRecursively(const QModelIndex &proxyIndex) 
  */
 QMenu* AssetManagerWidget::buildAddToCollectionMenu(QWidget* parentMenu, const QString& folderPath) {
     QMenu *addMenu = newContextMenu(parentMenu);
-    addMenu->setTitle("Add To Collection");
+    addMenu->setTitle(tr("Add To Collection"));
     addMenu->setIcon(icon(QStringLiteral("collections")));
 
-    QAction *newCollAction = addMenu->addAction("New Collection");
+    QAction *newCollAction = addMenu->addAction(tr("New Collection"));
     connect(newCollAction, &QAction::triggered, this, [this, folderPath]() {
         int cid = addFolderAsCollection(folderPath, 0);
         if (cid > 0) navigateToCollectionNode(cid);
@@ -178,7 +178,7 @@ void AssetManagerWidget::onContextMenuRequested(const QPoint &pos) {
     // =========================================================================
     if (folderPath == AssetNode::FAVORITES_ROOT) {
         QMenu* favMenu = newContextMenu(this);
-        QAction *refreshAction = favMenu->addAction(icon(QStringLiteral("refresh")), "Refresh");
+        QAction *refreshAction = favMenu->addAction(icon(QStringLiteral("refresh")), tr("Refresh"));
         const bool refresh = (favMenu->exec(globalPos) == refreshAction);
         favMenu->deleteLater();
         if (refresh) refreshAssetManager();
@@ -194,7 +194,7 @@ void AssetManagerWidget::onContextMenuRequested(const QPoint &pos) {
         const ExpandActions expandActions = addExpandCollapseActions(rootMenu, proxyIndex, false);
 
         rootMenu->addSeparator();
-        QAction *newCollAction = rootMenu->addAction(icon(QStringLiteral("add-col")), "New Collection");
+        QAction *newCollAction = rootMenu->addAction(icon(QStringLiteral("add-col")), tr("New Collection"));
 
         rootMenu->addSeparator();
         const auto [manageFoldersAction, refreshAction] = addManageRefreshActions(rootMenu);
@@ -204,7 +204,7 @@ void AssetManagerWidget::onContextMenuRequested(const QPoint &pos) {
 
         if (handleExpandCollapse(selectedAction, expandActions, proxyIndex)) return;
         if (selectedAction == newCollAction) {
-            int cid = createCollection(AssetDb::uniqueCollectionName("New Collection", 0), 0);
+            int cid = createCollection(AssetDb::uniqueCollectionName(tr("New Collection"), 0), 0);
             if (cid > 0) navigateToCollectionNode(cid, true);
         }
         else if (selectedAction == manageFoldersAction) emit manageAssetFoldersRequested();
@@ -222,8 +222,8 @@ void AssetManagerWidget::onContextMenuRequested(const QPoint &pos) {
         QMenu* collMenu = newContextMenu(this);
 
         QAction *renameAction = collMenu->addAction(icon(QStringLiteral("rename")),
-                                                    QStringLiteral("Rename %1").arg(Constants::TERM_COL_SINGULAR));
-        QAction *deleteAction = collMenu->addAction(QStringLiteral("Delete %1").arg(Constants::TERM_COL_SINGULAR));
+                                                    tr("Rename %1").arg(tr("Collection")));
+        QAction *deleteAction = collMenu->addAction(tr("Delete %1").arg(tr("Collection")));
         // Deletable only when both asset items and sub-collections are absent
         deleteAction->setEnabled(AssetDb::collectionIsEmpty(collId));
         collMenu->addSeparator();
@@ -231,7 +231,7 @@ void AssetManagerWidget::onContextMenuRequested(const QPoint &pos) {
         const ExpandActions expandActions = addExpandCollapseActions(collMenu, proxyIndex, false);
 
         collMenu->addSeparator();
-        QAction *newSubCollAction = collMenu->addAction(icon(QStringLiteral("add-col")), "New Sub-Collection");
+        QAction *newSubCollAction = collMenu->addAction(icon(QStringLiteral("add-col")), tr("New Sub-Collection"));
 
         collMenu->addSeparator();
         const auto [manageFoldersAction, refreshAction] = addManageRefreshActions(collMenu);
@@ -252,7 +252,7 @@ void AssetManagerWidget::onContextMenuRequested(const QPoint &pos) {
         } else if (handleExpandCollapse(selectedAction, expandActions, proxyIndex)) {
             return;
         } else if (selectedAction == newSubCollAction) {
-            int cid = createCollection(AssetDb::uniqueCollectionName("New Collection", collId), collId);
+            int cid = createCollection(AssetDb::uniqueCollectionName(tr("New Collection"), collId), collId);
             if (cid > 0) navigateToCollectionNode(cid, true);
         } else if (selectedAction == manageFoldersAction) {
             emit manageAssetFoldersRequested();
@@ -286,7 +286,7 @@ void AssetManagerWidget::onContextMenuRequested(const QPoint &pos) {
     contextMenu->addSeparator();
 
     if (!inCollectionOrSearch) {
-        browseAction = contextMenu->addAction(icon(QStringLiteral("browse-folder")), "Browse Folder");
+        browseAction = contextMenu->addAction(icon(QStringLiteral("browse-folder")), tr("Browse Folder"));
         contextMenu->addSeparator();
     }
 
@@ -329,7 +329,7 @@ void AssetManagerWidget::onGridContextMenuRequested(const QPoint &pos) {
 
         QMenu* folderMenu = newContextMenu(this);
 
-        QAction *openAction = folderMenu->addAction(icon(QStringLiteral("open-item")), "Open");
+        QAction *openAction = folderMenu->addAction(icon(QStringLiteral("open-item")), tr("Open"));
 
         QAction *findInLibraryAction = nullptr;
         QAction *browseAction = nullptr;
@@ -341,9 +341,9 @@ void AssetManagerWidget::onGridContextMenuRequested(const QPoint &pos) {
         folderMenu->addMenu(addMenu);
 
         if (!inCollectionOrSearch)
-            browseAction = folderMenu->addAction(icon(QStringLiteral("browse-folder")), "Browse Folder");
+            browseAction = folderMenu->addAction(icon(QStringLiteral("browse-folder")), tr("Browse Folder"));
         folderMenu->addSeparator();
-        QAction *refreshAction = folderMenu->addAction(icon(QStringLiteral("refresh")), "Refresh");
+        QAction *refreshAction = folderMenu->addAction(icon(QStringLiteral("refresh")), tr("Refresh"));
 
         QAction *selected = folderMenu->exec(globalPos);
         folderMenu->deleteLater();
@@ -370,14 +370,14 @@ void AssetManagerWidget::onGridContextMenuRequested(const QPoint &pos) {
         // Browse the physical folder currently shown in the grid. Disabled when nothing is
         // displayed, or when the grid is showing a virtual source (Favorites / a Collection,
         // which has no single on-disk folder to open).
-        QAction *browseAction = emptyMenu->addAction(icon(QStringLiteral("browse-folder")), "Browse Folder");
+        QAction *browseAction = emptyMenu->addAction(icon(QStringLiteral("browse-folder")), tr("Browse Folder"));
         const bool hasPhysicalFolder = !m_currentFolderPath.isEmpty()
             && !AssetNode::isVirtual(m_currentFolderPath)
             && QDir(m_currentFolderPath).exists();
         browseAction->setEnabled(hasPhysicalFolder);
 
         emptyMenu->addSeparator();
-        QAction *refreshAction = emptyMenu->addAction(icon(QStringLiteral("refresh")), "Refresh");
+        QAction *refreshAction = emptyMenu->addAction(icon(QStringLiteral("refresh")), tr("Refresh"));
         QAction *selectedAction = emptyMenu->exec(globalPos);
         emptyMenu->deleteLater();
 
@@ -398,7 +398,7 @@ void AssetManagerWidget::onGridContextMenuRequested(const QPoint &pos) {
     QMenu* itemMenu = newContextMenu(this);
 
     // Action 1: Open
-    QAction *openAction = itemMenu->addAction(icon(QStringLiteral("open-item")), "Open");
+    QAction *openAction = itemMenu->addAction(icon(QStringLiteral("open-item")), tr("Open"));
 
     // Detect collection context and add collection-specific actions immediately after Open
     QAction *removeFromColAction = nullptr;
@@ -422,7 +422,7 @@ void AssetManagerWidget::onGridContextMenuRequested(const QPoint &pos) {
     // further down instead, after the collection entries.
     QAction *addToFavAction = nullptr;
     if (!inFavoritesView)
-        addToFavAction = itemMenu->addAction("Add To Favorites");
+        addToFavAction = itemMenu->addAction(tr("Add To Favorites"));
 
     // =========================================================================
     // Action 2: Contextual Collection Management (Add vs Move/Copy)
@@ -434,17 +434,17 @@ void AssetManagerWidget::onGridContextMenuRequested(const QPoint &pos) {
     // If we are NOT in a collection, build the standard "Add" menu
     if (currentCollectionId == -1) {
         addMenu = newContextMenu(itemMenu);
-        addMenu->setTitle("Add To Collection");
+        addMenu->setTitle(tr("Add To Collection"));
         addMenu->setIcon(icon(QStringLiteral("collections")));
     }
     // If we ARE in a collection, build the "Move" and "Copy" menus
     else {
         moveMenu = newContextMenu(itemMenu);
-        moveMenu->setTitle("Move To Collection");
+        moveMenu->setTitle(tr("Move To Collection"));
         moveMenu->setIcon(icon(QStringLiteral("collections")));
 
         copyMenu = newContextMenu(itemMenu);
-        copyMenu->setTitle("Copy To Collection");
+        copyMenu->setTitle(tr("Copy To Collection"));
         copyMenu->setIcon(icon(QStringLiteral("collections")));
     }
 
@@ -453,9 +453,9 @@ void AssetManagerWidget::onGridContextMenuRequested(const QPoint &pos) {
 
     // "New Collection" always at the top of the Add menu
     if (currentCollectionId == -1) {
-        QAction *newCollAction = addMenu->addAction("New Collection");
+        QAction *newCollAction = addMenu->addAction(tr("New Collection"));
         connect(newCollAction, &QAction::triggered, this, [this, fullPath]() {
-            int cid = createCollection(AssetDb::uniqueCollectionName("New Collection", 0), 0);
+            int cid = createCollection(AssetDb::uniqueCollectionName(tr("New Collection"), 0), 0);
             if (cid > 0 && addAssetToCollection(fullPath, cid)) navigateToCollectionNode(cid, true);
         });
     }
@@ -509,21 +509,21 @@ void AssetManagerWidget::onGridContextMenuRequested(const QPoint &pos) {
 
     // Action 3: Browse Folder (already added at the top when inside Collections/Search Results)
     if (!inCollectionOrSearch)
-        browseAction = itemMenu->addAction(icon(QStringLiteral("browse-folder")), "Browse Folder");
+        browseAction = itemMenu->addAction(icon(QStringLiteral("browse-folder")), tr("Browse Folder"));
 
     if (currentCollectionId != -1)
-        removeFromColAction = itemMenu->addAction(icon(QStringLiteral("unfavorite")), "Remove From Collection");
+        removeFromColAction = itemMenu->addAction(icon(QStringLiteral("unfavorite")), tr("Remove From Collection"));
 
     // The Favorites view's counterpart of "Add To Favorites" above: removal, placed after the
     // collection entries like "Remove From Collection".
     QAction *removeFromFavAction = nullptr;
     if (inFavoritesView)
-        removeFromFavAction = itemMenu->addAction(icon(QStringLiteral("unfavorite")), "Remove From Favorites");
+        removeFromFavAction = itemMenu->addAction(icon(QStringLiteral("unfavorite")), tr("Remove From Favorites"));
 
     itemMenu->addSeparator();
 
     // Action 4: Refresh
-    QAction *refreshAction = itemMenu->addAction(icon(QStringLiteral("refresh")), "Refresh");
+    QAction *refreshAction = itemMenu->addAction(icon(QStringLiteral("refresh")), tr("Refresh"));
 
     // --- Execute Menu & Handle Clicks ---
     QAction *selectedAction = itemMenu->exec(globalPos);

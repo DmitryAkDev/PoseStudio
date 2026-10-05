@@ -52,7 +52,7 @@ constexpr int kSearchDebounceMs = 150;
 HelpWindow::HelpWindow(QWidget* owner)
     : QWidget(owner, Qt::Window) {
     setObjectName(QStringLiteral("HelpWindow"));
-    setWindowTitle(QStringLiteral("%1 User Manual").arg(Constants::APP_NAME));
+    setWindowTitle(tr("%1 User Manual").arg(Constants::APP_NAME));
     setAttribute(Qt::WA_DeleteOnClose, false); // (one window per app: hidden, not destroyed, on close)
 
     auto* outer = new QVBoxLayout(this);
@@ -68,13 +68,13 @@ HelpWindow::HelpWindow(QWidget* owner)
 
     m_back = new QToolButton(toolbar);
     m_back->setObjectName(QStringLiteral("HelpBack"));
-    m_back->setText(QStringLiteral("‹ Back"));
-    m_back->setToolTip(QStringLiteral("Back to the previous page (Alt+Left)"));
+    m_back->setText(tr("‹ Back"));
+    m_back->setToolTip(tr("Back to the previous page (Alt+Left)"));
     m_back->setShortcut(QKeySequence(Qt::ALT | Qt::Key_Left));
     m_forward = new QToolButton(toolbar);
     m_forward->setObjectName(QStringLiteral("HelpForward"));
-    m_forward->setText(QStringLiteral("Forward ›"));
-    m_forward->setToolTip(QStringLiteral("Forward again (Alt+Right)"));
+    m_forward->setText(tr("Forward ›"));
+    m_forward->setToolTip(tr("Forward again (Alt+Right)"));
     m_forward->setShortcut(QKeySequence(Qt::ALT | Qt::Key_Right));
     toolbarLayout->addWidget(m_back);
     toolbarLayout->addWidget(m_forward);
@@ -82,7 +82,7 @@ HelpWindow::HelpWindow(QWidget* owner)
 
     m_search = new QLineEdit(toolbar);
     m_search->setObjectName(QStringLiteral("HelpSearch"));
-    m_search->setPlaceholderText(QStringLiteral("Search the manual  (Ctrl+F)"));
+    m_search->setPlaceholderText(tr("Search the manual  (Ctrl+F)"));
     m_search->setClearButtonEnabled(true);
     m_search->setFixedWidth(280);
     toolbarLayout->addWidget(m_search);
@@ -146,7 +146,7 @@ HelpWindow::HelpWindow(QWidget* owner)
 
     // --- The manual ---
     if (!m_manual.load()) {
-        m_browser->setMarkdown(QStringLiteral("# User Manual\n\n%1").arg(m_manual.errorText()));
+        m_browser->setMarkdown(tr("# User Manual\n\n%1").arg(m_manual.errorText()));
     } else {
         buildContents();
         if (const ManualPage* first = m_manual.firstPage()) {

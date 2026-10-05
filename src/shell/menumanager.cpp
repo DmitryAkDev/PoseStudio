@@ -67,31 +67,31 @@ void MenuManager::setupMenus() {
     // =========================================================================
     // FILE MENU — document lifecycle, import/export, and application exit
     // =========================================================================
-    QMenu *fileMenu = mainWindow->menuBar()->addMenu("File");
+    QMenu *fileMenu = mainWindow->menuBar()->addMenu(tr("File"));
 
     // File → New: a fresh launch — the scene, its lighting and the Environment tab all go back to
     // the startup defaults (see newScene). Ctrl+N, window-level like Quit's Ctrl+Q.
-    QAction *newSceneAction = fileMenu->addAction(loadDualStateIcon("new"), "New");
+    QAction *newSceneAction = fileMenu->addAction(loadDualStateIcon("new"), tr("New"));
     newSceneAction->setShortcut(QKeySequence::New);
     QObject::connect(newSceneAction, &QAction::triggered, mainWindow, [this]() { newScene(); });
     // File → Open / Save / Save As: the .pss project document (the whole scene — figures with
     // their poses, transforms, environment and camera). Shortcuts follow the platform convention.
-    QAction *openProjectAction = fileMenu->addAction(loadDualStateIcon("open"), "Open...");
+    QAction *openProjectAction = fileMenu->addAction(loadDualStateIcon("open"), tr("Open..."));
     openProjectAction->setShortcut(QKeySequence::Open);
     QObject::connect(openProjectAction, &QAction::triggered, mainWindow,
                      [this]() { openProjectFile(); });
-    fileMenu->addAction("Open Recent...")->setEnabled(false);
+    fileMenu->addAction(tr("Open Recent..."))->setEnabled(false);
     fileMenu->addSeparator();
 
-    QAction *saveProjectAction = fileMenu->addAction(loadDualStateIcon("save"), "Save");
+    QAction *saveProjectAction = fileMenu->addAction(loadDualStateIcon("save"), tr("Save"));
     saveProjectAction->setShortcut(QKeySequence::Save);
     QObject::connect(saveProjectAction, &QAction::triggered, mainWindow,
                      [this]() { saveProject(); });
-    QAction *saveProjectAsAction = fileMenu->addAction("Save As...");
+    QAction *saveProjectAsAction = fileMenu->addAction(tr("Save As..."));
     saveProjectAsAction->setShortcut(QKeySequence::SaveAs);
     QObject::connect(saveProjectAsAction, &QAction::triggered, mainWindow,
                      [this]() { saveProjectAs(); });
-    fileMenu->addAction("Save Copy...")->setEnabled(false);
+    fileMenu->addAction(tr("Save Copy..."))->setEnabled(false);
     fileMenu->addSeparator();
 
     // Import submenu: one entry per supported file format, kept alphabetical. An entry with a
@@ -99,7 +99,7 @@ void MenuManager::setupMenus() {
     // new format is filling in its handler here. .DUF is the rigged character figure: its own
     // native scene format + pipeline (geometry + skeleton + morphs + materials), listed as a
     // file format alongside the mesh formats.
-    QMenu *importMenu = fileMenu->addMenu(loadDualStateIcon("import"), "Import");
+    QMenu *importMenu = fileMenu->addMenu(loadDualStateIcon("import"), tr("Import"));
     struct ImportFormat {
         const char *label;
         void (MenuManager::*handler)(); // nullptr = importer not built yet
@@ -126,18 +126,18 @@ void MenuManager::setupMenus() {
         }
     }
 
-    fileMenu->addAction(loadDualStateIcon("export"), "Export...")->setEnabled(false);
+    fileMenu->addAction(loadDualStateIcon("export"), tr("Export..."))->setEnabled(false);
     fileMenu->addSeparator();
 
     // Pose I/O: save the current figure's joint rotations to a small text file and restore them
     // later. Enabled regardless of scene state; the handlers warn if no figure is loaded.
-    QAction *savePoseAction = fileMenu->addAction("Save Pose...");
+    QAction *savePoseAction = fileMenu->addAction(tr("Save Pose..."));
     QObject::connect(savePoseAction, &QAction::triggered, mainWindow, [this]() { savePoseFile(); });
-    QAction *loadPoseAction = fileMenu->addAction("Load Pose...");
+    QAction *loadPoseAction = fileMenu->addAction(tr("Load Pose..."));
     QObject::connect(loadPoseAction, &QAction::triggered, mainWindow, [this]() { loadPoseFile(); });
     fileMenu->addSeparator();
 
-    QAction *quitAction = fileMenu->addAction("Quit");
+    QAction *quitAction = fileMenu->addAction(tr("Quit"));
     // Ctrl+Q covers Windows/Linux explicitly; QKeySequence::Quit adds the platform-standard
     // binding too (e.g. Cmd+Q on macOS), so both are listed rather than picking just one.
     quitAction->setShortcuts({QKeySequence("Ctrl+Q"), QKeySequence::Quit});
@@ -146,33 +146,33 @@ void MenuManager::setupMenus() {
     // =========================================================================
     // EDIT MENU — undo/redo history, clipboard, and preferences
     // =========================================================================
-    QMenu *editMenu = mainWindow->menuBar()->addMenu("Edit");
+    QMenu *editMenu = mainWindow->menuBar()->addMenu(tr("Edit"));
 
     // Undo/Redo drive the viewport's shared edit stack (pose changes + Environment-panel lighting
     // gestures). The QAction shortcuts are what make Ctrl+Z/Ctrl+Y work app-wide — the panel's
     // controls take keyboard focus, so the viewport's own keyPressEvent alone wouldn't see the
     // keys after a dial edit. Text fields still keep their own Ctrl+Z: a focused QLineEdit accepts
     // the ShortcutOverride for its editing keys, which parks these window-level shortcuts.
-    QAction *undoAction = editMenu->addAction(loadDualStateIcon("undo"), "Undo");
+    QAction *undoAction = editMenu->addAction(loadDualStateIcon("undo"), tr("Undo"));
     undoAction->setShortcut(QKeySequence::Undo);
     QObject::connect(undoAction, &QAction::triggered, mainWindow, [this]() {
         if (viewportWidget) viewportWidget->undo();
     });
-    QAction *redoAction = editMenu->addAction(loadDualStateIcon("redo"), "Redo");
+    QAction *redoAction = editMenu->addAction(loadDualStateIcon("redo"), tr("Redo"));
     redoAction->setShortcut(QKeySequence::Redo);
     QObject::connect(redoAction, &QAction::triggered, mainWindow, [this]() {
         if (viewportWidget) viewportWidget->redo();
     });
-    editMenu->addAction("Undo History...")->setEnabled(false);
+    editMenu->addAction(tr("Undo History..."))->setEnabled(false);
     editMenu->addSeparator();
 
-    editMenu->addAction(loadDualStateIcon("copy"), "Copy")->setEnabled(false);
-    editMenu->addAction("Paste")->setEnabled(false);
+    editMenu->addAction(loadDualStateIcon("copy"), tr("Copy"))->setEnabled(false);
+    editMenu->addAction(tr("Paste"))->setEnabled(false);
     // Delete removes the SELECTED (outlined) viewport object. The "Del" shown here is a hint,
     // not a bound QKeySequence: the key itself is handled by the viewport while it has focus
     // (VulkanWindow::keyPressEvent). A window-level shortcut would hijack Delete from the Asset
     // Manager's tree and grid, where the key must stay theirs.
-    QAction *deleteAction = editMenu->addAction("Delete Selected Object\tDel");
+    QAction *deleteAction = editMenu->addAction(tr("Delete Selected Object\tDel"));
     QObject::connect(deleteAction, &QAction::triggered, mainWindow, [this]() {
         if (viewportWidget) viewportWidget->deleteSelectedObject();
     });
@@ -181,15 +181,15 @@ void MenuManager::setupMenus() {
     // Pose utilities, on the ACTIVE figure (the one whose joint was last clicked). "Limb" = the
     // selected joint and everything below it. Each is one undo step; pins are left alone. The
     // joint context menu in the viewport offers the per-joint ones too.
-    QAction *resetJointAction = editMenu->addAction("Reset Selected Joint");
+    QAction *resetJointAction = editMenu->addAction(tr("Reset Selected Joint"));
     QObject::connect(resetJointAction, &QAction::triggered, mainWindow, [this]() {
         if (viewportWidget) viewportWidget->resetSelectedJoint();
     });
-    QAction *resetLimbAction = editMenu->addAction("Reset Limb");
+    QAction *resetLimbAction = editMenu->addAction(tr("Reset Limb"));
     QObject::connect(resetLimbAction, &QAction::triggered, mainWindow, [this]() {
         if (viewportWidget) viewportWidget->resetSelectedLimb();
     });
-    QAction *resetPoseAction = editMenu->addAction("Reset Pose");
+    QAction *resetPoseAction = editMenu->addAction(tr("Reset Pose"));
     QObject::connect(resetPoseAction, &QAction::triggered, mainWindow, [this]() {
         if (viewportWidget) viewportWidget->resetPose();
     });
@@ -203,9 +203,9 @@ void MenuManager::setupMenus() {
     // (setViewportWidget), so with nothing to turn the letters go where they always went — the
     // asset lists' type-ahead. No auto-repeat: a key held a moment too long must not toggle the
     // mode off again.
-    QMenu *turnJointMenu = editMenu->addMenu("Turn Joint with Mouse");
-    static const struct { const char *label; Qt::Key key; } kTurnJoint[3] = {
-        {"Bend", Qt::Key_B}, {"Side-Side", Qt::Key_S}, {"Twist", Qt::Key_T}};
+    QMenu *turnJointMenu = editMenu->addMenu(tr("Turn Joint with Mouse"));
+    static const struct { QString label; Qt::Key key; } kTurnJoint[3] = {
+        {tr("Bend"), Qt::Key_B}, {tr("Side-Side"), Qt::Key_S}, {tr("Twist"), Qt::Key_T}};
     for (int kind = 0; kind < 3; ++kind) {
         QAction *action = turnJointMenu->addAction(kTurnJoint[kind].label);
         action->setShortcut(QKeySequence(kTurnJoint[kind].key));
@@ -217,17 +217,17 @@ void MenuManager::setupMenus() {
         m_turnJointActions[kind] = action;
     }
     editMenu->addSeparator();
-    QAction *mirrorPoseAction = editMenu->addAction("Mirror Pose");
+    QAction *mirrorPoseAction = editMenu->addAction(tr("Mirror Pose"));
     QObject::connect(mirrorPoseAction, &QAction::triggered, mainWindow, [this]() {
         if (viewportWidget) viewportWidget->mirrorPose();
     });
-    QAction *mirrorLimbAction = editMenu->addAction("Mirror Limb to Other Side");
+    QAction *mirrorLimbAction = editMenu->addAction(tr("Mirror Limb to Other Side"));
     QObject::connect(mirrorLimbAction, &QAction::triggered, mainWindow, [this]() {
         if (viewportWidget) viewportWidget->mirrorSelectedLimb();
     });
     editMenu->addSeparator();
 
-    QAction *preferencesAction = editMenu->addAction(loadDualStateIcon("preferences"), "Preferences");
+    QAction *preferencesAction = editMenu->addAction(loadDualStateIcon("preferences"), tr("Preferences"));
     QObject::connect(preferencesAction, &QAction::triggered, mainWindow, [this]() {
         openPreferencesDialog();
     });
@@ -235,14 +235,14 @@ void MenuManager::setupMenus() {
     // =========================================================================
     // VIEW MENU — viewport display options (skeleton overlay)
     // =========================================================================
-    QMenu *viewMenu = mainWindow->menuBar()->addMenu("View");
+    QMenu *viewMenu = mainWindow->menuBar()->addMenu(tr("View"));
 
     // "Show Skeleton": toggle the skeleton overlay (the joint→parent bone lines drawn over the
     // figure). Off by default — joints are grabbed directly on the figure — but joints stay
     // clickable either way. Kept in sync with the overlay's Skeleton button via the
     // skeletonVisibilityChanged signal. The viewport is registered after setupMenus() (see
     // setViewportWidget), so the action's connections are attached there.
-    m_showSkeletonAction = viewMenu->addAction("Show Skeleton");
+    m_showSkeletonAction = viewMenu->addAction(tr("Show Skeleton"));
     m_showSkeletonAction->setCheckable(true);
     viewMenu->addSeparator();
 
@@ -254,19 +254,19 @@ void MenuManager::setupMenus() {
     // the navigation key the numpad sends with NumLock OFF (End/PageDown/Home/PageUp/Delete),
     // bound WITH the keypad modifier so the real End/Home/Delete keys stay untouched.
     struct AxisViewEntry {
-        const char*    label;
+        QString        label;
         pose::AxisView view;
         Qt::Key        rowKey;   // number row / numpad with NumLock on
         Qt::Key        padKey;   // what the same numpad key sends with NumLock off
         bool           ctrl;
     };
     const AxisViewEntry axisViews[] = {
-        {"Front View",  pose::AxisView::Front,  Qt::Key_1, Qt::Key_End,      false},
-        {"Back View",   pose::AxisView::Back,   Qt::Key_1, Qt::Key_End,      true},
-        {"Right View",  pose::AxisView::Right,  Qt::Key_3, Qt::Key_PageDown, false},
-        {"Left View",   pose::AxisView::Left,   Qt::Key_3, Qt::Key_PageDown, true},
-        {"Top View",    pose::AxisView::Top,    Qt::Key_7, Qt::Key_Home,     false},
-        {"Bottom View", pose::AxisView::Bottom, Qt::Key_7, Qt::Key_Home,     true},
+        {tr("Front View"),  pose::AxisView::Front,  Qt::Key_1, Qt::Key_End,      false},
+        {tr("Back View"),   pose::AxisView::Back,   Qt::Key_1, Qt::Key_End,      true},
+        {tr("Right View"),  pose::AxisView::Right,  Qt::Key_3, Qt::Key_PageDown, false},
+        {tr("Left View"),   pose::AxisView::Left,   Qt::Key_3, Qt::Key_PageDown, true},
+        {tr("Top View"),    pose::AxisView::Top,    Qt::Key_7, Qt::Key_Home,     false},
+        {tr("Bottom View"), pose::AxisView::Bottom, Qt::Key_7, Qt::Key_Home,     true},
     };
     for (const AxisViewEntry& entry : axisViews) {
         QAction *action = viewMenu->addAction(entry.label);
@@ -279,13 +279,13 @@ void MenuManager::setupMenus() {
         });
     }
     viewMenu->addSeparator();
-    QAction *flipViewAction = viewMenu->addAction("Flip View");
+    QAction *flipViewAction = viewMenu->addAction(tr("Flip View"));
     flipViewAction->setShortcuts({QKeySequence(Qt::Key_9),
                                   QKeySequence(Qt::KeypadModifier | Qt::Key_PageUp)});
     QObject::connect(flipViewAction, &QAction::triggered, mainWindow, [this]() {
         if (viewportWidget) viewportWidget->flipView();
     });
-    QAction *frameSelectedAction = viewMenu->addAction("Frame Selected");
+    QAction *frameSelectedAction = viewMenu->addAction(tr("Frame Selected"));
     frameSelectedAction->setShortcuts({QKeySequence(Qt::Key_Period),
                                        QKeySequence(Qt::KeypadModifier | Qt::Key_Delete),
                                        QKeySequence(Qt::KeypadModifier | Qt::Key_Comma)});
@@ -294,7 +294,7 @@ void MenuManager::setupMenus() {
     });
     // Home View = the viewport's Home button: the default perspective three-quarter framing.
     // On 5 — the centre of the numpad's view cluster (numpad 5 sends Clear with NumLock off).
-    QAction *homeViewAction = viewMenu->addAction("Home View");
+    QAction *homeViewAction = viewMenu->addAction(tr("Home View"));
     homeViewAction->setShortcuts({QKeySequence(Qt::Key_5),
                                   QKeySequence(Qt::KeypadModifier | Qt::Key_Clear)});
     QObject::connect(homeViewAction, &QAction::triggered, mainWindow, [this]() {
@@ -303,22 +303,22 @@ void MenuManager::setupMenus() {
 
     // =========================================================================
     // HELP MENU — documentation, support links, and the About dialog
-    QMenu *helpMenu = mainWindow->menuBar()->addMenu("Help");
+    QMenu *helpMenu = mainWindow->menuBar()->addMenu(tr("Help"));
 
     // The User Manual (src/help/, content in docs/manual/): F1 opens it app-wide — a window-level
     // shortcut like the View keys, so it works whichever panel has focus. Release Notes opens the
     // manual at its "What's New" page, which is the CHANGELOG embedded at build time.
-    QAction *manualAction = helpMenu->addAction(loadDualStateIcon("tutorials"), "User Manual");
+    QAction *manualAction = helpMenu->addAction(loadDualStateIcon("tutorials"), tr("User Manual"));
     manualAction->setShortcut(QKeySequence::HelpContents);
     QObject::connect(manualAction, &QAction::triggered, mainWindow, [this]() {
         HelpWindow::open(mainWindow);
     });
-    QAction *releaseNotesAction = helpMenu->addAction("Release Notes");
+    QAction *releaseNotesAction = helpMenu->addAction(tr("Release Notes"));
     QObject::connect(releaseNotesAction, &QAction::triggered, mainWindow, [this]() {
         HelpWindow::open(mainWindow, QStringLiteral("whats-new"));
     });
-    helpMenu->addAction("Tutorials")->setEnabled(false);
-    helpMenu->addAction("Support")->setEnabled(false);
+    helpMenu->addAction(tr("Tutorials"))->setEnabled(false);
+    helpMenu->addAction(tr("Support"))->setEnabled(false);
     helpMenu->addSeparator();
 
     QAction *websiteAction = helpMenu->addAction(QIcon(":/resources/icons/globe.png"), "PoseStudio.org");
@@ -326,14 +326,14 @@ void MenuManager::setupMenus() {
         QDesktopServices::openUrl(QUrl(QStringLiteral("https://posestudio.org")));
     });
     // The on-demand twin of the startup update check (see updatecheck.h): reports every outcome.
-    QAction *updateAction = helpMenu->addAction("Check for Updates...");
+    QAction *updateAction = helpMenu->addAction(tr("Check for Updates..."));
     QObject::connect(updateAction, &QAction::triggered, mainWindow, [this]() {
         UpdateCheck::checkNow(mainWindow);
     });
     helpMenu->addSeparator();
 
     // "About" reuses the boot splash overlay for branding/version info
-    QAction *aboutAction = helpMenu->addAction(loadDualStateIcon("about"), "About PoseStudio");
+    QAction *aboutAction = helpMenu->addAction(loadDualStateIcon("about"), tr("About PoseStudio"));
     QObject::connect(aboutAction, &QAction::triggered, mainWindow, [this]() {
         SplashOverlay *splash = new SplashOverlay(mainWindow);
         splash->show();
@@ -343,7 +343,7 @@ void MenuManager::setupMenus() {
     // runtime include Qt's, with a pointer to the license texts. QApplication::aboutQt() is
     // Qt's own such notice; the texts themselves ship in licenses\ next to the executable
     // (see packaging/licenses/NOTICES.txt).
-    QAction *aboutQtAction = helpMenu->addAction("About Qt");
+    QAction *aboutQtAction = helpMenu->addAction(tr("About Qt"));
     QObject::connect(aboutQtAction, &QAction::triggered, mainWindow, []() {
         QApplication::aboutQt();
     });
@@ -354,7 +354,7 @@ void MenuManager::setAssetManagerWidget(AssetManagerWidget *widget) {
     if (!assetManagerWidget) return;
 
     QObject::connect(assetManagerWidget, &AssetManagerWidget::manageAssetFoldersRequested,
-                      mainWindow, [this]() { openPreferencesDialog(QStringLiteral("Assets")); });
+                      mainWindow, [this]() { openPreferencesDialog(tr("Assets")); });
 }
 
 void MenuManager::setViewportWidget(pose::ViewportWidget *viewport) {
@@ -421,8 +421,8 @@ void MenuManager::importObjFile() {
     // (No unsaved-changes prompt: an import ADDS to the scene, it replaces nothing.)
 
     const QString path = QFileDialog::getOpenFileName(
-        mainWindow, QStringLiteral("Import OBJ"), rememberedStartDir(Constants::PREF_LAST_IMPORT_DIR),
-        QStringLiteral("Wavefront OBJ (*.obj)"));
+        mainWindow, tr("Import OBJ"), rememberedStartDir(Constants::PREF_LAST_IMPORT_DIR),
+        tr("Wavefront OBJ (*.obj)"));
     if (path.isEmpty()) return; // user cancelled
 
     // Remember the folder this model came from for the next import.
@@ -436,9 +436,9 @@ void MenuManager::importFigureFile() {
     // (No unsaved-changes prompt: an import ADDS to the scene, it replaces nothing.)
 
     const QString path = QFileDialog::getOpenFileName(
-        mainWindow, QStringLiteral("Import Character Figure"),
+        mainWindow, tr("Import Character Figure"),
         rememberedStartDir(Constants::PREF_LAST_IMPORT_DIR),
-        QStringLiteral("Figure Files (*.duf *.dsf)"));
+        tr("Figure Files (*.duf *.dsf)"));
     if (path.isEmpty()) return; // user cancelled
 
     PreferencesManager::instance().setValue(Constants::PREF_LAST_IMPORT_DIR,
@@ -449,14 +449,14 @@ void MenuManager::importFigureFile() {
 void MenuManager::savePoseFile() {
     if (!viewportWidget) return;
     if (!viewportWidget->hasPosableFigure()) {
-        QMessageBox::information(mainWindow, QStringLiteral("Save Pose"),
-                                QStringLiteral("Import a character figure before saving a pose."));
+        QMessageBox::information(mainWindow, tr("Save Pose"),
+                                tr("Import a character figure before saving a pose."));
         return;
     }
 
-    QString path = QFileDialog::getSaveFileName(mainWindow, QStringLiteral("Save Pose"),
+    QString path = QFileDialog::getSaveFileName(mainWindow, tr("Save Pose"),
                                                 rememberedStartDir(Constants::PREF_LAST_POSE_DIR),
-                                                QStringLiteral("Pose Files (*.pose)"));
+                                                tr("Pose Files (*.pose)"));
     if (path.isEmpty()) return; // user cancelled
     if (!path.endsWith(QStringLiteral(".pose"), Qt::CaseInsensitive)) {
         path += QStringLiteral(".pose");
@@ -465,37 +465,37 @@ void MenuManager::savePoseFile() {
     PreferencesManager::instance().setValue(Constants::PREF_LAST_POSE_DIR,
                                             QFileInfo(path).absolutePath());
     if (!viewportWidget->savePose(path)) {
-        QMessageBox::warning(mainWindow, QStringLiteral("Save Pose"),
-                             QStringLiteral("Could not write the pose file."));
+        QMessageBox::warning(mainWindow, tr("Save Pose"),
+                             tr("Could not write the pose file."));
     }
 }
 
 void MenuManager::loadPoseFile() {
     if (!viewportWidget) return;
     if (!viewportWidget->hasPosableFigure()) {
-        QMessageBox::information(mainWindow, QStringLiteral("Load Pose"),
-                                QStringLiteral("Import a character figure before loading a pose."));
+        QMessageBox::information(mainWindow, tr("Load Pose"),
+                                tr("Import a character figure before loading a pose."));
         return;
     }
 
-    const QString path = QFileDialog::getOpenFileName(mainWindow, QStringLiteral("Load Pose"),
+    const QString path = QFileDialog::getOpenFileName(mainWindow, tr("Load Pose"),
                                                       rememberedStartDir(Constants::PREF_LAST_POSE_DIR),
-                                                      QStringLiteral("Pose Files (*.pose)"));
+                                                      tr("Pose Files (*.pose)"));
     if (path.isEmpty()) return; // user cancelled
     PreferencesManager::instance().setValue(Constants::PREF_LAST_POSE_DIR,
                                             QFileInfo(path).absolutePath());
     if (!viewportWidget->loadPose(path)) {
-        QMessageBox::warning(mainWindow, QStringLiteral("Load Pose"),
-                             QStringLiteral("Could not read the pose file."));
+        QMessageBox::warning(mainWindow, tr("Load Pose"),
+                             tr("Could not read the pose file."));
     }
 }
 
 void MenuManager::saveProjectAs() {
     if (!viewportWidget) return;
 
-    QString path = QFileDialog::getSaveFileName(mainWindow, QStringLiteral("Save Project"),
+    QString path = QFileDialog::getSaveFileName(mainWindow, tr("Save Project"),
                                                 rememberedStartDir(Constants::PREF_LAST_PROJECT_DIR),
-                                                QStringLiteral("PoseStudio Projects (*.pss)"));
+                                                tr("PoseStudio Projects (*.pss)"));
     if (path.isEmpty()) return; // user cancelled
     if (!path.endsWith(QStringLiteral(".pss"), Qt::CaseInsensitive)) {
         path += QStringLiteral(".pss");
@@ -504,8 +504,8 @@ void MenuManager::saveProjectAs() {
     PreferencesManager::instance().setValue(Constants::PREF_LAST_PROJECT_DIR,
                                             QFileInfo(path).absolutePath());
     if (!viewportWidget->saveProjectFile(path)) {
-        QMessageBox::warning(mainWindow, QStringLiteral("Save Project"),
-                             QStringLiteral("Could not write the project file."));
+        QMessageBox::warning(mainWindow, tr("Save Project"),
+                             tr("Could not write the project file."));
         return;
     }
     viewportWidget->setProjectPath(path); // Save As adopts the document path: plain Save now writes here
@@ -522,8 +522,8 @@ void MenuManager::saveProject() {
     PreferencesManager::instance().setValue(Constants::PREF_LAST_PROJECT_DIR,
                                             QFileInfo(path).absolutePath());
     if (!viewportWidget->saveProjectFile(path)) {
-        QMessageBox::warning(mainWindow, QStringLiteral("Save Project"),
-                             QStringLiteral("Could not write the project file."));
+        QMessageBox::warning(mainWindow, tr("Save Project"),
+                             tr("Could not write the project file."));
         return;
     }
     viewportWidget->setProjectClean();
@@ -537,15 +537,15 @@ bool MenuManager::confirmDiscardChanges() {
     // that the message box truncates ("lose without..."). Custom buttons keep the wording ours.
     QMessageBox box(mainWindow);
     box.setIcon(QMessageBox::Question);
-    box.setWindowTitle(QStringLiteral("Unsaved Changes"));
-    box.setText(QStringLiteral("The current scene has unsaved changes."));
-    QAbstractButton *save = box.addButton(QStringLiteral("Save"), QMessageBox::AcceptRole);
-    QAbstractButton *discard = box.addButton(QStringLiteral("Discard Changes"),
+    box.setWindowTitle(tr("Unsaved Changes"));
+    box.setText(tr("The current scene has unsaved changes."));
+    QAbstractButton *save = box.addButton(tr("Save"), QMessageBox::AcceptRole);
+    QAbstractButton *discard = box.addButton(tr("Discard Changes"),
                                             QMessageBox::DestructiveRole);
     // The box sizes itself to the text line, which is narrower than the button row needs;
     // guarantee the full label stays visible.
     discard->setMinimumWidth(150);
-    box.addButton(QStringLiteral("Cancel"), QMessageBox::RejectRole);
+    box.addButton(tr("Cancel"), QMessageBox::RejectRole);
     box.exec();
     if (box.clickedButton() == save) {
         saveProject();                           // its own dialog (Save As for a new document)
@@ -557,9 +557,9 @@ bool MenuManager::confirmDiscardChanges() {
 void MenuManager::openProjectFile() {
     if (!viewportWidget) return;
 
-    const QString path = QFileDialog::getOpenFileName(mainWindow, QStringLiteral("Open Project"),
+    const QString path = QFileDialog::getOpenFileName(mainWindow, tr("Open Project"),
                                                       rememberedStartDir(Constants::PREF_LAST_PROJECT_DIR),
-                                                      QStringLiteral("PoseStudio Projects (*.pss)"));
+                                                      tr("PoseStudio Projects (*.pss)"));
     if (path.isEmpty()) return; // user cancelled
     if (!confirmDiscardChanges()) {
         return;
@@ -576,8 +576,8 @@ void MenuManager::openProjectFile() {
         return; // loaded clean
     }
     if (status != 1) {
-        QMessageBox::warning(mainWindow, QStringLiteral("Open Project"),
-                             QStringLiteral("Could not read the project file:\n%1")
+        QMessageBox::warning(mainWindow, tr("Open Project"),
+                             tr("Could not read the project file:\n%1")
                                              .arg(QString::fromStdString(error)));
         return;
     }
@@ -589,19 +589,19 @@ void MenuManager::openProjectFile() {
     for (const std::string& src : missing) {
         const QString original = QString::fromStdString(src);
         QMessageBox box(mainWindow);
-        box.setWindowTitle(QStringLiteral("Missing Figure File"));
-        box.setText(QStringLiteral("The figure file referenced by this project is missing:"));
+        box.setWindowTitle(tr("Missing Figure File"));
+        box.setText(tr("The figure file referenced by this project is missing:"));
         box.setInformativeText(original);
-        QAbstractButton *pickButton = box.addButton(QStringLiteral("Choose File..."),
+        QAbstractButton *pickButton = box.addButton(tr("Choose File..."),
                                                  QMessageBox::ActionRole);
-        QAbstractButton *skipButton = box.addButton(QStringLiteral("Skip"), QMessageBox::ActionRole);
+        QAbstractButton *skipButton = box.addButton(tr("Skip"), QMessageBox::ActionRole);
         box.addButton(QMessageBox::Cancel);
         box.exec();
         if (box.clickedButton() == pickButton) {
             const QString replacement = QFileDialog::getOpenFileName(
-                mainWindow, QStringLiteral("Locate Figure File"),
+                mainWindow, tr("Locate Figure File"),
                 rememberedStartDir(Constants::PREF_LAST_IMPORT_DIR),
-                QStringLiteral("Figure Files (*.duf *.dsf *.obj)"));
+                tr("Figure Files (*.duf *.dsf *.obj)"));
             if (replacement.isEmpty()) {
                 skipped << original;
                 recovered[src] = std::string(); // "" = leave this figure out of the load
@@ -617,16 +617,16 @@ void MenuManager::openProjectFile() {
         }
     }
     if (!skipped.isEmpty()) {
-        QMessageBox::warning(mainWindow, QStringLiteral("Open Project"),
-                             QStringLiteral("Skipped missing figure files:\n%1")
+        QMessageBox::warning(mainWindow, tr("Open Project"),
+                             tr("Skipped missing figure files:\n%1")
                                              .arg(skipped.join(QLatin1Char('\n'))));
     }
 
     // Second pass: the recovered paths are applied, everything else is imported as saved.
     std::vector<std::string> stillMissing;
     if (viewportWidget->loadProjectFile(path, recovered, stillMissing, error) != 0) {
-        QMessageBox::warning(mainWindow, QStringLiteral("Open Project"),
-                             QStringLiteral("Could not load the project:\n%1")
+        QMessageBox::warning(mainWindow, tr("Open Project"),
+                             tr("Could not load the project:\n%1")
                                              .arg(QString::fromStdString(error)));
     }
 }

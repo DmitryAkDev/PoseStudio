@@ -128,7 +128,7 @@ void AssetManagerWidget::setupUI() {
 
     searchInput = new QLineEdit(searchRow);
     searchInput->setObjectName("AssetManagerSearchInput");
-    searchInput->setPlaceholderText("Search assets...");
+    searchInput->setPlaceholderText(tr("Search assets..."));
 
     clearSearchButton = new QPushButton(searchRow);
     clearSearchButton->setObjectName("AssetManagerClearButton");
@@ -187,7 +187,8 @@ void AssetManagerWidget::setupUI() {
     addLibraryHintLabel->setTextFormat(Qt::RichText);
     // Qt's QSS engine doesn't apply selectors to rich-text <a> links inside a QLabel, so the
     // link colour is inline in the HTML.
-    addLibraryHintLabel->setText(QStringLiteral("<a href=\"#\" style=\"color: #ffffff;\">Add Asset Folder</a>"));
+    addLibraryHintLabel->setText(tr("<a href=\"#\" style=\"color: #ffffff;\">%1</a>")
+                                  .arg(tr("Add Asset Folder")));
     addLibraryHintLabel->setTextInteractionFlags(Qt::LinksAccessibleByMouse);
     addLibraryHintLabel->setCursor(Qt::PointingHandCursor);
     addLibraryHintLabel->hide();
@@ -294,7 +295,7 @@ void AssetManagerWidget::promptAddAssetLibrary() {
         Constants::PREF_LAST_ASSET_FOLDER_PARENT, QDir::homePath());
 
     const QString folderPath = QFileDialog::getExistingDirectory(
-        this, "Select Asset Library Folder", startDir);
+        this, tr("Select Asset Library Folder"), startDir);
     if (folderPath.isEmpty()) return;
 
     if (AssetLibraries::add(folderPath) == AssetLibraries::AddResult::Failed) return; // logged
@@ -406,7 +407,7 @@ void AssetManagerWidget::refreshAssetManager() {
     // ---------------------------------------------------------
     // 2. Build Search Results Root (always first in tree)
     // ---------------------------------------------------------
-    searchResultsRootItem = new QStandardItem("Search Results");
+    searchResultsRootItem = new QStandardItem(tr("Search Results"));
     searchResultsRootItem->setData(AssetNode::SEARCH_ROOT, Qt::UserRole);
     searchResultsRootItem->setFlags(searchResultsRootItem->flags() & ~Qt::ItemIsEditable);
     dirModel->appendRow(searchResultsRootItem);
@@ -423,7 +424,7 @@ void AssetManagerWidget::refreshAssetManager() {
     // 3. Build Favorites Root (a flat container of favorited asset items; no children in the
     //    tree: clicking it lists those items in the grid)
     // ---------------------------------------------------------
-    favoritesRootItem = new QStandardItem("Favorites");
+    favoritesRootItem = new QStandardItem(tr("Favorites"));
     favoritesRootItem->setData(AssetNode::FAVORITES_ROOT, Qt::UserRole);
     favoritesRootItem->setFlags(favoritesRootItem->flags() & ~Qt::ItemIsEditable);
     dirModel->appendRow(favoritesRootItem);
@@ -431,7 +432,7 @@ void AssetManagerWidget::refreshAssetManager() {
     // ---------------------------------------------------------
     // 4. Rebuild Collections Root
     // ---------------------------------------------------------
-    collectionsRootItem = new QStandardItem(Constants::TERM_COL_PLURAL);
+    collectionsRootItem = new QStandardItem(tr("Collections"));
     collectionsRootItem->setData(AssetNode::COLLECTIONS_ROOT, Qt::UserRole);
     collectionsRootItem->setFlags(collectionsRootItem->flags() & ~Qt::ItemIsEditable);
     dirModel->appendRow(collectionsRootItem);
@@ -683,7 +684,7 @@ void AssetManagerWidget::runSearch(const QString& query) {
     }
 
     // Show "Searching..." immediately and let Qt repaint before the blocking scan
-    QStandardItem *loadingItem = new QStandardItem("Searching...");
+    QStandardItem *loadingItem = new QStandardItem(tr("Searching..."));
     loadingItem->setFlags(Qt::NoItemFlags);
     searchResultsRootItem->appendRow(loadingItem);
     if (searchProxyIdx.isValid()) {
@@ -754,7 +755,7 @@ void AssetManagerWidget::runSearch(const QString& query) {
     searchResultsRootItem->removeRows(0, searchResultsRootItem->rowCount());
 
     if (resultNodes.isEmpty()) {
-        QStandardItem *noResult = new QStandardItem("(No results)");
+        QStandardItem *noResult = new QStandardItem(tr("(No results)"));
         noResult->setFlags(Qt::NoItemFlags);
         searchResultsRootItem->appendRow(noResult);
     } else {
@@ -813,9 +814,9 @@ void AssetManagerWidget::refreshInfoBar() {
 
     QStringList countSegments;
     if (m_currentAssetCount > 0)
-        countSegments << QStringLiteral("Assets: %1").arg(m_currentAssetCount);
+        countSegments << tr("Assets: %1").arg(m_currentAssetCount);
     if (m_currentFolderCount > 0)
-        countSegments << QStringLiteral("Folders: %1").arg(m_currentFolderCount);
+        countSegments << tr("Folders: %1").arg(m_currentFolderCount);
 
     const bool isSortable = isSortableView();
 
@@ -828,7 +829,7 @@ void AssetManagerWidget::refreshInfoBar() {
     QString text = countSegments.join(QStringLiteral("   "));
     if (isSortable) {
         if (!text.isEmpty()) text += QStringLiteral("    ");
-        text += QStringLiteral("Sortable");
+        text += tr("Sortable");
     }
 
     infoBarLabel->setText(text);
@@ -883,10 +884,10 @@ void AssetManagerWidget::displayFolder(const QString& folderPath, const QString&
         QString titleText = title;
         if (titleText.isEmpty()) {
             // No name handed in (a refresh, a drop-move): read it off the tree row.
-            if (isFavorites) titleText = QStringLiteral("Favorites");
+            if (isFavorites) titleText = tr("Favorites");
             else if (QStandardItem* item = findCollectionTreeItem(AssetNode::collectionId(folderPath)))
                 titleText = item->text();
-            else titleText = Constants::TERM_COL_SINGULAR;
+            else titleText = tr("Collection");
         }
         titleLabel->setPlainTitle(titleText);
     } else {
@@ -965,7 +966,7 @@ QString AssetManagerWidget::assetTooltipHtml(const QListWidgetItem* item) {
         "<span style='color: %5; font-size: 11px;'>%6</span>"
         "</div>"
     ).arg(Constants::COLOR_ACCENT,
-          ext.isEmpty() ? QStringLiteral("File") : QString(".%1 File").arg(ext),
+          ext.isEmpty() ? tr("File") : tr(".%1 File").arg(ext),
           sz > (1024 * 1024) ? QString::number(sz / (1024.0 * 1024.0), 'f', 2) + " MB"
                              : QString::number(sz / 1024.0, 'f', 2) + " KB",
           modified.toString("MM/dd/yyyy h:mm ap"),
@@ -1340,7 +1341,7 @@ void AssetManagerWidget::dropAssetOnTreeNode(QListWidgetItem* item, const QStrin
     if (targetNodeId == AssetNode::FAVORITES_ROOT) {
         to.favorites = true;
     } else if (targetNodeId == AssetNode::COLLECTIONS_ROOT) {
-        newCollectionId = createCollection(AssetDb::uniqueCollectionName("New Collection", 0), 0);
+        newCollectionId = createCollection(AssetDb::uniqueCollectionName(tr("New Collection"), 0), 0);
         if (newCollectionId <= 0) return; // logged; nothing was moved
         to.collectionId = newCollectionId;
     } else {

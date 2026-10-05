@@ -167,22 +167,22 @@ void VulkanWindow::showObjectContextMenu(const QPointF& localPos, const QPoint& 
     QAction* resetLimbAction = nullptr;
     QAction* mirrorLimbAction = nullptr;
     if (joint >= 0) {
-        pinAction = menu.addAction(scene().selectedBonePinned() ? QStringLiteral("Unpin Joint\tP")
-                                                                : QStringLiteral("Pin Joint\tP"));
+        pinAction = menu.addAction(scene().selectedBonePinned() ? tr("Unpin Joint\tP")
+                                                                : tr("Pin Joint\tP"));
         if (scene().hasPinnedBones()) {
-            unpinAllAction = menu.addAction(QStringLiteral("Unpin All Joints"));
+            unpinAllAction = menu.addAction(tr("Unpin All Joints"));
         }
         // Pose utilities on the clicked joint (boneAt selected it): "limb" = the joint and
         // everything below it. The Edit menu carries the same plus the whole-pose variants.
         menu.addSeparator();
-        resetJointAction = menu.addAction(QStringLiteral("Reset Joint"));
-        resetLimbAction = menu.addAction(QStringLiteral("Reset Limb"));
-        mirrorLimbAction = menu.addAction(QStringLiteral("Mirror Limb to Other Side"));
+        resetJointAction = menu.addAction(tr("Reset Joint"));
+        resetLimbAction = menu.addAction(tr("Reset Limb"));
+        mirrorLimbAction = menu.addAction(tr("Mirror Limb to Other Side"));
         if (picked >= 0) {
             menu.addSeparator();
         }
     }
-    QAction* deleteAction = picked >= 0 ? menu.addAction(QStringLiteral("Delete")) : nullptr;
+    QAction* deleteAction = picked >= 0 ? menu.addAction(tr("Delete")) : nullptr;
     QAction* chosen = menu.exec(globalPos);
     if (chosen != nullptr && chosen == resetJointAction) {
         runPoseUtility(PoseUtility::ResetJoint);

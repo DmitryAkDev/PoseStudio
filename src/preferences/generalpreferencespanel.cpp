@@ -13,32 +13,32 @@
 #include <QVBoxLayout>
 
 GeneralPreferencesPanel::GeneralPreferencesPanel(QWidget* parent)
-    : PreferencesPanel(QStringLiteral("General"), parent) {
+    : PreferencesPanel(tr("General"), parent) {
 
     // --- Anonymous install ping ---
     // The toggle is the user-facing half of InstallPing; the copy below is the disclosure of
     // exactly what the ping carries, so keep it in step with InstallPing::buildPayload().
-    auto* pingToggle = new QCheckBox(QStringLiteral("Send an anonymous install ping"), this);
+    auto* pingToggle = new QCheckBox(tr("Send an anonymous install ping"), this);
     pingToggle->setChecked(InstallPing::isEnabled());
     contentLayout()->addWidget(pingToggle);
 
     addDescription(
-        "Each time it starts, PoseStudio lets posestudio.io know that this installation exists, so we can "
-        "see how many people use it and which versions are out there. The ping carries a random "
-        "install ID, the app version, your operating system and CPU type, whether the app was "
-        "installed or is running portable, the Qt library version, and the time of the ping — "
-        "nothing else: no names, no files, no usage data, and the ID isn't linked to you in any way.");
+        tr("Each time it starts, PoseStudio lets posestudio.io know that this installation exists, so we can ") +
+        tr("see how many people use it and which versions are out there. The ping carries a random ") +
+        tr("install ID, the app version, your operating system and CPU type, whether the app was ") +
+        tr("installed or is running portable, the Qt library version, and the time of the ping — ") +
+        tr("nothing else: no names, no files, no usage data, and the ID isn't linked to you in any way."));
     // Shown, never minted here: opening Preferences must not create and persist an identifier
     // (in a keyless build, or with the toggle off, one may legitimately never exist).
     const QString id = InstallPing::existingInstallId();
     addDescription(id.isEmpty()
-                       ? QStringLiteral("Install ID: not created yet (assigned when the first ping is sent)")
-                       : QStringLiteral("Install ID: %1").arg(id));
+                       ? tr("Install ID: not created yet (assigned when the first ping is sent)")
+                       : tr("Install ID: %1").arg(id));
 
     if (!InstallPing::isBuiltIn()) {
         // Local builds carry no signing key (it comes from the release pipeline's secret), so
         // the setting is honoured but moot — say so rather than leave a developer guessing.
-        addDescription("This build has no ping key, so nothing is sent regardless of this setting.");
+        addDescription(tr("This build has no ping key, so nothing is sent regardless of this setting."));
     }
 
     connect(pingToggle, &QCheckBox::toggled, this, [](bool enabled) {
@@ -46,13 +46,13 @@ GeneralPreferencesPanel::GeneralPreferencesPanel(QWidget* parent)
     });
 
     // --- Update check ---
-    auto* updateToggle = new QCheckBox(QStringLiteral("Check for updates at startup"), this);
+    auto* updateToggle = new QCheckBox(tr("Check for updates at startup"), this);
     updateToggle->setChecked(UpdateCheck::isEnabled());
     contentLayout()->addWidget(updateToggle);
     addDescription(
-        "A few seconds after it starts, PoseStudio asks GitHub for the latest release and, when a newer "
-        "one exists, shows a message with a link to its download page. Nothing but the request itself "
-        "is sent. Help → Check for Updates… does the same on demand.");
+        tr("A few seconds after it starts, PoseStudio asks GitHub for the latest release and, when a newer ") +
+        tr("one exists, shows a message with a link to its download page. Nothing but the request itself ") +
+        tr("is sent. Help → Check for Updates… does the same on demand."));
     connect(updateToggle, &QCheckBox::toggled, this, [](bool enabled) {
         UpdateCheck::setEnabled(enabled);
     });
@@ -60,14 +60,14 @@ GeneralPreferencesPanel::GeneralPreferencesPanel(QWidget* parent)
     // --- Camera changes as unsaved ---
     // Off by default: orbiting/panning to look at a figure is not an edit worth being prompted
     // about. The framing is still written into the .pss document on Save either way.
-    auto* cameraToggle = new QCheckBox(QStringLiteral("Count camera changes as unsaved"), this);
+    auto* cameraToggle = new QCheckBox(tr("Count camera changes as unsaved"), this);
     cameraToggle->setChecked(PreferencesManager::instance()
                                    .getValue(Constants::PREF_CAMERA_CHANGES_MARK_DIRTY, false).toBool());
     contentLayout()->addWidget(cameraToggle);
     addDescription(
-        "When on, moving the camera (orbit, pan, zoom, the view hotkeys) marks the scene as having "
-        "unsaved changes — the close prompt and File → New will ask before discarding it. Off by "
-        "default: looking around is not an edit.");
+        tr("When on, moving the camera (orbit, pan, zoom, the view hotkeys) marks the scene as having "
+           "unsaved changes — the close prompt and File → New will ask before discarding it. Off by "
+           "default: looking around is not an edit."));
     connect(cameraToggle, &QCheckBox::toggled, this, [](bool enabled) {
         PreferencesManager::instance().setValue(Constants::PREF_CAMERA_CHANGES_MARK_DIRTY,
                                                enabled ? "1" : "0");

@@ -33,10 +33,6 @@ namespace Constants {
     // subfolder is the user-facing home for environment panoramas.
     inline constexpr const char* USER_LIBRARY_DIRNAME = "My PoseStudio Library";
 
-    // --- Collections naming conventions ---
-    inline const QString TERM_COL_PLURAL = QStringLiteral("Collections");
-    inline const QString TERM_COL_SINGULAR = QStringLiteral("Collection");
-
     // --- Preference keys (rows in the Preferences table) ---
     // Parent directory of the most recently added asset-library folder. The "Add Asset Folder"
     // browser starts here next time, so adding sibling libraries doesn't re-navigate from home.

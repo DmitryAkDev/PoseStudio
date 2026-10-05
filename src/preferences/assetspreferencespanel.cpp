@@ -31,12 +31,12 @@
 // the AssetLibraries repository (core/assetlibraries.h), never hand-written SQL.
 
 AssetsPreferencesPanel::AssetsPreferencesPanel(QWidget* parent)
-    : PreferencesPanel(QStringLiteral("Assets"), parent) {
+    : PreferencesPanel(tr("Assets"), parent) {
 
     addDescription(
-        "Asset folders are scanned for 3D models, poses, and other assets. Add the root "
-        "folder of each library you want to browse in the Asset Manager. Double-click a "
-        "folder to jump to it.");
+        tr("Asset folders are scanned for 3D models, poses, and other assets. Add the root ") +
+        tr("folder of each library you want to browse in the Asset Manager. Double-click a ") +
+        tr("folder to jump to it."));
 
     m_libraryList = new QListWidget(this);
     m_libraryList->setObjectName(QStringLiteral("AssetLibraryList"));
@@ -44,8 +44,8 @@ AssetsPreferencesPanel::AssetsPreferencesPanel(QWidget* parent)
     contentLayout()->addWidget(m_libraryList);
 
     auto* buttonRow = new QHBoxLayout();
-    auto* addButton = new QPushButton(QStringLiteral("Add Asset Folder..."), this);
-    auto* removeButton = new QPushButton(QStringLiteral("Remove Selected"), this);
+    auto* addButton = new QPushButton(tr("Add Asset Folder..."), this);
+    auto* removeButton = new QPushButton(tr("Remove Selected"), this);
     removeButton->setEnabled(false);
     buttonRow->addWidget(addButton);
     buttonRow->addWidget(removeButton);
@@ -89,7 +89,7 @@ void AssetsPreferencesPanel::promptAddLibrary() {
         Constants::PREF_LAST_ASSET_FOLDER_PARENT, QDir::homePath());
 
     const QString folderPath = QFileDialog::getExistingDirectory(
-        this, "Select Asset Library Folder", startDir);
+        this, tr("Select Asset Library Folder"), startDir);
     if (folderPath.isEmpty()) return;
 
     switch (AssetLibraries::add(folderPath)) {
@@ -98,9 +98,9 @@ void AssetsPreferencesPanel::promptAddLibrary() {
     case AssetLibraries::AddResult::AlreadyRegistered:
         // Tell the user instead of silently doing nothing — without feedback a re-add of an
         // existing folder looks like the add simply failed.
-        QMessageBox::information(this, QStringLiteral("Already Added"),
-                                 QStringLiteral("That folder is already registered as an asset "
-                                                "library:\n%1").arg(folderPath));
+        QMessageBox::information(this, tr("Already Added"),
+                                 tr("That folder is already registered as an asset ") +
+                                 tr("library:\n%1").arg(folderPath));
         return;
     case AssetLibraries::AddResult::Added:
         break;

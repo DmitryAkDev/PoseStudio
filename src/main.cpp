@@ -69,7 +69,7 @@ private:
 static QString windowTitleFor(const QString& path, bool dirty) {
     QString title = QStringLiteral("%1 %2").arg(Constants::APP_NAME, Constants::APP_VERSION);
 #ifndef NDEBUG
-    title += QStringLiteral(" [Debug build — slow imports]");
+    title += QObject::tr(" [Debug build — slow imports]");
 #endif
     if (path.isEmpty()) return title;
     const QString name = QFileInfo(path).fileName();
@@ -140,12 +140,12 @@ int main(int argc, char *argv[]) {
     sidePanel->setTabPosition(QTabWidget::West);
 
     AssetManagerWidget *assetsTab = new AssetManagerWidget();
-    sidePanel->addTab(assetsTab, QStringLiteral("Asset Manager"));
+    sidePanel->addTab(assetsTab, QObject::tr("Asset Manager"));
     // The Transform tab: the selected joint's rotation as three dials (see TransformPanel).
-    sidePanel->addTab(new pose::TransformPanel(viewport), QStringLiteral("Transform"));
+    sidePanel->addTab(new pose::TransformPanel(viewport), QObject::tr("Transform"));
     // The Environment tab: live image-based-lighting controls for the viewport (see EnvironmentPanel).
     pose::EnvironmentPanel *environmentTab = new pose::EnvironmentPanel(viewport);
-    sidePanel->addTab(environmentTab, QStringLiteral("Environment"));
+    sidePanel->addTab(environmentTab, QObject::tr("Environment"));
     // Developer lever: POSESTUDIO_TAB=<title> starts on that side tab (the scripted test's
     // `uishot` then pictures it — tools/ikscripts/README.md).
     if (const QString startTab = qEnvironmentVariable("POSESTUDIO_TAB"); !startTab.isEmpty()) {

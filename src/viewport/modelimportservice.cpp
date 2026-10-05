@@ -392,20 +392,20 @@ void ModelImportService::uploadModelData(VulkanRenderer& renderer, ModelData& da
     // Decode every unique texture once — shared across the meshes that sample it — with the
     // decodes running across cores (see decodeModelTextures). Qt layer, so the importers and
     // the renderer stay codec-free.
-    progress.phase(QStringLiteral("Decoding textures…"));
+    progress.phase(QObject::tr("Decoding textures…"));
     decodeModelTextures(data);
     const qint64 msDecode = progress.elapsedMs();
 
     // Bake per-vertex ambient occlusion (skipped internally for very large meshes; parallel
     // across cores) + UV tangents on the FINAL render mesh — post-morph, post-subdivision, all
     // zones together. See aobaker.h / tangentgen.h.
-    progress.phase(QStringLiteral("Baking ambient occlusion…"));
+    progress.phase(QObject::tr("Baking ambient occlusion…"));
     bakeVertexAO(data);
     computeTangents(data);
 
     // Show "Uploading…" below the max so the dialog stays up during the blocking GPU upload,
     // then jump to the max afterwards to auto-close it.
-    progress.phase(QStringLiteral("Uploading to GPU…"));
+    progress.phase(QObject::tr("Uploading to GPU…"));
     renderer.addModel(data);
     // Remember where this model came from — the .pss project file references its figures by this
     // path (the importer is the only place that knows it).
@@ -433,8 +433,8 @@ bool ModelImportService::importInto(VulkanRenderer& renderer, const QString& pat
         return false;
     }
 
-    ImportProgress progress(showProgress, QStringLiteral("Importing Model"),
-                            QStringLiteral("Reading model file…"));
+    ImportProgress progress(showProgress, QObject::tr("Importing Model"),
+                            QObject::tr("Reading model file…"));
     try {
         ModelData data = importer->load(path.toStdString()); // geometry + resolved texture sources
         progress.parsed();
