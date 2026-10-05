@@ -23,11 +23,11 @@ GeneralPreferencesPanel::GeneralPreferencesPanel(QWidget* parent)
     contentLayout()->addWidget(pingToggle);
 
     addDescription(
-        tr("Each time it starts, PoseStudio lets posestudio.io know that this installation exists, so we can ") +
-        tr("see how many people use it and which versions are out there. The ping carries a random ") +
-        tr("install ID, the app version, your operating system and CPU type, whether the app was ") +
-        tr("installed or is running portable, the Qt library version, and the time of the ping — ") +
-        tr("nothing else: no names, no files, no usage data, and the ID isn't linked to you in any way."));
+        tr("Each time it starts, PoseStudio lets posestudio.io know that this installation exists, so we can "
+           "see how many people use it and which versions are out there. The ping carries a random "
+           "install ID, the app version, your operating system and CPU type, whether the app was "
+           "installed or is running portable, the Qt library version, and the time of the ping — "
+           "nothing else: no names, no files, no usage data, and the ID isn't linked to you in any way."));
     // Shown, never minted here: opening Preferences must not create and persist an identifier
     // (in a keyless build, or with the toggle off, one may legitimately never exist).
     const QString id = InstallPing::existingInstallId();
@@ -50,9 +50,9 @@ GeneralPreferencesPanel::GeneralPreferencesPanel(QWidget* parent)
     updateToggle->setChecked(UpdateCheck::isEnabled());
     contentLayout()->addWidget(updateToggle);
     addDescription(
-        tr("A few seconds after it starts, PoseStudio asks GitHub for the latest release and, when a newer ") +
-        tr("one exists, shows a message with a link to its download page. Nothing but the request itself ") +
-        tr("is sent. Help → Check for Updates… does the same on demand."));
+        tr("A few seconds after it starts, PoseStudio asks GitHub for the latest release and, when a newer "
+           "one exists, shows a message with a link to its download page. Nothing but the request itself "
+           "is sent. Help → Check for Updates… does the same on demand."));
     connect(updateToggle, &QCheckBox::toggled, this, [](bool enabled) {
         UpdateCheck::setEnabled(enabled);
     });

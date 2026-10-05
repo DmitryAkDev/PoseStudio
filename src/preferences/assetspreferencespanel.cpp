@@ -34,9 +34,9 @@ AssetsPreferencesPanel::AssetsPreferencesPanel(QWidget* parent)
     : PreferencesPanel(tr("Assets"), parent) {
 
     addDescription(
-        tr("Asset folders are scanned for 3D models, poses, and other assets. Add the root ") +
-        tr("folder of each library you want to browse in the Asset Manager. Double-click a ") +
-        tr("folder to jump to it."));
+        tr("Asset folders are scanned for 3D models, poses, and other assets. Add the root "
+           "folder of each library you want to browse in the Asset Manager. Double-click a "
+           "folder to jump to it."));
 
     m_libraryList = new QListWidget(this);
     m_libraryList->setObjectName(QStringLiteral("AssetLibraryList"));
@@ -99,8 +99,8 @@ void AssetsPreferencesPanel::promptAddLibrary() {
         // Tell the user instead of silently doing nothing — without feedback a re-add of an
         // existing folder looks like the add simply failed.
         QMessageBox::information(this, tr("Already Added"),
-                                 tr("That folder is already registered as an asset ") +
-                                 tr("library:\n%1").arg(folderPath));
+                                 tr("That folder is already registered as an asset "
+                                    "library:\n%1").arg(folderPath));
         return;
     case AssetLibraries::AddResult::Added:
         break;

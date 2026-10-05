@@ -1,6 +1,6 @@
 # Shading and Display
 
-The **shading picker** in the viewport strip chooses how the scene is drawn. Switching is instant and never affects the pose or the lighting settings — it only changes what you see. The picker's eighteen modes fall into four groups.
+The **shading picker** in the viewport strip (its tooltip reads *Viewport shading mode*) chooses how the scene is drawn. Switching is instant and never affects the pose or the lighting settings — it only changes what you see. The picker's eighteen modes fall into four groups.
 
 ## Lit shading of the real materials
 

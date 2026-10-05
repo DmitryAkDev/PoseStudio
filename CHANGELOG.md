@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+* **Interface text is ready for translation.** Every menu, dialog, tooltip and message in the app is now marked as translatable, so other languages can be added later without reworking the code. Nothing changes on screen: PoseStudio is English-only for now. (#33 — thanks @DmitryAkDev)
+
 ## [0.3.16] - 2026-09-30
 
 Project files and joint-by-joint posing. The whole scene — every figure with its pose, the

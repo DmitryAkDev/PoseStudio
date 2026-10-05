@@ -24,6 +24,15 @@ HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
 LINK = re.compile(r"(!?)\[([^\]]*)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 FENCE = re.compile(r"^\s*(```|~~~)")
 
+# A UI label as the sources write it: a string literal, bare or inside tr() / QObject::tr() /
+# QStringLiteral(), after an optional icon argument (a name or one call). The literal may carry
+# escapes ("Delete Selected Object\tDel").
+_ICON_ARG = r'(?:[^,()"]*(?:\([^()]*\))?\s*,\s*)?'
+_WRAP = r'(?:(?:QObject::)?tr|QStringLiteral)\('
+_LITERAL = r'"((?:[^"\\]|\\.)+)"'
+MENU_LABEL = re.compile(r'add(?:Action|Menu)\(' + _ICON_ARG + '(?:' + _WRAP + ')?' + _LITERAL)
+TOOLTIP_LABEL = re.compile(r'setToolTip\(' + _WRAP + _LITERAL + r'\)\)')
+
 
 def slug_for(text):
     """HelpManual::slugFor: lower case; letters, digits, '_' and '-' kept; spaces -> '-'; the rest dropped."""
@@ -146,12 +155,9 @@ def main():
                 code = f.read()
         except OSError:
             continue
-        for m in re.finditer(r'addAction\((?:[^,()]*,\s*)?"([^"\\]+)"', code):
-            labels.add(m.group(1))
-        for m in re.finditer(r'addMenu\((?:[^,()]*,\s*)?"([^"\\]+)"', code):
-            labels.add(m.group(1))
-        for m in re.finditer(r'setToolTip\(QStringLiteral\("([^"\\]+)"\)\)', code):
-            labels.add(m.group(1))
+        for pattern in (MENU_LABEL, TOOLTIP_LABEL):
+            for m in pattern.finditer(code):
+                labels.add(m.group(1).replace("\\t", "\t").replace('\\"', '"'))
     for label in sorted(labels):
         plain = label.split("\t")[0].rstrip(".").replace("...", "").strip().lower()
         plain = plain.replace("&&", "&")
