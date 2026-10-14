@@ -12,8 +12,9 @@ Parses the .ts with xml.etree, asks the LLM (one short request per
 message) for every <message> whose translation is empty, and writes the answer
 back into its <translation>, dropping the "unfinished" marker (lrelease skips
 anything still marked). Filled entries are
-never touched, so a rerun makes no LLM calls at all.
-
+never touched, so a rerun makes no LLM calls at all. Entries marked
+type="vanished" (lupdate dropped their source from the code) are ignored
+outright — lupdate owns their lifecycle.
 Usage:
     translate.py <catalog.ts> [system_prompt.md] [--model NAME]
                     [--dry-run] [--limit N]
@@ -62,9 +63,16 @@ def translation_text(message) -> str:
 
 
 def is_filled(message) -> bool:
-    """True when the entry must be skipped: no source, or text already there."""
+    """True when the entry must be skipped: vanished, no source, or text
+    already there."""
     source = (message.findtext("source") or "").strip()
-    return not source or translation_text(message).strip() != ""
+    return is_vanished(message) or not source or translation_text(message).strip() != ""
+
+def is_vanished(message) -> bool:
+    """True when lupdate marked the entry obsolete: its source no longer
+    exists in the code. Such entries are never translated or normalized."""
+    el = message.find("translation")
+    return el is not None and el.get("type") == "vanished"
 
 
 def placeholders(text: str) -> set:
@@ -314,9 +322,12 @@ def main() -> int:
     tree = ET.parse(args.catalog)
     root = tree.getroot()
     # Normalize legacy entries: a filled translation must not carry a
-    # type attribute — lrelease skips anything marked unfinished.
+    # "unfinished" attribute — lrelease skips anything still marked.
+    # Vanished entries are left alone: lupdate owns their lifecycle.
     for message in root.iter("message"):
         el = message.find("translation")
+        if is_vanished(message):
+            continue
         if el is not None and (el.text or "").strip() and "type" in el.attrib:
             del el.attrib["type"]
 
@@ -380,7 +391,7 @@ def main() -> int:
     known: dict[str, str] = {}
     for context in root.iter("context"):
         for message in context.findall("message"):
-            if is_filled(message):
+            if is_filled(message) and not is_vanished(message):
                 src = message.findtext("source") or ""
                 known.setdefault(src, translation_text(message))
     for i, item in enumerate(pending, start=1):
