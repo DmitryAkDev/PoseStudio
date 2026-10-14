@@ -104,40 +104,39 @@ constexpr ViewEntry kViewEntries[] = {
 constexpr int kViewEntryCount = static_cast<int>(sizeof(kViewEntries) / sizeof(kViewEntries[0]));
 
 // Both picker tables (the shade modes in scene/shademode.h and the view entries above) are
-    // looked up at display time via QCoreApplication::translate("ViewportStrip", ...), so no
-    // source literal marks their names for the extraction tools. These no-ops keep every name
-    // present in a generated .ts catalog - without them an lupdate run would report the 25
-    // names as vanished and lrelease would drop their translations.
-    #define PSS_VIEWPORT_NOOP(name) QT_TRANSLATE_NOOP("ViewportStrip", name)
-    static const char* const kPickerNoops[] = {
-        // Shade-mode picker names (scene/shademode.h's kShadeModes, 18 entries):
-        PSS_VIEWPORT_NOOP("PBR Shaded"),
-        PSS_VIEWPORT_NOOP("Texture Shaded"),
-        PSS_VIEWPORT_NOOP("Flat Texture Shaded"),
-        PSS_VIEWPORT_NOOP("Cartoon Shaded"),
-        PSS_VIEWPORT_NOOP("Matcap"),
-        PSS_VIEWPORT_NOOP("Clay Shaded"),
-        PSS_VIEWPORT_NOOP("Lighting Only"),
-        PSS_VIEWPORT_NOOP("Silhouette"),
-        PSS_VIEWPORT_NOOP("Wireframe"),
-        PSS_VIEWPORT_NOOP("Hidden Line Wireframe"),
-        PSS_VIEWPORT_NOOP("Clay Shaded Wireframe"),
-        PSS_VIEWPORT_NOOP("Texture Shaded Wireframe"),
-        PSS_VIEWPORT_NOOP("Albedo"),
-        PSS_VIEWPORT_NOOP("Ambient Occlusion"),
-        PSS_VIEWPORT_NOOP("Roughness Map"),
-        PSS_VIEWPORT_NOOP("Specular Only"),
-        PSS_VIEWPORT_NOOP("Normals"),
-        PSS_VIEWPORT_NOOP("UV Checker"),
-        // View-picker names (kViewEntries above, 7 entries):
-        PSS_VIEWPORT_NOOP("Home View"),
-        PSS_VIEWPORT_NOOP("Top View"),
-        PSS_VIEWPORT_NOOP("Bottom View"),
-        PSS_VIEWPORT_NOOP("Front View"),
-        PSS_VIEWPORT_NOOP("Back View"),
-        PSS_VIEWPORT_NOOP("Left View"),
-        PSS_VIEWPORT_NOOP("Right View"),
-    };
+// looked up at display time via QCoreApplication::translate("ViewportStrip", ...), so no
+// source literal marks their names for the extraction tools. These no-ops keep every name
+// present in a generated .ts catalog - without them an lupdate run would report the 25
+// names as vanished and lrelease would drop their translations.
+static const char* const kPickerNoops[] = {
+    // Shade-mode picker names (scene/shademode.h's kShadeModes, 18 entries):
+    QT_TRANSLATE_NOOP("ViewportStrip", "PBR Shaded"),
+    QT_TRANSLATE_NOOP("ViewportStrip", "Texture Shaded"),
+    QT_TRANSLATE_NOOP("ViewportStrip", "Flat Texture Shaded"),
+    QT_TRANSLATE_NOOP("ViewportStrip", "Cartoon Shaded"),
+    QT_TRANSLATE_NOOP("ViewportStrip", "Matcap"),
+    QT_TRANSLATE_NOOP("ViewportStrip", "Clay Shaded"),
+    QT_TRANSLATE_NOOP("ViewportStrip", "Lighting Only"),
+    QT_TRANSLATE_NOOP("ViewportStrip", "Silhouette"),
+    QT_TRANSLATE_NOOP("ViewportStrip", "Wireframe"),
+    QT_TRANSLATE_NOOP("ViewportStrip", "Hidden Line Wireframe"),
+    QT_TRANSLATE_NOOP("ViewportStrip", "Clay Shaded Wireframe"),
+    QT_TRANSLATE_NOOP("ViewportStrip", "Texture Shaded Wireframe"),
+    QT_TRANSLATE_NOOP("ViewportStrip", "Albedo"),
+    QT_TRANSLATE_NOOP("ViewportStrip", "Ambient Occlusion"),
+    QT_TRANSLATE_NOOP("ViewportStrip", "Roughness Map"),
+    QT_TRANSLATE_NOOP("ViewportStrip", "Specular Only"),
+    QT_TRANSLATE_NOOP("ViewportStrip", "Normals"),
+    QT_TRANSLATE_NOOP("ViewportStrip", "UV Checker"),
+    // View-picker names (kViewEntries above, 7 entries):
+    QT_TRANSLATE_NOOP("ViewportStrip", "Home View"),
+    QT_TRANSLATE_NOOP("ViewportStrip", "Top View"),
+    QT_TRANSLATE_NOOP("ViewportStrip", "Bottom View"),
+    QT_TRANSLATE_NOOP("ViewportStrip", "Front View"),
+    QT_TRANSLATE_NOOP("ViewportStrip", "Back View"),
+    QT_TRANSLATE_NOOP("ViewportStrip", "Left View"),
+    QT_TRANSLATE_NOOP("ViewportStrip", "Right View"),
+};
 
 } // namespace
 
