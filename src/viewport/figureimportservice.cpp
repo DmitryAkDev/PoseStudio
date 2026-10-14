@@ -245,10 +245,10 @@ QString promptLocateContentFolder(const QString& path) {
     box.setText(QObject::tr("PoseStudio couldn't find the geometry and morph data for:\n%1")
                     .arg(QFileInfo(path).fileName()));
     box.setInformativeText(
-        QObject::tr("The folder you imported from contains the figure's presets but not its \"data\" folder ") +
-        QObject::tr("(where the mesh, skeleton, morphs and skin weights live).\n\n") +
-        QObject::tr("Point PoseStudio at the figure's content folder — the folder that directly contains the ") +
-        QObject::tr("\"data\" folder — and it will be remembered for future imports."));
+        QObject::tr("The folder you imported from contains the figure's presets but not its \"data\" folder "
+                    "(where the mesh, skeleton, morphs and skin weights live).\n\n"
+                    "Point PoseStudio at the figure's content folder — the folder that directly contains the "
+                    "\"data\" folder — and it will be remembered for future imports."));
     QPushButton* locateBtn =
         box.addButton(QObject::tr("Locate Content Folder…"), QMessageBox::AcceptRole);
     box.addButton(QMessageBox::Cancel);
@@ -269,9 +269,9 @@ QString promptLocateContentFolder(const QString& path) {
         // Not fatal — accept it anyway, but warn so a still-failing retry isn't a mystery.
         QMessageBox::information(
             QApplication::activeWindow(), QObject::tr("No \"data\" Folder"),
-            QObject::tr("The selected folder doesn't directly contain a \"data\" folder, so the ") +
-            QObject::tr("figure's geometry may still not be found. It has been added anyway — ") +
-            QObject::tr("pick the folder that directly contains \"data\" if the import fails."));
+            QObject::tr("The selected folder doesn't directly contain a \"data\" folder, so the "
+                        "figure's geometry may still not be found. It has been added anyway — "
+                        "pick the folder that directly contains \"data\" if the import fails."));
     }
     return dir;
 }
@@ -281,14 +281,14 @@ void showImportFailureMessage(const QString& path, const QString& detail, bool n
                               bool missingContent) {
     QString body;
     if (notAFigure) {
-        body = (QObject::tr("Could not import a character figure from:\n%1\n\nThis file may be a ") +
-               QObject::tr("pose, material, or other preset rather than a figure.\n\nDetails: %2"))
+        body = QObject::tr("Could not import a character figure from:\n%1\n\nThis file may be a "
+                           "pose, material, or other preset rather than a figure.\n\nDetails: %2")
             .arg(QFileInfo(path).fileName(), detail);
     } else if (missingContent) {
-        body = (QObject::tr("Could not import a character figure from:\n%1\n\nThe figure's geometry ") +
-               QObject::tr("and morph data (its \"data\" folder) couldn't be found. Import again ") +
-               QObject::tr("and choose \"Locate Content Folder…\" to point PoseStudio at the folder ") +
-               QObject::tr("that contains \"data\".\n\nDetails: %2"))
+        body = QObject::tr("Could not import a character figure from:\n%1\n\nThe figure's geometry "
+                           "and morph data (its \"data\" folder) couldn't be found. Import again "
+                           "and choose \"Locate Content Folder…\" to point PoseStudio at the folder "
+                           "that contains \"data\".\n\nDetails: %2")
             .arg(QFileInfo(path).fileName(), detail);
     } else {
         body = QObject::tr("Could not import a character figure from:\n%1\n\nDetails: %2")

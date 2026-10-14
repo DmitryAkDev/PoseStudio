@@ -16,8 +16,8 @@ FactoryResetPreferencesPanel::FactoryResetPreferencesPanel(QWidget* parent)
     : PreferencesPanel(tr("Factory Reset"), parent) {
 
     addDescription(
-        tr("Permanently deletes all your asset libraries, collections, and preferences. ") +
-        tr("This cannot be undone. PoseStudio will restart automatically once the reset is complete."));
+        tr("Permanently deletes all your asset libraries, collections, and preferences. "
+           "This cannot be undone. PoseStudio will restart automatically once the reset is complete."));
 
     addDescription(tr("To confirm, type RESET into the box below, then click \"Factory Reset\"."));
 
