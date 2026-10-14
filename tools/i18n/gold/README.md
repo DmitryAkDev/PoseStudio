@@ -9,6 +9,7 @@ is a regression: it appears as an M1 hit in the review report, not a silent chan
 | File | Purpose |
 |---|---|
 | `ru.gold.tsv` | Russian gold set, four TAB-separated columns: `id`, `source`, `expected_ru`, `category` |
+| `manual_ru.gold.tsv` | Russian manual gold set (terminology hits, not prose), same four columns; ids `GS-M-NNN` |
 
 ## Format
 
@@ -30,6 +31,15 @@ from the catalog and rows whose translation differs from `expected_ru`, and exit
 edits: fixing a hit means fixing the prompt or the table, re-running, and only
 then touching the catalog.
 
+## Manual gold set
+
+`manual_ru.gold.tsv` guards the user-manual tree (`docs/i18n/ru/manual/`) instead of a .ts catalog: a row pins an EN term (or form) and the RU form the translation must use. It is checked by `tools/i18n/manual/audit_manual.py`, which searches the RU tree for the expected form (after the same normalization as the catalog check) — a missing form is a hit, reported with the id and the expected vs actual text.
+
+Growth rules:
+
+1. Terminology hits only, never prose: a row pins a term or a fixed form where the model erred or a decision was made explicitly (as in the UI set). Exact prose lines are not pinned — they go stale with every EN edit.
+2. New review hit → new row with the next free `GS-M-NNN` id; existing rows are never edited, and a changed decision edits its own row (same id) with the date recorded in the terminology table.
+3. Delete a row only when its EN term no longer occurs anywhere in the English manual.
 ## Extending the set
 
 1. New review hit → new row with the next free id; existing rows are never edited.

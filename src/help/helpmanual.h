@@ -1,7 +1,8 @@
 /**
  * @file helpmanual.h
  * @brief The user manual's CONTENT model: the table of contents (docs/manual/manual.json), the
- *        Markdown pages embedded under qrc:/manual/, and the styling that turns a page into a
+ *        Markdown pages embedded under qrc:/manual/ (or the UI language's tree under
+ *        qrc:/i18n/<lang>/manual/, picked by load() from the UI language), and the styling that turns a page into a
  *        QTextDocument the HelpWindow shows.
  *
  * The manual is written as plain Markdown in docs/manual/ (readable on GitHub as it is) and
@@ -47,7 +48,8 @@ struct ManualHeading {
  */
 class HelpManual {
 public:
-    /// Reads qrc:/manual/manual.json. False (with a message in errorText()) when the manifest is
+    /// Reads the manifest of the manual tree for the UI language (the English one when the
+    /// language has no embedded tree). False (with a message in errorText()) when the manifest is
     /// missing or malformed — the window then shows the message instead of a table of contents.
     bool load();
     const QString& errorText() const { return m_error; }
@@ -85,6 +87,7 @@ private:
     std::vector<ManualPage>  m_pages;
     QString                  m_error;
     QHash<QString, QString>  m_markdownCache;
+    QString                  m_root; // qrc:/manual/ or qrc:/i18n/<lang>/manual/, resolved in load()
 };
 
 #endif // HELP_MANUAL_H

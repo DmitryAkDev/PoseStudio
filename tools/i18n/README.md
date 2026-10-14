@@ -72,6 +72,53 @@ Useful one-offs: `translate.py <catalog> --dry-run` lists what would be translat
 (no LLM calls); `--limit N` translates at most N entries; `dump.py <catalog> --empty`
 is a progress check, `--context NAME` a slice.
 
+## Documentation trees (the user manual)
+
+The English user manual (`docs/manual/`, `manual.json` + Markdown pages) is the
+source of truth. Each language gets a parallel tree under `docs/i18n/<lang>/manual/`
+with the same file names, translated titles in its own `manual.json`, and a static
+`changelog.md` stub that points at the English release notes (they stay English).
+The trees are embedded as Qt resources (`qrc:/i18n/<lang>/manual/`) and loaded by
+`HelpManual` when the UI language matches.
+
+```sh
+# 1. What would be translated? (missing or stale pages, zero LLM calls)
+python3 tools/i18n/manual/translate_manual.py <lang> --dry-run
+
+# 2. Translate (three passes per page: headings -> body with markdown guards ->
+#    deterministic anchor rewrite; the audit runs as a post-gate and its exit code
+#    is the run's)
+python3 tools/i18n/manual/translate_manual.py <lang>
+
+# 3. Audit alone, any time (exit code = number of errors, 0 = consistent)
+python3 tools/i18n/manual/audit_manual.py --lang <lang>
+```
+
+- **Idempotent via `.source_hashes`.** The tree keeps a sidecar mapping each file to
+  the SHA-256 of its normalized English source; only missing or stale pages are
+  retranslated, and the hashes are persisted after every page, so a stopped run keeps
+  its progress. A rerun with unchanged English sources makes zero LLM calls.
+- **The guards.** Every translated body is checked against the English original before
+  it is written: link target files, code fence blocks, inline code spans and heading
+  count/levels must match one for one, and each `##` heading must be exactly its
+  pass-1 translation. A failure goes back to the model with the reason (two retries);
+  when they are exhausted the page is left untranslated, its hash is not updated, and
+  the run stops.
+- **Anchors.** Pass 3 rewrites `file.md#en-anchor` links deterministically from the
+  heading maps of the whole tree (already-translated pages read from disk, this run's
+  pages from pass 1); an anchor that cannot be resolved is left as-is and reported by
+  the audit.
+- **Drift procedure.** When an English page changes, `--dry-run` lists it as stale;
+  run the pipeline and only that page is retranslated. A structural change (headings,
+  links) that the guards cannot absorb needs a human look at the page afterwards.
+- **Prompts.** `locales/<lang>/headings.md` (one heading per call, short TOC-style
+  lines) and `locales/<lang>/manual.md` (the whole-page markdown contract: what is
+  verbatim, what is translated). The terminology table in `locales/<lang>/translator.md`
+  applies to both.
+- **Gold.** Terminology hits confirmed during the review of a tree go into
+  `gold/manual_<lang>.gold.tsv` (`GS-M-NNN` ids) and are checked by the audit; see
+  `gold/README.md`.
+
 ## How the script behaves
 
 - **Idempotent.** An entry is skipped when its translation is non-empty; a rerun makes zero LLM calls.
