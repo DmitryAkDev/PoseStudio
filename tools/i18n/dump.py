@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Dump a .ts catalog for manual review.
 
-Prints every message as a source -> translation pair with control characters
-made visible, so a human can read through the whole translation in one file:
+Prints every active message as a source -> translation pair with control
+characters made visible, so a human can read through the whole translation in one file:
 
     [MenuManager] Delete Selected Object\tDel
         -> Удалить выбранный объект\tDel
@@ -17,8 +17,9 @@ Usage:
 
 The dump always ends with a consistency audit: source strings that occur
 more than once but were translated differently are listed (the same UI
-string must read the same everywhere)."""
-
+string must read the same everywhere). Entries marked type="vanished"
+(lupdate dropped their source from the code) are not in the audit and are
+listed separately at the end, under a VANISHED header."""
 import argparse
 import sys
 import xml.etree.ElementTree as ET
@@ -33,8 +34,10 @@ def find_divergent(root) -> dict:
     """Source strings with more than one distinct filled translation."""
     seen = {}
     for m in root.iter("message"):
-        src = m.findtext("source") or ""
         t = m.find("translation")
+        if t is not None and t.get("type") == "vanished":
+            continue
+        src = m.findtext("source") or ""
         tr = (t.text or "").strip() if t is not None else ""
         if not tr:
             continue
@@ -70,7 +73,8 @@ def main() -> None:
         print("consistency: OK (every source has a single translation)")
         return
     lines = []
-    total = shown = empty = 0
+    total = shown = empty = vanished = 0
+    vanished_lines = []
     for ctx in root.iter("context"):
         name = ctx.findtext("name") or ""
         if args.context and args.context not in name:
@@ -79,6 +83,14 @@ def main() -> None:
             src = m.findtext("source") or ""
             t = m.find("translation")
             tr = t.text if t is not None else ""
+            if t is not None and t.get("type") == "vanished":
+                # lupdate dropped this source from the code: keep it out of
+                # the review list, note it in the footer.
+                vanished += 1
+                if not args.empty:
+                    vanished_lines.append(f"[{name}] {visible(src)}")
+                    vanished_lines.append(f"    -> {visible(tr)}")
+                continue
             total += 1
             is_empty = not (tr or "").strip()
             if is_empty:
@@ -95,7 +107,12 @@ def main() -> None:
             lines.append(f"  {visible(src)!r}")
             for tr in sorted(divergent[src]):
                 lines.append(f"      {visible(tr)}")
-    footer = [f"{shown} of {total} messages shown, {empty} empty"]
+    if vanished_lines:
+        lines.append("")
+        lines.append(f"VANISHED: {vanished} entries (source removed from the code —"
+                       " not compiled, not for translation):")
+        lines.extend(vanished_lines)
+    footer = [f"{shown} of {total} messages shown, {empty} empty, {vanished} vanished"]
     text = "\n".join(lines + ["", *footer])
     if args.out:
         args.out.write_text(text + "\n", encoding="utf-8")

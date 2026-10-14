@@ -215,21 +215,9 @@
         <translation>Ассеты</translation>
     </message>
     <message>
-        <source>Asset folders are scanned for 3D models, poses, and other assets. Add the root </source>
-        <translation type="vanished">Папки ассетов сканируются на наличие 3D-моделей, поз и других ассетов. Добавьте корневую </translation>
-    </message>
-    <message>
-        <source>folder of each library you want to browse in the Asset Manager. Double-click a </source>
-        <translation type="vanished">папка каждой библиотеки, которую вы хотите просматривать в Asset Manager. Дважды щелкните по </translation>
-    </message>
-    <message>
-        <source>folder to jump to it.</source>
-        <translation type="vanished">папка, чтобы перейти к ней.</translation>
-    </message>
-    <message>
         <location filename="../src/preferences/assetspreferencespanel.cpp" line="37"/>
         <source>Asset folders are scanned for 3D models, poses, and other assets. Add the root folder of each library you want to browse in the Asset Manager. Double-click a folder to jump to it.</source>
-        <translation type="unfinished"></translation>
+        <translation>Папки ассетов сканируются на наличие 3D-моделей, поз и других ассетов. Добавьте корневую папку каждой библиотеки, которую хотите просматривать в Менеджере ассетов. Дважды щелкните по папке, чтобы перейти к ней.</translation>
     </message>
     <message>
         <location filename="../src/preferences/assetspreferencespanel.cpp" line="47"/>
@@ -255,16 +243,7 @@
         <location filename="../src/preferences/assetspreferencespanel.cpp" line="102"/>
         <source>That folder is already registered as an asset library:
 %1</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <source>That folder is already registered as an asset </source>
-        <translation type="vanished">Эта папка уже зарегистрирована как ассет </translation>
-    </message>
-    <message>
-        <source>library:
-%1</source>
-        <translation type="vanished">библиотека:
+        <translation>Эта папка уже зарегистрирована как библиотека ассетов:
 %1</translation>
     </message>
 </context>
@@ -277,17 +256,9 @@
         <translation>Сброс до заводских настроек</translation>
     </message>
     <message>
-        <source>Permanently deletes all your asset libraries, collections, and preferences. </source>
-        <translation type="vanished">Навсегда удалить все библиотеки ассетов, коллекции и настройки. </translation>
-    </message>
-    <message>
-        <source>This cannot be undone. PoseStudio will restart automatically once the reset is complete.</source>
-        <translation type="vanished">Это действие нельзя отменить. PoseStudio автоматически перезапустится после завершения сброса.</translation>
-    </message>
-    <message>
         <location filename="../src/preferences/factoryresetpreferencespanel.cpp" line="19"/>
         <source>Permanently deletes all your asset libraries, collections, and preferences. This cannot be undone. PoseStudio will restart automatically once the reset is complete.</source>
-        <translation type="unfinished"></translation>
+        <translation>Навсегда удаляет все библиотеки ассетов, коллекции и настройки. Это действие нельзя отменить. После завершения сброса PoseStudio перезапустится автоматически.</translation>
     </message>
     <message>
         <location filename="../src/preferences/factoryresetpreferencespanel.cpp" line="22"/>
@@ -325,32 +296,12 @@
     <message>
         <location filename="../src/preferences/generalpreferencespanel.cpp" line="53"/>
         <source>Each time it starts, PoseStudio lets posestudio.io know that this installation exists, so we can see how many people use it and which versions are out there. The ping carries a random install ID, the app version, your operating system and CPU type, whether the app was installed or is running portable, the Qt library version, and the time of the ping — nothing else: no names, no files, no usage data, and the ID isn&apos;t linked to you in any way.</source>
-        <translation type="unfinished"></translation>
+        <translation>При каждом запуске PoseStudio отправляет на posestudio.io данные об установке, чтобы мы могли отслеживать количество пользователей и актуальные версии. Пинг содержит случайный ID установки, версию приложения, вашу операционную систему и тип процессора, способ установки (стандартный или portable), версию библиотеки Qt и время отправки — и ничего больше: без имен, файлов и данных об использовании, а сам ID никак не привязан к вам.</translation>
     </message>
     <message>
         <location filename="../src/preferences/generalpreferencespanel.cpp" line="80"/>
         <source>A few seconds after it starts, PoseStudio asks GitHub for the latest release and, when a newer one exists, shows a message with a link to its download page. Nothing but the request itself is sent. Help → Check for Updates… does the same on demand.</source>
-        <translation type="unfinished"></translation>
-    </message>
-    <message>
-        <source>Each time it starts, PoseStudio lets posestudio.io know that this installation exists, so we can </source>
-        <translation type="vanished">При каждом запуске PoseStudio сообщает posestudio.io о наличии этой установки, чтобы мы могли </translation>
-    </message>
-    <message>
-        <source>see how many people use it and which versions are out there. The ping carries a random </source>
-        <translation type="vanished">посмотрите, сколько людей используют её и какие версии доступны. Пинг несет случайный </translation>
-    </message>
-    <message>
-        <source>install ID, the app version, your operating system and CPU type, whether the app was </source>
-        <translation type="vanished">ID установки, версию приложения, вашу операционную систему, тип процессора и то, была ли приложение </translation>
-    </message>
-    <message>
-        <source>installed or is running portable, the Qt library version, and the time of the ping — </source>
-        <translation type="vanished">установлена или запущена в portable-режиме, версия библиотеки Qt и время пинга — </translation>
-    </message>
-    <message>
-        <source>nothing else: no names, no files, no usage data, and the ID isn&apos;t linked to you in any way.</source>
-        <translation type="vanished">ничего лишнего: без имен, файлов и данных об использовании, а ID никак с вами не связан.</translation>
+        <translation>Спустя несколько секунд после запуска PoseStudio запрашивает у GitHub последний выпуск и, если доступен более новый, показывает сообщение со ссылкой на страницу загрузки. Отправляется только сам запрос. Помощь → Проверить обновления… делает то же самое по запросу.</translation>
     </message>
     <message>
         <location filename="../src/preferences/generalpreferencespanel.cpp" line="62"/>
@@ -373,18 +324,6 @@
         <translation>Проверять обновления при запуске</translation>
     </message>
     <message>
-        <source>A few seconds after it starts, PoseStudio asks GitHub for the latest release and, when a newer </source>
-        <translation type="vanished">Спустя несколько секунд после запуска PoseStudio спрашивает у GitHub, есть ли новая версия, и если она есть, </translation>
-    </message>
-    <message>
-        <source>one exists, shows a message with a link to its download page. Nothing but the request itself </source>
-        <translation type="vanished">показывает сообщение со ссылкой на страницу загрузки. Отправляется только </translation>
-    </message>
-    <message>
-        <source>is sent. Help → Check for Updates… does the same on demand.</source>
-        <translation type="vanished">сам запрос. Помощь → Проверить обновления… делает то же самое по требованию.</translation>
-    </message>
-    <message>
         <location filename="../src/preferences/generalpreferencespanel.cpp" line="90"/>
         <source>Count camera changes as unsaved</source>
         <translation>Считать смену камеры изменением сцены</translation>
@@ -398,37 +337,37 @@
 <context>
     <name>HelpWindow</name>
     <message>
-        <location filename="../src/help/helpwindow.cpp" line="55"/>
+        <location filename="../src/help/helpwindow.cpp" line="57"/>
         <source>%1 User Manual</source>
         <translation>Руководство пользователя %1</translation>
     </message>
     <message>
-        <location filename="../src/help/helpwindow.cpp" line="71"/>
+        <location filename="../src/help/helpwindow.cpp" line="73"/>
         <source>‹ Back</source>
         <translation>‹ Назад</translation>
     </message>
     <message>
-        <location filename="../src/help/helpwindow.cpp" line="72"/>
+        <location filename="../src/help/helpwindow.cpp" line="74"/>
         <source>Back to the previous page (Alt+Left)</source>
         <translation>Вернуться на предыдущую страницу (Alt+Left)</translation>
     </message>
     <message>
-        <location filename="../src/help/helpwindow.cpp" line="76"/>
+        <location filename="../src/help/helpwindow.cpp" line="78"/>
         <source>Forward ›</source>
         <translation>Вперед ›</translation>
     </message>
     <message>
-        <location filename="../src/help/helpwindow.cpp" line="77"/>
+        <location filename="../src/help/helpwindow.cpp" line="79"/>
         <source>Forward again (Alt+Right)</source>
         <translation>Вперед (Alt+Right)</translation>
     </message>
     <message>
-        <location filename="../src/help/helpwindow.cpp" line="85"/>
+        <location filename="../src/help/helpwindow.cpp" line="87"/>
         <source>Search the manual  (Ctrl+F)</source>
         <translation>Поиск в руководстве (Ctrl+F)</translation>
     </message>
     <message>
-        <location filename="../src/help/helpwindow.cpp" line="149"/>
+        <location filename="../src/help/helpwindow.cpp" line="151"/>
         <source># User Manual
 
 %1</source>
@@ -981,26 +920,6 @@
 %1</translation>
     </message>
     <message>
-        <source>The folder you imported from contains the figure&apos;s presets but not its &quot;data&quot; folder </source>
-        <translation type="vanished">Импортированная папка содержит пресеты фигуры, но не содержит папку «data» </translation>
-    </message>
-    <message>
-        <source>(where the mesh, skeleton, morphs and skin weights live).
-
-</source>
-        <translation type="vanished">(здесь хранятся меш, скелет, морфы и веса скина).
-
-</translation>
-    </message>
-    <message>
-        <source>Point PoseStudio at the figure&apos;s content folder — the folder that directly contains the </source>
-        <translation type="vanished">Укажите путь к папке с контентом PoseStudio — папке, в которой непосредственно находится </translation>
-    </message>
-    <message>
-        <source>&quot;data&quot; folder — and it will be remembered for future imports.</source>
-        <translation type="vanished">папка «data» — и она будет использоваться для будущих импортов.</translation>
-    </message>
-    <message>
         <location filename="../src/viewport/figureimportservice.cpp" line="253"/>
         <source>Locate Content Folder…</source>
         <translation>Найти папку контента…</translation>
@@ -1016,72 +935,18 @@
         <translation>Папка \&quot;data\&quot; не найдена</translation>
     </message>
     <message>
-        <source>The selected folder doesn&apos;t directly contain a &quot;data&quot; folder, so the </source>
-        <translation type="vanished">Выбранная папка не содержит папку «data» напрямую, поэтому </translation>
-    </message>
-    <message>
-        <source>figure&apos;s geometry may still not be found. It has been added anyway — </source>
-        <translation type="vanished">Геометрия фигуры не найдена. Тем не менее, она добавлена — </translation>
-    </message>
-    <message>
-        <source>pick the folder that directly contains &quot;data&quot; if the import fails.</source>
-        <translation type="vanished">Если импорт не удался, выберите папку, в которой находится папка «data».</translation>
-    </message>
-    <message>
-        <source>Could not import a character figure from:
-%1
-
-This file may be a </source>
-        <translation type="vanished">Не удалось импортировать фигуру из:
-%1
-
-Этот файл может быть: </translation>
-    </message>
-    <message>
-        <source>pose, material, or other preset rather than a figure.
-
-Details: %2</source>
-        <translation type="vanished">Поза, материал или другой пресет, а не фигура.
-
-Подробнее: %2</translation>
-    </message>
-    <message>
-        <source>Could not import a character figure from:
-%1
-
-The figure&apos;s geometry </source>
-        <translation type="vanished">Не удалось импортировать фигуру из:
-%1
-
-Геометрия фигуры </translation>
-    </message>
-    <message>
-        <source>and morph data (its &quot;data&quot; folder) couldn&apos;t be found. Import again </source>
-        <translation type="vanished">и данные морфинга (папка «data») не найдены. Импортируйте снова </translation>
-    </message>
-    <message>
-        <source>and choose &quot;Locate Content Folder…&quot; to point PoseStudio at the folder </source>
-        <translation type="vanished">и выберите «Locate Content Folder…», чтобы указать PoseStudio путь к папке </translation>
-    </message>
-    <message>
-        <source>that contains &quot;data&quot;.
-
-Details: %2</source>
-        <translation type="vanished">содержит «data».
-
-Подробнее: %2</translation>
-    </message>
-    <message>
         <location filename="../src/viewport/figureimportservice.cpp" line="248"/>
         <source>The folder you imported from contains the figure&apos;s presets but not its &quot;data&quot; folder (where the mesh, skeleton, morphs and skin weights live).
 
 Point PoseStudio at the figure&apos;s content folder — the folder that directly contains the &quot;data&quot; folder — and it will be remembered for future imports.</source>
-        <translation type="unfinished"></translation>
+        <translation>Импортированная папка содержит пресеты фигуры, но не содержит папку «data» (где хранятся меш, скелет, морфы и веса кожи).
+
+Укажите PoseStudio на папку с содержимым фигуры — папку, в которой напрямую находится папка «data», — и она будет запоминаться для будущих импортов.</translation>
     </message>
     <message>
         <location filename="../src/viewport/figureimportservice.cpp" line="272"/>
         <source>The selected folder doesn&apos;t directly contain a &quot;data&quot; folder, so the figure&apos;s geometry may still not be found. It has been added anyway — pick the folder that directly contains &quot;data&quot; if the import fails.</source>
-        <translation type="unfinished"></translation>
+        <translation>Выбранная папка не содержит папку «data» напрямую, поэтому геометрия фигуры может не найтись. Она была добавлена в любом случае — если импорт не удался, выберите папку, в которой папка «data» находится непосредственно.</translation>
     </message>
     <message>
         <location filename="../src/viewport/figureimportservice.cpp" line="284"/>
@@ -1091,7 +956,12 @@ Point PoseStudio at the figure&apos;s content folder — the folder that directl
 This file may be a pose, material, or other preset rather than a figure.
 
 Details: %2</source>
-        <translation type="unfinished"></translation>
+        <translation>Не удалось импортировать фигуру из:
+%1
+
+Этот файл может быть позой, материалом или другим пресетом, а не фигурой.
+
+Подробности: %2</translation>
     </message>
     <message>
         <location filename="../src/viewport/figureimportservice.cpp" line="288"/>
@@ -1101,7 +971,12 @@ Details: %2</source>
 The figure&apos;s geometry and morph data (its &quot;data&quot; folder) couldn&apos;t be found. Import again and choose &quot;Locate Content Folder…&quot; to point PoseStudio at the folder that contains &quot;data&quot;.
 
 Details: %2</source>
-        <translation type="unfinished"></translation>
+        <translation>Не удалось импортировать фигуру из:
+%1
+
+Не удалось найти геометрию и данные морфинга фигуры (папку «data»). Повторите импорт и выберите «Locate Content Folder…», чтобы указать PoseStudio на папку, содержащую «data».
+
+Подробности: %2</translation>
     </message>
     <message>
         <location filename="../src/viewport/figureimportservice.cpp" line="294"/>
@@ -1192,104 +1067,129 @@ Details: %2</source>
 <context>
     <name>ViewportStrip</name>
     <message>
+        <location filename="../src/viewport/viewportstrip.cpp" line="113"/>
         <source>PBR Shaded</source>
-        <translation type="vanished">PBR-затенение</translation>
+        <translation>PBR-затенение</translation>
     </message>
     <message>
+        <location filename="../src/viewport/viewportstrip.cpp" line="114"/>
         <source>Texture Shaded</source>
-        <translation type="vanished">Текстурное затенение</translation>
+        <translation>Текстурное затенение</translation>
     </message>
     <message>
+        <location filename="../src/viewport/viewportstrip.cpp" line="115"/>
         <source>Flat Texture Shaded</source>
-        <translation type="vanished">Затенение текстурой (плоское)</translation>
+        <translation>Затенение текстурой (плоское)</translation>
     </message>
     <message>
+        <location filename="../src/viewport/viewportstrip.cpp" line="116"/>
         <source>Cartoon Shaded</source>
-        <translation type="vanished">Мультяшное затенение</translation>
+        <translation>Мультяшное затенение</translation>
     </message>
     <message>
+        <location filename="../src/viewport/viewportstrip.cpp" line="117"/>
         <source>Matcap</source>
-        <translation type="vanished">Matcap</translation>
+        <translation>Matcap</translation>
     </message>
     <message>
+        <location filename="../src/viewport/viewportstrip.cpp" line="118"/>
         <source>Clay Shaded</source>
-        <translation type="vanished">Глиняное затенение</translation>
+        <translation>Глиняное затенение</translation>
     </message>
     <message>
+        <location filename="../src/viewport/viewportstrip.cpp" line="119"/>
         <source>Lighting Only</source>
-        <translation type="vanished">Только свет</translation>
+        <translation>Только свет</translation>
     </message>
     <message>
+        <location filename="../src/viewport/viewportstrip.cpp" line="120"/>
         <source>Silhouette</source>
-        <translation type="vanished">Силуэт</translation>
+        <translation>Силуэт</translation>
     </message>
     <message>
+        <location filename="../src/viewport/viewportstrip.cpp" line="121"/>
         <source>Wireframe</source>
-        <translation type="vanished">Каркас</translation>
+        <translation>Каркас</translation>
     </message>
     <message>
+        <location filename="../src/viewport/viewportstrip.cpp" line="122"/>
         <source>Hidden Line Wireframe</source>
-        <translation type="vanished">Каркас с невидимыми линиями</translation>
+        <translation>Каркас со скрытыми линиями</translation>
     </message>
     <message>
+        <location filename="../src/viewport/viewportstrip.cpp" line="123"/>
         <source>Clay Shaded Wireframe</source>
-        <translation type="vanished">Каркас глиняного затенения</translation>
+        <translation>Каркас глиняного затенения</translation>
     </message>
     <message>
+        <location filename="../src/viewport/viewportstrip.cpp" line="124"/>
         <source>Texture Shaded Wireframe</source>
-        <translation type="vanished">Текстурированный каркас</translation>
+        <translation>Текстурированный каркас</translation>
     </message>
     <message>
+        <location filename="../src/viewport/viewportstrip.cpp" line="125"/>
         <source>Albedo</source>
-        <translation type="vanished">Альбедо</translation>
+        <translation>Альбедо</translation>
     </message>
     <message>
+        <location filename="../src/viewport/viewportstrip.cpp" line="126"/>
         <source>Ambient Occlusion</source>
-        <translation type="vanished">Окружающая окклюзия (AO)</translation>
+        <translation>Окружающая окклюзия (AO)</translation>
     </message>
     <message>
+        <location filename="../src/viewport/viewportstrip.cpp" line="127"/>
         <source>Roughness Map</source>
-        <translation type="vanished">Карта шероховатости</translation>
+        <translation>Карта шероховатости</translation>
     </message>
     <message>
+        <location filename="../src/viewport/viewportstrip.cpp" line="128"/>
         <source>Specular Only</source>
-        <translation type="vanished">Только блики</translation>
+        <translation>Только блики</translation>
     </message>
     <message>
+        <location filename="../src/viewport/viewportstrip.cpp" line="129"/>
         <source>Normals</source>
-        <translation type="vanished">Нормали</translation>
+        <translation>Нормали</translation>
     </message>
     <message>
+        <location filename="../src/viewport/viewportstrip.cpp" line="130"/>
         <source>UV Checker</source>
-        <translation type="vanished">Проверка UV</translation>
+        <translation>Проверка UV</translation>
     </message>
     <message>
+        <location filename="../src/viewport/viewportstrip.cpp" line="132"/>
         <source>Home View</source>
-        <translation type="vanished">Исходный вид</translation>
+        <translation>Исходный вид</translation>
     </message>
     <message>
+        <location filename="../src/viewport/viewportstrip.cpp" line="133"/>
         <source>Top View</source>
-        <translation type="vanished">Вид сверху</translation>
+        <translation>Вид сверху</translation>
     </message>
     <message>
+        <location filename="../src/viewport/viewportstrip.cpp" line="134"/>
         <source>Bottom View</source>
-        <translation type="vanished">Вид снизу</translation>
+        <translation>Вид снизу</translation>
     </message>
     <message>
+        <location filename="../src/viewport/viewportstrip.cpp" line="135"/>
         <source>Front View</source>
-        <translation type="vanished">Вид спереди</translation>
+        <translation>Вид спереди</translation>
     </message>
     <message>
+        <location filename="../src/viewport/viewportstrip.cpp" line="136"/>
         <source>Back View</source>
-        <translation type="vanished">Вид сзади</translation>
+        <translation>Вид сзади</translation>
     </message>
     <message>
+        <location filename="../src/viewport/viewportstrip.cpp" line="137"/>
         <source>Left View</source>
-        <translation type="vanished">Вид слева</translation>
+        <translation>Вид слева</translation>
     </message>
     <message>
+        <location filename="../src/viewport/viewportstrip.cpp" line="138"/>
         <source>Right View</source>
-        <translation type="vanished">Вид справа</translation>
+        <translation>Вид справа</translation>
     </message>
 </context>
 <context>
@@ -1560,32 +1460,32 @@ In the viewport: press T and move the mouse.</source>
 <context>
     <name>pose::ViewportStrip</name>
     <message>
-        <location filename="../src/viewport/viewportstrip.cpp" line="135"/>
+        <location filename="../src/viewport/viewportstrip.cpp" line="170"/>
         <source>Viewport shading mode</source>
         <translation>Режим затенения вьюпорта</translation>
     </message>
     <message>
-        <location filename="../src/viewport/viewportstrip.cpp" line="156"/>
+        <location filename="../src/viewport/viewportstrip.cpp" line="191"/>
         <source>Camera view</source>
         <translation>Вид камеры</translation>
     </message>
     <message>
-        <location filename="../src/viewport/viewportstrip.cpp" line="188"/>
+        <location filename="../src/viewport/viewportstrip.cpp" line="223"/>
         <source>Reset to the default view</source>
         <translation>Вернуть исходный вид</translation>
     </message>
     <message>
-        <location filename="../src/viewport/viewportstrip.cpp" line="194"/>
+        <location filename="../src/viewport/viewportstrip.cpp" line="229"/>
         <source>Move the selected figure to the ground</source>
         <translation>Опустить выделенную фигуру на землю</translation>
     </message>
     <message>
-        <location filename="../src/viewport/viewportstrip.cpp" line="200"/>
+        <location filename="../src/viewport/viewportstrip.cpp" line="235"/>
         <source>Toggle the skeleton overlay</source>
         <translation>Показать/скрыть оверлей скелета</translation>
     </message>
     <message>
-        <location filename="../src/viewport/viewportstrip.cpp" line="237"/>
+        <location filename="../src/viewport/viewportstrip.cpp" line="272"/>
         <source>Perspective View</source>
         <translation>Перспектива</translation>
     </message>
