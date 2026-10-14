@@ -8,3 +8,5 @@ GS-M-006	Help	Справка	ui-help-menu
 GS-M-007	File	Файл	ui-file-menu
 GS-M-008	Edit	Правка	ui-edit-menu
 GS-M-009	View	Вид	ui-view-menu
+GS-M-010	Clay Shaded Wireframe	Каркас глиняного затенения	ui-shade-mode-clay
+GS-M-011	Texture Shaded Wireframe	Каркас текстурного затенения	ui-shade-mode-texture
