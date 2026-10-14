@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE TS>
-<TS version="2.1">
+<TS version="2.1" language="ru">
 <context>
     <name>AssetBreadcrumbLabel</name>
     <message>
@@ -215,19 +215,21 @@
         <translation>Ассеты</translation>
     </message>
     <message>
-        <location filename="../src/preferences/assetspreferencespanel.cpp" line="37"/>
         <source>Asset folders are scanned for 3D models, poses, and other assets. Add the root </source>
-        <translation>Папки ассетов сканируются на наличие 3D-моделей, поз и других ассетов. Добавьте корневую </translation>
+        <translation type="vanished">Папки ассетов сканируются на наличие 3D-моделей, поз и других ассетов. Добавьте корневую </translation>
     </message>
     <message>
-        <location filename="../src/preferences/assetspreferencespanel.cpp" line="38"/>
         <source>folder of each library you want to browse in the Asset Manager. Double-click a </source>
-        <translation>папка каждой библиотеки, которую вы хотите просматривать в Asset Manager. Дважды щелкните по </translation>
+        <translation type="vanished">папка каждой библиотеки, которую вы хотите просматривать в Asset Manager. Дважды щелкните по </translation>
     </message>
     <message>
-        <location filename="../src/preferences/assetspreferencespanel.cpp" line="39"/>
         <source>folder to jump to it.</source>
-        <translation>папка, чтобы перейти к ней.</translation>
+        <translation type="vanished">папка, чтобы перейти к ней.</translation>
+    </message>
+    <message>
+        <location filename="../src/preferences/assetspreferencespanel.cpp" line="37"/>
+        <source>Asset folders are scanned for 3D models, poses, and other assets. Add the root folder of each library you want to browse in the Asset Manager. Double-click a folder to jump to it.</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../src/preferences/assetspreferencespanel.cpp" line="47"/>
@@ -251,14 +253,18 @@
     </message>
     <message>
         <location filename="../src/preferences/assetspreferencespanel.cpp" line="102"/>
-        <source>That folder is already registered as an asset </source>
-        <translation>Эта папка уже зарегистрирована как ассет </translation>
+        <source>That folder is already registered as an asset library:
+%1</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/preferences/assetspreferencespanel.cpp" line="103"/>
+        <source>That folder is already registered as an asset </source>
+        <translation type="vanished">Эта папка уже зарегистрирована как ассет </translation>
+    </message>
+    <message>
         <source>library:
 %1</source>
-        <translation>библиотека:
+        <translation type="vanished">библиотека:
 %1</translation>
     </message>
 </context>
@@ -271,14 +277,17 @@
         <translation>Сброс до заводских настроек</translation>
     </message>
     <message>
-        <location filename="../src/preferences/factoryresetpreferencespanel.cpp" line="19"/>
         <source>Permanently deletes all your asset libraries, collections, and preferences. </source>
-        <translation>Навсегда удалить все библиотеки ассетов, коллекции и настройки. </translation>
+        <translation type="vanished">Навсегда удалить все библиотеки ассетов, коллекции и настройки. </translation>
     </message>
     <message>
-        <location filename="../src/preferences/factoryresetpreferencespanel.cpp" line="20"/>
         <source>This cannot be undone. PoseStudio will restart automatically once the reset is complete.</source>
-        <translation>Это действие нельзя отменить. PoseStudio автоматически перезапустится после завершения сброса.</translation>
+        <translation type="vanished">Это действие нельзя отменить. PoseStudio автоматически перезапустится после завершения сброса.</translation>
+    </message>
+    <message>
+        <location filename="../src/preferences/factoryresetpreferencespanel.cpp" line="19"/>
+        <source>Permanently deletes all your asset libraries, collections, and preferences. This cannot be undone. PoseStudio will restart automatically once the reset is complete.</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../src/preferences/factoryresetpreferencespanel.cpp" line="22"/>
@@ -315,28 +324,33 @@
     </message>
     <message>
         <location filename="../src/preferences/generalpreferencespanel.cpp" line="53"/>
+        <source>Each time it starts, PoseStudio lets posestudio.io know that this installation exists, so we can see how many people use it and which versions are out there. The ping carries a random install ID, the app version, your operating system and CPU type, whether the app was installed or is running portable, the Qt library version, and the time of the ping — nothing else: no names, no files, no usage data, and the ID isn&apos;t linked to you in any way.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/preferences/generalpreferencespanel.cpp" line="80"/>
+        <source>A few seconds after it starts, PoseStudio asks GitHub for the latest release and, when a newer one exists, shows a message with a link to its download page. Nothing but the request itself is sent. Help → Check for Updates… does the same on demand.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
         <source>Each time it starts, PoseStudio lets posestudio.io know that this installation exists, so we can </source>
-        <translation>При каждом запуске PoseStudio сообщает posestudio.io о наличии этой установки, чтобы мы могли </translation>
+        <translation type="vanished">При каждом запуске PoseStudio сообщает posestudio.io о наличии этой установки, чтобы мы могли </translation>
     </message>
     <message>
-        <location filename="../src/preferences/generalpreferencespanel.cpp" line="54"/>
         <source>see how many people use it and which versions are out there. The ping carries a random </source>
-        <translation>посмотрите, сколько людей используют её и какие версии доступны. Пинг несет случайный </translation>
+        <translation type="vanished">посмотрите, сколько людей используют её и какие версии доступны. Пинг несет случайный </translation>
     </message>
     <message>
-        <location filename="../src/preferences/generalpreferencespanel.cpp" line="55"/>
         <source>install ID, the app version, your operating system and CPU type, whether the app was </source>
-        <translation>ID установки, версию приложения, вашу операционную систему, тип процессора и то, была ли приложение </translation>
+        <translation type="vanished">ID установки, версию приложения, вашу операционную систему, тип процессора и то, была ли приложение </translation>
     </message>
     <message>
-        <location filename="../src/preferences/generalpreferencespanel.cpp" line="56"/>
         <source>installed or is running portable, the Qt library version, and the time of the ping — </source>
-        <translation>установлена или запущена в portable-режиме, версия библиотеки Qt и время пинга — </translation>
+        <translation type="vanished">установлена или запущена в portable-режиме, версия библиотеки Qt и время пинга — </translation>
     </message>
     <message>
-        <location filename="../src/preferences/generalpreferencespanel.cpp" line="57"/>
         <source>nothing else: no names, no files, no usage data, and the ID isn&apos;t linked to you in any way.</source>
-        <translation>ничего лишнего: без имен, файлов и данных об использовании, а ID никак с вами не связан.</translation>
+        <translation type="vanished">ничего лишнего: без имен, файлов и данных об использовании, а ID никак с вами не связан.</translation>
     </message>
     <message>
         <location filename="../src/preferences/generalpreferencespanel.cpp" line="62"/>
@@ -359,19 +373,16 @@
         <translation>Проверять обновления при запуске</translation>
     </message>
     <message>
-        <location filename="../src/preferences/generalpreferencespanel.cpp" line="80"/>
         <source>A few seconds after it starts, PoseStudio asks GitHub for the latest release and, when a newer </source>
-        <translation>Спустя несколько секунд после запуска PoseStudio спрашивает у GitHub, есть ли новая версия, и если она есть, </translation>
+        <translation type="vanished">Спустя несколько секунд после запуска PoseStudio спрашивает у GitHub, есть ли новая версия, и если она есть, </translation>
     </message>
     <message>
-        <location filename="../src/preferences/generalpreferencespanel.cpp" line="81"/>
         <source>one exists, shows a message with a link to its download page. Nothing but the request itself </source>
-        <translation>показывает сообщение со ссылкой на страницу загрузки. Отправляется только </translation>
+        <translation type="vanished">показывает сообщение со ссылкой на страницу загрузки. Отправляется только </translation>
     </message>
     <message>
-        <location filename="../src/preferences/generalpreferencespanel.cpp" line="82"/>
         <source>is sent. Help → Check for Updates… does the same on demand.</source>
-        <translation>сам запрос. Помощь → Проверить обновления… делает то же самое по требованию.</translation>
+        <translation type="vanished">сам запрос. Помощь → Проверить обновления… делает то же самое по требованию.</translation>
     </message>
     <message>
         <location filename="../src/preferences/generalpreferencespanel.cpp" line="90"/>
@@ -970,28 +981,24 @@
 %1</translation>
     </message>
     <message>
-        <location filename="../src/viewport/figureimportservice.cpp" line="248"/>
         <source>The folder you imported from contains the figure&apos;s presets but not its &quot;data&quot; folder </source>
-        <translation>Импортированная папка содержит пресеты фигуры, но не содержит папку «data» </translation>
+        <translation type="vanished">Импортированная папка содержит пресеты фигуры, но не содержит папку «data» </translation>
     </message>
     <message>
-        <location filename="../src/viewport/figureimportservice.cpp" line="249"/>
         <source>(where the mesh, skeleton, morphs and skin weights live).
 
 </source>
-        <translation>(здесь хранятся меш, скелет, морфы и веса скина).
+        <translation type="vanished">(здесь хранятся меш, скелет, морфы и веса скина).
 
 </translation>
     </message>
     <message>
-        <location filename="../src/viewport/figureimportservice.cpp" line="250"/>
         <source>Point PoseStudio at the figure&apos;s content folder — the folder that directly contains the </source>
-        <translation>Укажите путь к папке с контентом PoseStudio — папке, в которой непосредственно находится </translation>
+        <translation type="vanished">Укажите путь к папке с контентом PoseStudio — папке, в которой непосредственно находится </translation>
     </message>
     <message>
-        <location filename="../src/viewport/figureimportservice.cpp" line="251"/>
         <source>&quot;data&quot; folder — and it will be remembered for future imports.</source>
-        <translation>папка «data» — и она будет использоваться для будущих импортов.</translation>
+        <translation type="vanished">папка «data» — и она будет использоваться для будущих импортов.</translation>
     </message>
     <message>
         <location filename="../src/viewport/figureimportservice.cpp" line="253"/>
@@ -1009,69 +1016,92 @@
         <translation>Папка \&quot;data\&quot; не найдена</translation>
     </message>
     <message>
-        <location filename="../src/viewport/figureimportservice.cpp" line="272"/>
         <source>The selected folder doesn&apos;t directly contain a &quot;data&quot; folder, so the </source>
-        <translation>Выбранная папка не содержит папку «data» напрямую, поэтому </translation>
+        <translation type="vanished">Выбранная папка не содержит папку «data» напрямую, поэтому </translation>
     </message>
     <message>
-        <location filename="../src/viewport/figureimportservice.cpp" line="273"/>
         <source>figure&apos;s geometry may still not be found. It has been added anyway — </source>
-        <translation>Геометрия фигуры не найдена. Тем не менее, она добавлена — </translation>
+        <translation type="vanished">Геометрия фигуры не найдена. Тем не менее, она добавлена — </translation>
     </message>
     <message>
-        <location filename="../src/viewport/figureimportservice.cpp" line="274"/>
         <source>pick the folder that directly contains &quot;data&quot; if the import fails.</source>
-        <translation>Если импорт не удался, выберите папку, в которой находится папка «data».</translation>
+        <translation type="vanished">Если импорт не удался, выберите папку, в которой находится папка «data».</translation>
+    </message>
+    <message>
+        <source>Could not import a character figure from:
+%1
+
+This file may be a </source>
+        <translation type="vanished">Не удалось импортировать фигуру из:
+%1
+
+Этот файл может быть: </translation>
+    </message>
+    <message>
+        <source>pose, material, or other preset rather than a figure.
+
+Details: %2</source>
+        <translation type="vanished">Поза, материал или другой пресет, а не фигура.
+
+Подробнее: %2</translation>
+    </message>
+    <message>
+        <source>Could not import a character figure from:
+%1
+
+The figure&apos;s geometry </source>
+        <translation type="vanished">Не удалось импортировать фигуру из:
+%1
+
+Геометрия фигуры </translation>
+    </message>
+    <message>
+        <source>and morph data (its &quot;data&quot; folder) couldn&apos;t be found. Import again </source>
+        <translation type="vanished">и данные морфинга (папка «data») не найдены. Импортируйте снова </translation>
+    </message>
+    <message>
+        <source>and choose &quot;Locate Content Folder…&quot; to point PoseStudio at the folder </source>
+        <translation type="vanished">и выберите «Locate Content Folder…», чтобы указать PoseStudio путь к папке </translation>
+    </message>
+    <message>
+        <source>that contains &quot;data&quot;.
+
+Details: %2</source>
+        <translation type="vanished">содержит «data».
+
+Подробнее: %2</translation>
+    </message>
+    <message>
+        <location filename="../src/viewport/figureimportservice.cpp" line="248"/>
+        <source>The folder you imported from contains the figure&apos;s presets but not its &quot;data&quot; folder (where the mesh, skeleton, morphs and skin weights live).
+
+Point PoseStudio at the figure&apos;s content folder — the folder that directly contains the &quot;data&quot; folder — and it will be remembered for future imports.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/viewport/figureimportservice.cpp" line="272"/>
+        <source>The selected folder doesn&apos;t directly contain a &quot;data&quot; folder, so the figure&apos;s geometry may still not be found. It has been added anyway — pick the folder that directly contains &quot;data&quot; if the import fails.</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../src/viewport/figureimportservice.cpp" line="284"/>
         <source>Could not import a character figure from:
 %1
 
-This file may be a </source>
-        <translation>Не удалось импортировать фигуру из:
-%1
-
-Этот файл может быть: </translation>
-    </message>
-    <message>
-        <location filename="../src/viewport/figureimportservice.cpp" line="285"/>
-        <source>pose, material, or other preset rather than a figure.
+This file may be a pose, material, or other preset rather than a figure.
 
 Details: %2</source>
-        <translation>Поза, материал или другой пресет, а не фигура.
-
-Подробнее: %2</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../src/viewport/figureimportservice.cpp" line="288"/>
         <source>Could not import a character figure from:
 %1
 
-The figure&apos;s geometry </source>
-        <translation>Не удалось импортировать фигуру из:
-%1
-
-Геометрия фигуры </translation>
-    </message>
-    <message>
-        <location filename="../src/viewport/figureimportservice.cpp" line="289"/>
-        <source>and morph data (its &quot;data&quot; folder) couldn&apos;t be found. Import again </source>
-        <translation>и данные морфинга (папка «data») не найдены. Импортируйте снова </translation>
-    </message>
-    <message>
-        <location filename="../src/viewport/figureimportservice.cpp" line="290"/>
-        <source>and choose &quot;Locate Content Folder…&quot; to point PoseStudio at the folder </source>
-        <translation>и выберите «Locate Content Folder…», чтобы указать PoseStudio путь к папке </translation>
-    </message>
-    <message>
-        <location filename="../src/viewport/figureimportservice.cpp" line="291"/>
-        <source>that contains &quot;data&quot;.
+The figure&apos;s geometry and morph data (its &quot;data&quot; folder) couldn&apos;t be found. Import again and choose &quot;Locate Content Folder…&quot; to point PoseStudio at the folder that contains &quot;data&quot;.
 
 Details: %2</source>
-        <translation>содержит «data».
-
-Подробнее: %2</translation>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <location filename="../src/viewport/figureimportservice.cpp" line="294"/>
@@ -1157,6 +1187,109 @@ Details: %2</source>
         <location filename="../src/core/updatecheck.cpp" line="210"/>
         <source>Later</source>
         <translation>Позже</translation>
+    </message>
+</context>
+<context>
+    <name>ViewportStrip</name>
+    <message>
+        <source>PBR Shaded</source>
+        <translation type="vanished">PBR-затенение</translation>
+    </message>
+    <message>
+        <source>Texture Shaded</source>
+        <translation type="vanished">Текстурное затенение</translation>
+    </message>
+    <message>
+        <source>Flat Texture Shaded</source>
+        <translation type="vanished">Затенение текстурой (плоское)</translation>
+    </message>
+    <message>
+        <source>Cartoon Shaded</source>
+        <translation type="vanished">Мультяшное затенение</translation>
+    </message>
+    <message>
+        <source>Matcap</source>
+        <translation type="vanished">Matcap</translation>
+    </message>
+    <message>
+        <source>Clay Shaded</source>
+        <translation type="vanished">Глиняное затенение</translation>
+    </message>
+    <message>
+        <source>Lighting Only</source>
+        <translation type="vanished">Только свет</translation>
+    </message>
+    <message>
+        <source>Silhouette</source>
+        <translation type="vanished">Силуэт</translation>
+    </message>
+    <message>
+        <source>Wireframe</source>
+        <translation type="vanished">Каркас</translation>
+    </message>
+    <message>
+        <source>Hidden Line Wireframe</source>
+        <translation type="vanished">Каркас с невидимыми линиями</translation>
+    </message>
+    <message>
+        <source>Clay Shaded Wireframe</source>
+        <translation type="vanished">Каркас глиняного затенения</translation>
+    </message>
+    <message>
+        <source>Texture Shaded Wireframe</source>
+        <translation type="vanished">Текстурированный каркас</translation>
+    </message>
+    <message>
+        <source>Albedo</source>
+        <translation type="vanished">Альбедо</translation>
+    </message>
+    <message>
+        <source>Ambient Occlusion</source>
+        <translation type="vanished">Окружающая окклюзия (AO)</translation>
+    </message>
+    <message>
+        <source>Roughness Map</source>
+        <translation type="vanished">Карта шероховатости</translation>
+    </message>
+    <message>
+        <source>Specular Only</source>
+        <translation type="vanished">Только блики</translation>
+    </message>
+    <message>
+        <source>Normals</source>
+        <translation type="vanished">Нормали</translation>
+    </message>
+    <message>
+        <source>UV Checker</source>
+        <translation type="vanished">Проверка UV</translation>
+    </message>
+    <message>
+        <source>Home View</source>
+        <translation type="vanished">Исходный вид</translation>
+    </message>
+    <message>
+        <source>Top View</source>
+        <translation type="vanished">Вид сверху</translation>
+    </message>
+    <message>
+        <source>Bottom View</source>
+        <translation type="vanished">Вид снизу</translation>
+    </message>
+    <message>
+        <source>Front View</source>
+        <translation type="vanished">Вид спереди</translation>
+    </message>
+    <message>
+        <source>Back View</source>
+        <translation type="vanished">Вид сзади</translation>
+    </message>
+    <message>
+        <source>Left View</source>
+        <translation type="vanished">Вид слева</translation>
+    </message>
+    <message>
+        <source>Right View</source>
+        <translation type="vanished">Вид справа</translation>
     </message>
 </context>
 <context>
@@ -1507,108 +1640,4 @@ Could not create a Vulkan instance — check that your GPU supports Vulkan and t
         <translation>Удалить</translation>
     </message>
 </context>
-
-    <context>
-        <name>ViewportStrip</name>
-        <message>
-            <source>PBR Shaded</source>
-            <translation>PBR-затенение</translation>
-        </message>
-        <message>
-            <source>Texture Shaded</source>
-            <translation>Текстурное затенение</translation>
-        </message>
-        <message>
-            <source>Flat Texture Shaded</source>
-            <translation>Затенение текстурой (плоское)</translation>
-        </message>
-        <message>
-            <source>Cartoon Shaded</source>
-            <translation>Мультяшное затенение</translation>
-        </message>
-        <message>
-            <source>Matcap</source>
-            <translation>Matcap</translation>
-        </message>
-        <message>
-            <source>Clay Shaded</source>
-            <translation>Глиняное затенение</translation>
-        </message>
-        <message>
-            <source>Lighting Only</source>
-            <translation>Только свет</translation>
-        </message>
-        <message>
-            <source>Silhouette</source>
-            <translation>Силуэт</translation>
-        </message>
-        <message>
-            <source>Wireframe</source>
-            <translation>Каркас</translation>
-        </message>
-        <message>
-            <source>Hidden Line Wireframe</source>
-            <translation>Каркас со скрытыми линиями</translation>
-        </message>
-        <message>
-            <source>Clay Shaded Wireframe</source>
-            <translation>Каркас глиняного затенения</translation>
-        </message>
-        <message>
-            <source>Texture Shaded Wireframe</source>
-            <translation>Текстурированный каркас</translation>
-        </message>
-        <message>
-            <source>Albedo</source>
-            <translation>Альбедо</translation>
-        </message>
-        <message>
-            <source>Ambient Occlusion</source>
-            <translation>Окружающая окклюзия (AO)</translation>
-        </message>
-        <message>
-            <source>Roughness Map</source>
-            <translation>Карта шероховатости</translation>
-        </message>
-        <message>
-            <source>Specular Only</source>
-            <translation>Только блики</translation>
-        </message>
-        <message>
-            <source>Normals</source>
-            <translation>Нормали</translation>
-        </message>
-        <message>
-            <source>UV Checker</source>
-            <translation>Проверка UV</translation>
-        </message>
-        <message>
-            <source>Home View</source>
-            <translation>Исходный вид</translation>
-        </message>
-        <message>
-            <source>Top View</source>
-            <translation>Вид сверху</translation>
-        </message>
-        <message>
-            <source>Bottom View</source>
-            <translation>Вид снизу</translation>
-        </message>
-        <message>
-            <source>Front View</source>
-            <translation>Вид спереди</translation>
-        </message>
-        <message>
-            <source>Back View</source>
-            <translation>Вид сзади</translation>
-        </message>
-        <message>
-            <source>Left View</source>
-            <translation>Вид слева</translation>
-        </message>
-        <message>
-            <source>Right View</source>
-            <translation>Вид справа</translation>
-        </message>
-    </context>
 </TS>
