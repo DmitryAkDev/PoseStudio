@@ -14,7 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
-* **Interface text is ready for translation.** Every menu, dialog, tooltip and message in the app is now marked as translatable, so other languages can be added later without reworking the code. Nothing changes on screen: PoseStudio is English-only for now. (#33 — thanks @DmitryAkDev)
+* **Interface text is ready for translation.** Every menu, dialog, tooltip and message in the app is now marked as translatable, so other languages can be added later without reworking the code. Nothing changes on screen: PoseStudio is English-only for now. The shading and view picker names are marked for the translation tools too, so a future catalog cannot lose them. (#33, #38 — thanks @DmitryAkDev)
+
+### Fixed
+* **Manual contents highlight.** In Help → User Manual, the highlighted contents entry could land on whichever row sat under a resting mouse pointer after the tree re-laid out, instead of the page that was opened; it now stays on the opened entry. (#37 — thanks @DmitryAkDev)
 
 ## [0.3.16] - 2026-09-30
 

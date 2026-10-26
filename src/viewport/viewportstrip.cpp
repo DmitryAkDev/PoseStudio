@@ -137,6 +137,11 @@ static const char* const kPickerNoops[] = {
     QT_TRANSLATE_NOOP("ViewportStrip", "Left View"),
     QT_TRANSLATE_NOOP("ViewportStrip", "Right View"),
 };
+// A mode or view added to either table must be added above too; the count guard catches that
+// (a rename it cannot: the spelling is checked by nothing).
+static_assert(static_cast<int>(sizeof(kPickerNoops) / sizeof(kPickerNoops[0]))
+                  == kShadeModeCount + kViewEntryCount,
+              "kPickerNoops must list every shade mode and every view name");
 
 } // namespace
 
