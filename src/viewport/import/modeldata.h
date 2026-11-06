@@ -84,6 +84,10 @@ struct MeshData {
     // exists only in the mask).
     TextureSource         opacityMask;
     bool                  hasOpacityMask = false; // set by the decode layer once the bake succeeds
+    /// Blend the skin LINEARLY (the rig was authored for linear blend skinning: every FBX export
+    /// seen) instead of by dual quaternions (the native figures' authoring). A per-model choice,
+    /// set on every mesh of the model by its importer; false for the native figures and OBJs.
+    bool                  linearSkinning = false;
 
     // Specular parameter maps (both LINEAR, sampled .r): the roughness map multiplies the scalar
     // roughness per texel; the spec-mask map multiplies specularWeight per texel (the decode layer
@@ -91,6 +95,14 @@ struct MeshData {
     // MaterialRefs::specularWeightWithMap). Null => 1x1 white fallback (scalar behaviour).
     TextureSource         roughnessMap;
     DecodedImagePtr       roughnessImage;
+    /// Which channel of the roughness map carries the roughness: 0 red (the native figures' and
+    /// FBX's grayscale maps), 1 green (glTF's metallic-roughness map: roughness in G, metalness
+    /// in B), 2 blue. The decode layer moves it into red, which is what the shader samples.
+    int                   roughnessChannel = 0;
+    /// The diffuse map's own ALPHA channel is the opacity (cutout) mask — a glTF material in
+    /// MASK or BLEND alpha mode, a USD material whose opacity reads the base texture's alpha.
+    /// The decode layer keeps the decoded alpha and sets hasOpacityMask without a bake.
+    bool                  opacityFromDiffuseAlpha = false;
     TextureSource         specMask;
     DecodedImagePtr       specMaskImage;
 
@@ -196,6 +208,25 @@ struct ModelBone {
     glm::vec3   rotationMin{0.0f};
     glm::vec3   rotationMax{0.0f};
     glm::bvec3  rotationLimited{false, false, false};
+    /// Where the bone's TIP lies (bind world space) when the file said so — an exporter's end
+    /// marker, a skinless leaf the importer left out of the skeleton: the direction of a bone with
+    /// no joint below it (a single-bone toe, a fingertip). Read by the rig standard's conformer;
+    /// the native figure importer leaves it unset.
+    glm::vec3   tip{0.0f};
+    bool        hasTip = false;
+    /// A DRIVEN bone: its pose rotation is driveFactor * the driver's, channel by channel (the
+    /// two share a frame and a rotation order), re-derived after every pose change — a rig's
+    /// helper bone whose driver expression the file could not carry (a knee's "share" bone that
+    /// takes half the bend, a twist helper that takes its share of the segment's twist). Never
+    /// posed by hand or by a solve. -1: not driven (every native figure bone).
+    int         drivenBy = -1;
+    glm::vec3   driveFactor{0.0f};
+    /// What the FILE says this bone is, as the rig standard's name for the role (`upper_arm_l`,
+    /// `spine2`, `thumb1_r`) — a VRM avatar's humanoid map. The rig's role inference takes it as
+    /// GIVEN over its own structural reading (RigRoles::Input::givenNames), at conform time and
+    /// at run time alike; empty for a bone the file says nothing about (every bone of every
+    /// other format).
+    std::string roleHint;
 };
 
 /// One imported model: its material groups, plus an optional skeleton. An empty `bones` list means a

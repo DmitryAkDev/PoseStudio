@@ -48,6 +48,7 @@
  */
 
 #include "armature.h"
+#include "softbodysettings.h"
 #include "armatureiksolvestate.h"
 #include "armatureiksolvetuning.h"
 
@@ -86,14 +87,11 @@ int Armature::ikDamping() {
     return level;
 }
 
-void Armature::setIkDamping(int level) {
-    g_ikDamping.store(std::clamp(level, 0, kIkDampingLevels - 1));
-}
-
 void Armature::buildJointSolver() {
     std::vector<JointSolverBone> bones(m_bones.size());
     m_jsTwistAxis.assign(m_bones.size(), -1);
-    m_jsSpineChain.clear(); // (a new skeleton: searched again at the next solve)
+    m_jsSpineChain.clear(); // (a new skeleton: searched again at the next solve — ensureSpineChain)
+    m_jsSpineChainChest = -1;
     m_jsWristOf.clear();    // (... and the hands: ensureHandMaps)
     m_jsHandTip.clear();
     for (std::size_t i = 0; i < m_bones.size(); ++i) {
@@ -139,7 +137,10 @@ bool Armature::solveIk(const glm::vec3* dragTarget, const glm::vec3* holdTarget)
     if (!m_jointSolver || root < 0 || effector < 0) {
         return false;
     }
-    IkSolveScratch s{rig, n, root, effector, *m_jointSolver, rig.pins(), rig.activeNodes(), dragTarget, holdTarget};
+    IkSolveScratch s{rig, n, root, effector, *m_jointSolver, rig.pins(), rig.activeNodes(), rig.secondaryEffectors(),
+                     dragTarget, holdTarget};
+    s.lateral = glm::vec3(std::cos(m_jsRootHeading), 0.0f, -std::sin(m_jsRootHeading));
+    s.fore = glm::vec3(std::sin(m_jsRootHeading), 0.0f, std::cos(m_jsRootHeading));
 
     // The stages, in order — each a member function over the scratch (armatureiksolvestate.h):
     // what the drag IS and which channels answer it, the posture model that prices them, the
@@ -227,6 +228,23 @@ void Armature::ikSolve(IkSolveScratch& s) {
         // made "jumped" 1e-7 and the ceiling TWO pieces — a solve to a target halfway back from a
         // cursor held out of reach, every tick, and the real one from wherever that left the pose:
         // on one rig a folded-over crouch answered with a 2-tick limit cycle, 45mm at the face.)
+        static const bool kTaskTrace = std::getenv("IK_JS_TASK_TRACE") != nullptr; // the problem's rows by task, before the solve
+        if (kTaskTrace) {
+            for (std::size_t i = 0; i < problem.positions.size(); ++i) {
+                const JointPositionTask& pt = problem.positions[i];
+                std::fprintf(stderr, "[js-task] position %zu bone %d (%s) weight %.3g huber %.3g axes(%.0f %.0f %.0f)", i, pt.bone,
+                             pt.bone >= 0 && static_cast<std::size_t>(pt.bone) < m_boneNames.size() ? m_boneNames[static_cast<std::size_t>(pt.bone)].c_str() : "?",
+                             pt.weight, pt.huber, pt.axisScale.x, pt.axisScale.y, pt.axisScale.z);
+                std::fputc(10, stderr);
+            }
+            for (std::size_t i = 0; i < problem.orientations.size(); ++i) {
+                const JointOrientationTask& ot = problem.orientations[i];
+                std::fprintf(stderr, "[js-task] orientation %zu bone %d (%s) weight %.3g perAxis %d axisWeights(%.3g %.3g %.3g)", i, ot.bone,
+                             ot.bone >= 0 && static_cast<std::size_t>(ot.bone) < m_boneNames.size() ? m_boneNames[static_cast<std::size_t>(ot.bone)].c_str() : "?",
+                             ot.weight, ot.perAxis ? 1 : 0, ot.axisWeights.x, ot.axisWeights.y, ot.axisWeights.z);
+                std::fputc(10, stderr);
+            }
+        }
         const int pieces = std::clamp(
             static_cast<int>(std::ceil(std::min(dist, jumped + kTargetSubstep) / kTargetSubstep - 0.01f)), 1, 12);
         for (int k = 1; k <= pieces; ++k) {
@@ -419,11 +437,72 @@ glm::vec3 Armature::followIkTarget(const glm::vec3& rawTarget) {
     return m_jsFollowPos;
 }
 
+void Armature::updateGroupTargets() {
+    const std::vector<int>& secs = m_ikRig->secondaryEffectors();
+    if (secs.empty() || !m_jsGroupCursorValid || m_jsGroupStartPos.size() != secs.size()) {
+        return;
+    }
+    // The group's own follower — the primary's twin (followIkTarget) — on the raw cursor: the
+    // secondaries trail the cursor by the same tick's travel the primary does, and the settle's
+    // ticks (dragIkTick under the last target) run it to rest like the primary's.
+    const float omega = kDampingLevels[ikDamping()].followOmega;
+    if (!m_jsGroupFollowValid || omega <= 0.0f) {
+        m_jsGroupFollowPos = m_jsGroupCursorRaw;
+        m_jsGroupFollowVel = glm::vec3(0.0f);
+        m_jsGroupFollowValid = true;
+    } else {
+        const float decay = std::exp(-omega * kTickSeconds);
+        const glm::vec3 offset = m_jsGroupFollowPos - m_jsGroupCursorRaw;
+        const glm::vec3 temp = (m_jsGroupFollowVel + offset * omega) * kTickSeconds;
+        m_jsGroupFollowVel = (m_jsGroupFollowVel - temp * omega) * decay;
+        m_jsGroupFollowPos = m_jsGroupCursorRaw + (offset + temp) * decay;
+    }
+    const glm::vec3 delta = m_jsGroupFollowPos - m_jsGroupCursorStart;
+    std::vector<glm::vec3> current;
+    if (!m_ikRig->bodyVolumes().empty()) {
+        current.resize(m_bones.size());
+        for (std::size_t i = 0; i < m_bones.size(); ++i) {
+            current[i] = glm::vec3(m_poseGlobal[i][3]);
+        }
+    }
+    m_jsGroupTargets.resize(secs.size());
+    m_jsGroupTargetValid.assign(secs.size(), 1);
+    for (std::size_t i = 0; i < secs.size(); ++i) {
+        glm::vec3 target = m_jsGroupStartPos[i] + delta;
+        // A secondary KNEE over its planted foot lives on its shin's reach of the ankle's pin, as
+        // the primary's knee goal does (ikKneeDrag) — and a secondary elbow over a hand on the
+        // floor on its forearm's reach of it. Asked 12cm forward at its own height, unprojected,
+        // the shin could only follow by lifting the heel: 13mm, where the primary's foot stayed
+        // within a millimetre, and both knees pushed forward together came out lopsided. (A
+        // secondary's foot never lets go: no lift, no hang — the reach is the whole rule.)
+        for (std::size_t p = 0; p < m_ikRig->pins().size(); ++p) {
+            if (!m_ikRig->pinUnderJoint(p, secs[i])) {
+                continue;
+            }
+            const glm::vec3& pinTarget = m_ikRig->pins()[p].target;
+            const float      reach = glm::length(m_jsGroupStartPos[i] - pinTarget);
+            const glm::vec3  out = target - pinTarget;
+            const float      dist = glm::length(out);
+            if (dist > reach && dist > 1.0e-5f) {
+                target = pinTarget + out * (reach / dist);
+            }
+            break;
+        }
+        // The floor and the body volumes bound it, as they bound the primary's (dragIkTo).
+        target.y = std::max(target.y, -m_transform[3][1] + m_ikRig->floorClearance(secs[i]));
+        if (!current.empty()) {
+            target = m_ikRig->clampOutOfVolumes(secs[i], target, current);
+        }
+        m_jsGroupTargets[i] = target;
+    }
+}
+
 bool Armature::dragIkTick(const glm::vec3& rawTarget) {
     IkRig& rig = *m_ikRig;
     const std::size_t n = m_bones.size();
     const glm::vec3 target = followIkTarget(rawTarget);
     const bool following = glm::length(rawTarget - target) > 1.0e-5f;
+    updateGroupTargets(); // (THE GROUP's secondaries: their targets for this tick)
     // The pelvis's VERTICAL YIELD (see kRootYieldStiffness), from the followed target: down
     // always, up by the height the legs had left when the drag began.
     {
@@ -463,13 +542,7 @@ bool Armature::dragIkTick(const glm::vec3& rawTarget) {
         // foot's: a shin with its foot weighs in as trunk-class, and a knee is no less a limb's.)
         bool limb = effector != rig.rootNode() && static_cast<std::size_t>(effector) < m_jsStartPos.size();
         if (limb && rig.effectorIsTrunk()) {
-            const Bone& bone = m_bones[static_cast<std::size_t>(effector)];
-            limb = m_ikBindPos[static_cast<std::size_t>(effector)].y < 0.20f * scale;
-            for (int a = 0; a < 3 && !limb; ++a) {
-                const float range = bone.rotMax[a] - bone.rotMin[a];
-                limb = bone.rotLimited[a] && range >= kFoldRangeDeg && bone.rotMin[a] < 0.0f && bone.rotMax[a] > 0.0f &&
-                       std::min(-bone.rotMin[a], bone.rotMax[a]) <= kFoldNarrowFraction * std::max(-bone.rotMin[a], bone.rotMax[a]);
-            }
+            limb = rig.isFootClass(effector) || foldAxisOf(effector) >= 0;
         }
         float limbBeyondUp = 0.0f; // (what the limb cannot give UPWARD: THE TIPTOE reads it below)
         if (!kLimbRises && limb) {
@@ -486,13 +559,13 @@ bool Armature::dragIkTick(const glm::vec3& rawTarget) {
                 m_jsLimbReach = reach;
             }
             const glm::vec3 out = target - m_jsStartPos[static_cast<std::size_t>(m_jsLimbSocket)];
-            const float far = glm::length(out);
-            const float beyond = std::max(0.0f, far - kLimbReachShare * m_jsLimbReach);
-            const float beyondUp = far > 1.0e-4f ? beyond * std::max(0.0f, out.y) / far : 0.0f;
+            const float dist = glm::length(out);
+            const float beyond = std::max(0.0f, dist - kLimbReachShare * m_jsLimbReach);
+            const float beyondUp = dist > 1.0e-4f ? beyond * std::max(0.0f, out.y) / dist : 0.0f;
             rose = std::min(rose, beyondUp);
             roseAgain = std::min(roseAgain, beyondUp);
             // (THE TIPTOE reads the target beyond the limb's FULL length: kTiptoeReachShare.)
-            limbBeyondUp = far > 1.0e-4f ? std::max(0.0f, far - kTiptoeReachShare * m_jsLimbReach) * std::max(0.0f, out.y) / far : 0.0f;
+            limbBeyondUp = dist > 1.0e-4f ? std::max(0.0f, dist - kTiptoeReachShare * m_jsLimbReach) * std::max(0.0f, out.y) / dist : 0.0f;
         }
         // ... and a trunk joint of a figure SITTING OR LYING ON THE FLOOR is, to her seat, what a
         // hand is to its shoulder: taken up, the trunk first comes up ABOUT the seat — she sits up,
@@ -663,8 +736,7 @@ bool Armature::dragIkTick(const glm::vec3& rawTarget) {
         static const double kTiptoePitch = envOr("IK_JS_TIPTOE_DEG", kTiptoeDeg);
         m_jsTiptoe = 0.0f;
         m_jsTiptoeTheta = 0.0f;
-        const bool footEffector = static_cast<std::size_t>(effector) < m_ikBindPos.size() &&
-                                  m_ikBindPos[static_cast<std::size_t>(effector)].y < 0.20f * scale;
+        const bool footEffector = rig.isFootClass(effector);
         if (!kNoTiptoe && m_jsTiptoeDrag && limb && !footEffector && !rig.suspended() && limbBeyondUp > 0.0f) {
             const float pitch = glm::radians(static_cast<float>(kTiptoePitch));
             const auto liftAt = [&](float t) { return m_jsTiptoeD * std::sin(t) + m_jsTiptoeH0 * (std::cos(t) - 1.0f); };
@@ -717,7 +789,8 @@ bool Armature::dragIkTick(const glm::vec3& rawTarget) {
             }
         }
     }
-    std::vector<glm::vec3> positions(n);
+    std::vector<glm::vec3>& positions = m_jsPositionsBuf; // (kept across ticks: no allocation)
+    positions.resize(n);
     for (std::size_t i = 0; i < n; ++i) {
         positions[i] = glm::vec3(m_poseGlobal[i][3]);
     }
@@ -757,11 +830,34 @@ bool Armature::dragIkTick(const glm::vec3& rawTarget) {
         m_jsLiftDeficit = glm::vec3(0.0f);
         m_jsHangDeficit = glm::vec3(0.0f);
     }
+    // THE DANGLE (kDangle*, 2026-11-02): how far the suspended body has gone over to HANGING — the legs
+    // plumb from the hips, the knees soft, the feet pointed, the free arm plumb (ikPostureDofs makes
+    // the references, the hang reads the share). It eases in over half a second of suspension and out
+    // again at the same pace once she lands, so nothing pops either way; a figure lifted and kept her
+    // standing pose in the air before (the legs apart in the stance, the free arm out at the A-pose
+    // angle), a mannequin on a hook. IK_JS_NO_DANGLE is the A/B.
+    {
+        static const bool kNoDangle = std::getenv("IK_JS_NO_DANGLE") != nullptr; // A/B probe
+        m_jsDangle = kNoDangle ? 0.0f : glm::clamp(m_jsDangle + (rig.suspended() ? kDangleStep : -kDangleStep), 0.0f, 1.0f);
+    }
     m_jsSolveGoal = goal;
     bool moved = solveIk(&goal, nullptr);
+    m_jsPostStepMoving = false;
     if (m_ikScope != IkScope::Chain) { // (a SCOPED drag moves the chain alone: no arm hangs, no head is righted)
-        moved = hangIdleArms() || moved;  // (see IDLE ARMS HANG above: before the contacts read the pose)
-        moved = rightIdleHead() || moved; // (see THE HEAD STAYS UP)
+        const bool hangMoved = hangIdleArms();  // (see IDLE ARMS HANG above: before the contacts read the pose)
+        const bool headMoved = rightIdleHead(); // (see THE HEAD STAYS UP)
+        moved = hangMoved || headMoved || moved;
+        m_jsPostStepMoving = hangMoved || headMoved; // (the settle waits for them: settleIkSolveTick)
+    }
+    m_jsSoftBodyMoving = false;
+    if (softbody::breastMotion()) {
+        // THE SOFT BREASTS (armaturebreasts.cpp): after the solve and the post-steps. Their motion is
+        // NOT a post-step for the settle's purposes — folded into m_jsPostStepMoving it kept the
+        // settle SOLVING while they bounced, and the pose a drag ended in then depended on how long
+        // they bounced (a calmer spring moved a knife-edge prone-up's hand 2 mm past its gate); the
+        // settle ticks them alone once the pose is at rest (settleIkSolveTick's tail).
+        m_jsSoftBodyMoving = tickSoftBody(1.0f / 60.0f);
+        moved = moved || m_jsSoftBodyMoving;
     }
 
     // LIVE CONTACT RE-DETECTION and landings (see IkRig::updateContacts), on the solved pose.
@@ -770,8 +866,7 @@ bool Armature::dragIkTick(const glm::vec3& rawTarget) {
     }
     syncRigRotations(); // (the contacts are read off the SOLVED pose: its clearances, not the tick's first)
     // A knee still coming down is planted where it IS (see the hard live pins in solveIk).
-    static const bool kKneeLandingHeldTick = std::getenv("IK_JS_KNEE_LANDING_HELD") != nullptr;
-    for (std::size_t p = 0; p < rig.pins().size() && !kKneeLandingHeldTick; ++p) {
+    for (std::size_t p = 0; p < rig.pins().size() && !kKneeLandingHeld; ++p) {
         const IkEffector& pin = rig.pins()[p];
         if (!rig.pinIsLive(p) || !pin.hard || rig.pinUnderEffector(p) || pin.node < 0) {
             continue;
@@ -792,18 +887,39 @@ bool Armature::dragIkTick(const glm::vec3& rawTarget) {
     // to 190; the cause was the solver's — a trial judged by the rows of the pose it had left, see
     // JointSolver::descend — and with that mended the re-seat only made a reclining sit's hold jump
     // 39mm where it jumps 8 on two rigs, and a prone descent 61 where it jumps 29.)
-    std::vector<char> heldBefore(m_jsHangArms.size(), 0);
+    std::vector<char>& heldBefore = m_jsHeldBeforeBuf;
+    heldBefore.assign(m_jsHangArms.size(), 0);
     for (std::size_t a = 0; a < m_jsHangArms.size(); ++a) {
         heldBefore[a] = hangArmHeld(m_jsHangArms[a]) ? 1 : 0;
     }
     rig.setRiseUnloadedContacts(m_jsContactRiseUnloaded); // (a hand the rise unloaded lifts off like a taut one)
+    {
+        // (A KNEE whose lying foot is still rolling onto its toes keeps its pin until the handover —
+        // IkRig::setLiftOffDeferred: the foot's soft hold in place went with the pin, and the foot slid
+        // 10cm while the thigh splayed to its box in one tick, 122mm at the knee, standing up off the
+        // heels. The knee's ceiling and the roll pace it meanwhile — the flat block of ikPinRows.)
+        std::vector<char>& deferred = m_jsDeferredBuf;
+        deferred.assign(n, 0);
+        for (std::size_t f = 0; f < n && f < m_jsFootKnee.size() && f < m_jsFootWasFlat.size() && f < m_jsFootUnrolled.size(); ++f) {
+            if (m_jsFootWasFlat[f] && !m_jsFootUnrolled[f] && m_jsFootKnee[f] >= 0 && static_cast<std::size_t>(m_jsFootKnee[f]) < n) {
+                deferred[static_cast<std::size_t>(m_jsFootKnee[f])] = 1;
+            }
+        }
+        rig.setLiftOffDeferred(deferred);
+    }
     if (rig.updateContacts(positions) && rig.takeLanded()) {
         captureFlatHold(true);
     }
     // A contact that has just formed in an arm that HUNG is an accident of the pose, not a hand the
     // user put down: remembered across drags (m_incidentalContact; IkRig::setIncidentalContacts).
     for (std::size_t a = 0; a < m_jsHangArms.size(); ++a) {
-        if (heldBefore[a] || !hangArmHeld(m_jsHangArms[a])) {
+        // (An arm the hang admitted THIS tick — its hand a live contact already — was held before it.)
+        const bool before = a < heldBefore.size() ? heldBefore[a] != 0 : true;
+        const bool now = hangArmHeld(m_jsHangArms[a]);
+        if (before && !now) {
+            m_jsHangArms[a].released = true; // (its contact lifted: the hang's, and no floor rows — HangArm::released)
+        }
+        if (before || !now) {
             continue;
         }
         m_jsHangArms[a].landed = true;
@@ -873,7 +989,23 @@ bool Armature::settleIkSolveTick() {
             m_jsPinsEasing = true;
         }
     }
-    if (!m_jsPinsEasing || ++m_ikSettleTicks > 120) {
+    // (... and while a POST-STEP is still turning, 2026-10-27 — the arms' hang, the head's righting:
+    // a hand that let go of the floor in the drag's last ticks was left mid-swing at the mouse-up,
+    // the arm pointing forward-down with the fingertips on the floor, and stayed there. The hang
+    // steps 4 degrees a tick to a direction it reaches exactly, so this ends; the 120-tick cap stands.
+    // IK_JS_SETTLE_PINS_ONLY restores the settle that ended with the pins.)
+    static const bool kPinsOnly = std::getenv("IK_JS_SETTLE_PINS_ONLY") != nullptr; // A/B probe
+    const bool        postStepsMoving = !kPinsOnly && m_jsPostStepMoving;
+    if (++m_ikSettleTicks > 120) {
+        return false;
+    }
+    if (!m_jsPinsEasing && !postStepsMoving) {
+        // THE SOFT BODY'S TAIL: the pose is at rest; the breasts, if they still bounce, tick on by
+        // themselves — no solve, so the pose does not depend on how long they take (2026-11-05).
+        if (softbody::breastMotion() && m_jsSoftBodyMoving) {
+            m_jsSoftBodyMoving = tickSoftBody(1.0f / 60.0f);
+            return m_jsSoftBodyMoving;
+        }
         return false;
     }
     static const bool kOldSettle = std::getenv("IK_JS_OLD_SETTLE") != nullptr; // A/B probe
@@ -884,7 +1016,7 @@ bool Armature::settleIkSolveTick() {
     m_jsSettling = true;
     dragIkTick(m_jsSettleTarget);
     m_jsSettling = false;
-    return m_jsPinsEasing;
+    return m_jsPinsEasing || (!kPinsOnly && m_jsPostStepMoving) || m_jsSoftBodyMoving;
 }
 
 } // namespace pose

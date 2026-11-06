@@ -85,7 +85,7 @@ double volumePenetration(const Armature& arm, int* worstNode, int* worstVolume, 
                 continue;
             }
             const glm::vec3 P = pos(i);
-            const float t = ax.ab2 > 1e-12f ? glm::clamp(glm::dot(P - ax.A, ax.ab) / ax.ab2, 0.0f, 1.0f) : 0.0f;
+            const float t = volumeAxisParam(ax, P);
             const float d = glm::length(P - (ax.A + ax.ab * t));
             double depth;
             if (applies == kVolumeAppliesRider) {
@@ -158,6 +158,11 @@ RunResult runScenario(const std::vector<ArmatureBone>& baseBones, const Scenario
     const std::vector<ArmatureBone>& bones = sc.scale == 1.0f ? baseBones : scaled;
     arm.build(bones);
     applyBodyMesh(arm, sc.scale);
+    // The rig from the start, as the app has it from the import on (Model::Model): a canonical
+    // name a pin or a pre-pose speaks that is none of this rig's names resolves through the rig
+    // standard's roles, which the rig holds (bonealiases.cpp) — and the alias layer never builds
+    // it (2026-11-03). Built here, after the mesh, it is the rig the first drag would have built.
+    arm.prepareIkRig();
     const std::size_t n = arm.boneCount();
     const auto applyPrePose = [&]() {
         for (const auto& [bone, euler] : sc.prePose) {
@@ -255,6 +260,14 @@ RunResult runScenario(const std::vector<ArmatureBone>& baseBones, const Scenario
     if (r.grabIndex < 0) {
         r.error = "grab bone not found: " + sc.grab;
         return r;
+    }
+    for (const std::string& name : sc.alsoGrab) { // (THE GROUP: after the selection, which clears it)
+        const int member = resolveBone(arm, name);
+        if (member < 0) {
+            r.error = "group bone not found: " + name;
+            return r;
+        }
+        arm.toggleGroupBone(member);
     }
     const glm::vec3 grabPointStart = arm.ikGrabPointWorld();
     r.startEuler.resize(n);
@@ -1113,6 +1126,11 @@ IdleMetrics runIdleMetrics(const std::vector<ArmatureBone>& baseBones, const Sce
     Armature arm;
     arm.build(sc.scale == 1.0f ? baseBones : scaledBones(baseBones, sc.scale));
     applyBodyMesh(arm, sc.scale);
+    // The rig from the start, as the app has it from the import on (Model::Model): a canonical
+    // name a pin or a pre-pose speaks that is none of this rig's names resolves through the rig
+    // standard's roles, which the rig holds (bonealiases.cpp) — and the alias layer never builds
+    // it (2026-11-03). Built here, after the mesh, it is the rig the first drag would have built.
+    arm.prepareIkRig();
     for (const auto& [bone, euler] : sc.prePose) {
         arm.setBoneRotation(resolveBoneName(arm, bone), euler);
     }

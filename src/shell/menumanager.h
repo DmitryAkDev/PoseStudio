@@ -73,6 +73,15 @@ private:
 
     /// Opens a file dialog and imports the chosen native figure (`.duf`/`.dsf`) into the viewport.
     void importFigureFile();
+    /// Open a rigged character in an interchange format (FBX, glTF / GLB, USD): one file dialog
+    /// each, all through the figure route (ViewportWidget::importFigure dispatches by extension).
+    void importFbxFile();
+    void importGltfFile();
+    void importUsdFile();
+    void importVrmFile();
+    void importRiggedFile(const QString &title, const QString &filter);
+    /// Opens a file dialog and imports the chosen Gaussian splat scene (`.ply` / `.splat`).
+    void importSplatFile();
 
     /// Saves / loads the current figure's pose to/from a `.pose` file via a file dialog.
     void savePoseFile();
@@ -96,6 +105,15 @@ private:
     // Edit → Turn Joint with Mouse → Bend / Side-Side / Twist (B / S / T); wired and kept
     // enabled-with-the-selection in setViewportWidget.
     QAction *m_turnJointActions[3] = {nullptr, nullptr, nullptr};
+
+    /// View → VR Mode (checkable) and Recenter VR View; wired in setViewportWidget.
+    QAction *m_vrModeAction = nullptr;
+    QAction *m_recenterVrAction = nullptr;
+    /// The VR Mode entry's response when VR cannot start: why, and what to do — enable VR support
+    /// (a restart, offered on the spot), or connect the headset and restart.
+    void explainVrUnavailable();
+    /// Restarts the application (the Factory Reset relaunch), after the unsaved-changes gate.
+    void relaunchApplication();
 };
 
 #endif // MENUMANAGER_H

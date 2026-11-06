@@ -22,10 +22,14 @@
 #include "constants.h"
 #include "updatecheck.h"
 #include "helpwindow.h"
+#include "whatsnewdialog.h"
 #include "viewport/viewportwidget.h"
 #include "jointtransform.h" // pose::JointTransform: which of the joint-mode keys are live
 #include "scene/shademode.h" // kDefaultShadeMode (File → New's picker reset)
+#include "vrsettings.h"      // VR Mode: can it start, and why not
+#include <QDir>
 #include <QMenu>
+#include <QProcess>
 #include <QMenuBar>
 #include <QAction>
 #include <QApplication>
@@ -94,27 +98,25 @@ void MenuManager::setupMenus() {
     fileMenu->addAction(tr("Save Copy..."))->setEnabled(false);
     fileMenu->addSeparator();
 
-    // Import submenu: one entry per supported file format, kept alphabetical. An entry with a
-    // handler is live; the rest are disabled placeholders until their importer lands — wiring a
-    // new format is filling in its handler here. .DUF is the rigged character figure: its own
-    // native scene format + pipeline (geometry + skeleton + morphs + materials), listed as a
-    // file format alongside the mesh formats.
+    // Import submenu: one entry per supported file format, kept alphabetical. Every entry is live
+    // (a handler of nullptr would be a disabled placeholder, the form the formats took before
+    // their importers landed; the Alembic, BVH, Collada, PLY and STL placeholders were dropped on
+    // 2026-11-04 — none is a character format worth the menu room). .DUF is the rigged character
+    // figure: its own native scene format + pipeline (geometry + skeleton + morphs + materials),
+    // listed as a file format alongside the mesh formats.
     QMenu *importMenu = fileMenu->addMenu(loadDualStateIcon("import"), tr("Import"));
     struct ImportFormat {
         const char *label;
         void (MenuManager::*handler)(); // nullptr = importer not built yet
     };
     const ImportFormat importFormats[] = {
-        {".ABC (Alembic)",                    nullptr},
-        {".BVH (Biovision Hierarchy)",        nullptr},
-        {".DAE (Collada)",                    nullptr},
         {".DUF (DUF File)",                   &MenuManager::importFigureFile},
-        {".FBX (FBX File)",                   nullptr},
-        {".GLB (GL Transmission Format .glTF)", nullptr},
+        {".FBX (FBX File)",                   &MenuManager::importFbxFile},
+        {".GLB (GL Transmission Format .glTF)", &MenuManager::importGltfFile},
         {".OBJ (Wavefront)",                  &MenuManager::importObjFile},
-        {".PLY (Polygon File Format)",        nullptr},
-        {".STL (Stereolithography)",          nullptr},
-        {".USD (Universal Scene Description)", nullptr},
+        {".PLY / .SPLAT / .SPZ (Gaussian Splat)",    &MenuManager::importSplatFile},
+        {".USD (Universal Scene Description)", &MenuManager::importUsdFile},
+        {".VRM (VRM Avatar)",                 &MenuManager::importVrmFile},
     };
     for (const ImportFormat &format : importFormats) {
         QAction *action = importMenu->addAction(format.label);
@@ -301,6 +303,16 @@ void MenuManager::setupMenus() {
         if (viewportWidget) viewportWidget->resetView();
     });
 
+    // VR Mode: the scene in the headset (OpenXR — Quest Link / Air Link, SteamVR, Virtual
+    // Desktop), the window mirroring its left eye. Checkable; kept in sync with the viewport's
+    // vrModeChanged (the runtime can end a session on its own). Recenter puts the user back in
+    // front of the figure. Both wired in setViewportWidget, like Show Skeleton.
+    viewMenu->addSeparator();
+    m_vrModeAction = viewMenu->addAction(tr("VR Mode"));
+    m_vrModeAction->setCheckable(true);
+    m_recenterVrAction = viewMenu->addAction(tr("Recenter VR View"));
+    m_recenterVrAction->setEnabled(false);
+
     // =========================================================================
     // HELP MENU — documentation, support links, and the About dialog
     QMenu *helpMenu = mainWindow->menuBar()->addMenu(tr("Help"));
@@ -312,6 +324,12 @@ void MenuManager::setupMenus() {
     manualAction->setShortcut(QKeySequence::HelpContents);
     QObject::connect(manualAction, &QAction::triggered, mainWindow, [this]() {
         HelpWindow::open(mainWindow);
+    });
+    // What's New…: the running version's release notes in their own window — the one that opens
+    // by itself on the first start of a new version (whatsnewdialog.h); here, on demand.
+    QAction *whatsNewAction = helpMenu->addAction(tr("What's New..."));
+    QObject::connect(whatsNewAction, &QAction::triggered, mainWindow, [this]() {
+        WhatsNewDialog::showNow(mainWindow);
     });
     QAction *releaseNotesAction = helpMenu->addAction(tr("Release Notes"));
     QObject::connect(releaseNotesAction, &QAction::triggered, mainWindow, [this]() {
@@ -390,6 +408,124 @@ void MenuManager::setViewportWidget(pose::ViewportWidget *viewport) {
         m_showSkeletonAction->setChecked(visible);
         m_showSkeletonAction->blockSignals(false);
     });
+
+    // View → VR Mode: a start the viewport cannot do explains itself (explainVrUnavailable)
+    // instead of failing silently; the viewport's vrModeChanged keeps the check mark honest
+    // (the headset runtime can end a session by itself), and Recenter is live only in VR.
+    if (m_vrModeAction) {
+        QObject::connect(m_vrModeAction, &QAction::triggered, this, [this](bool on) {
+            if (!viewportWidget) {
+                return;
+            }
+            if (!on) {
+                viewportWidget->setVrMode(false);
+                return;
+            }
+            if (!VrSettings::ready() || !viewportWidget->setVrMode(true)) {
+                m_vrModeAction->blockSignals(true);
+                m_vrModeAction->setChecked(false);
+                m_vrModeAction->blockSignals(false);
+                if (!VrSettings::ready()) {
+                    explainVrUnavailable();
+                }
+            }
+        });
+        QObject::connect(viewport, &pose::ViewportWidget::vrModeChanged, this, [this](bool on) {
+            if (m_vrModeAction && m_vrModeAction->isChecked() != on) {
+                m_vrModeAction->blockSignals(true);
+                m_vrModeAction->setChecked(on);
+                m_vrModeAction->blockSignals(false);
+            }
+            if (m_recenterVrAction) {
+                m_recenterVrAction->setEnabled(on);
+            }
+        });
+        QObject::connect(viewport, &pose::ViewportWidget::vrError, this, [this](const QString &message) {
+            QMessageBox::warning(mainWindow, tr("VR Mode"), message);
+        });
+        // The strip's VR button and its view picker's VR Mode entry take the menu entry's path
+        // (trigger: the toggle + the handler above, explanation included), so every way in is one.
+        QObject::connect(viewport, &pose::ViewportWidget::vrModeRequested, this, [this](bool on) {
+            if (m_vrModeAction && m_vrModeAction->isChecked() != on) {
+                m_vrModeAction->trigger();
+            }
+        });
+    }
+    if (m_recenterVrAction) {
+        QObject::connect(m_recenterVrAction, &QAction::triggered, this, [this]() {
+            if (viewportWidget) viewportWidget->recenterVr();
+        });
+    }
+}
+
+void MenuManager::explainVrUnavailable() {
+    QMessageBox box(mainWindow);
+    box.setIcon(QMessageBox::Information);
+    box.setWindowTitle(tr("VR Mode"));
+    if (!VrSettings::isEnabled()) {
+        // Opt-in: the headset runtime is consulted as PoseStudio starts (before the Vulkan device
+        // exists), so turning VR on is a restart — offered right here.
+        box.setText(tr("VR support is off."));
+        box.setInformativeText(
+            tr("PoseStudio connects to the headset runtime when it starts, so VR support takes a restart to "
+               "turn on. Connect your headset first (Quest Link or Air Link, Virtual Desktop, or SteamVR), "
+               "then restart — your scene comes back with it.\n\nTurn VR support on now?"));
+        QAbstractButton *restart = box.addButton(tr("Turn On and Restart"), QMessageBox::AcceptRole);
+        QAbstractButton *later = box.addButton(tr("Turn On, Restart Later"), QMessageBox::ActionRole);
+        box.addButton(tr("Cancel"), QMessageBox::RejectRole);
+        box.exec();
+        if (box.clickedButton() == restart || box.clickedButton() == later) {
+            VrSettings::setEnabled(true);
+        }
+        if (box.clickedButton() == restart) {
+            relaunchApplication();
+        }
+        return;
+    }
+    // VR support is on, but the startup found no usable headset: the status says why.
+    box.setText(tr("VR Mode cannot start."));
+    box.setInformativeText(tr("%1\n\nConnect the headset (Quest Link or Air Link, Virtual Desktop, or SteamVR), "
+                              "then restart PoseStudio — your scene comes back with it.")
+                               .arg(VrSettings::status()));
+    QAbstractButton *restart = box.addButton(tr("Restart Now"), QMessageBox::AcceptRole);
+    box.addButton(tr("OK"), QMessageBox::RejectRole);
+    box.exec();
+    if (box.clickedButton() == restart) {
+        relaunchApplication();
+    }
+}
+
+void MenuManager::relaunchApplication() {
+    // THE SCENE SURVIVES THE RESTART: it is saved to a temporary project the new process reopens
+    // (main.cpp's --restore-scene), deletes, and re-attaches to the document it belonged to —
+    // unsaved as it was — so a restart costs the user nothing and asks nothing. Only when that
+    // temporary file cannot be written does the unsaved-changes prompt stand in.
+    QStringList args;
+    bool preserved = false;
+    if (viewportWidget) {
+        const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+        const QString temp = dir + QStringLiteral("/restart-scene.pss");
+        if (QDir().mkpath(dir) && viewportWidget->saveProjectFile(temp)) {
+            preserved = true;
+            args << QStringLiteral("--restore-scene") << temp;
+            if (!viewportWidget->projectPath().isEmpty()) {
+                args << QStringLiteral("--project") << viewportWidget->projectPath();
+            }
+            if (!viewportWidget->isProjectDirty()) {
+                args << QStringLiteral("--project-clean");
+            }
+        }
+    }
+    if (!preserved && !confirmDiscardChanges()) {
+        return; // Save cancelled, or the user changed their mind
+    }
+    if (viewportWidget) {
+        viewportWidget->setProjectClean(); // preserved, saved or let go of: no second prompt on the way out
+    }
+    // The Factory Reset relaunch (factoryresetpreferencespanel.cpp), with only the restore
+    // arguments: the new process must not replay this one's "open-with" paths.
+    QProcess::startDetached(QApplication::applicationFilePath(), args);
+    QApplication::quit();
 }
 
 void MenuManager::newScene() {
@@ -439,6 +575,54 @@ void MenuManager::importFigureFile() {
         mainWindow, tr("Import Character Figure"),
         rememberedStartDir(Constants::PREF_LAST_IMPORT_DIR),
         tr("Figure Files (*.duf *.dsf)"));
+    if (path.isEmpty()) return; // user cancelled
+
+    PreferencesManager::instance().setValue(Constants::PREF_LAST_IMPORT_DIR,
+                                            QFileInfo(path).absolutePath());
+    viewportWidget->importFigure(path);
+}
+
+void MenuManager::importFbxFile() {
+    // A rigged character in an FBX file: imported through the figure route (VulkanWindow dispatches
+    // by extension), conformed to the rig standard on the way in. A static FBX mesh imports too, as
+    // a model without a skeleton.
+    importRiggedFile(tr("Import FBX Character"), tr("FBX Files (*.fbx)"));
+}
+
+void MenuManager::importGltfFile() {
+    // A rigged character in a glTF file — the binary .glb, or a .gltf with its buffers and
+    // images beside it — through the same route as FBX.
+    importRiggedFile(tr("Import glTF Character"), tr("glTF Files (*.glb *.gltf)"));
+}
+
+void MenuManager::importUsdFile() {
+    // A rigged character in a USD file — ASCII, crate, or a USDZ package — through the same route.
+    importRiggedFile(tr("Import USD Character"), tr("USD Files (*.usd *.usda *.usdc *.usdz)"));
+}
+
+void MenuManager::importVrmFile() {
+    // A VRM avatar: a GLB with a humanoid bone map, read by the glTF reader through the same route.
+    importRiggedFile(tr("Import VRM Avatar"), tr("VRM Avatars (*.vrm)"));
+}
+
+void MenuManager::importSplatFile() {
+    // A Gaussian splat scene — the trained .ply or the compact .splat — as a static, unlit model
+    // (SplatImportService; drawn by the scene's splat pass).
+    if (!viewportWidget) return;
+    const QString path = QFileDialog::getOpenFileName(
+        mainWindow, tr("Import Gaussian Splat"), rememberedStartDir(Constants::PREF_LAST_IMPORT_DIR),
+        tr("Gaussian Splat Files (*.ply *.splat *.spz)"));
+    if (path.isEmpty()) return; // user cancelled
+
+    PreferencesManager::instance().setValue(Constants::PREF_LAST_IMPORT_DIR,
+                                            QFileInfo(path).absolutePath());
+    viewportWidget->importSplat(path);
+}
+
+void MenuManager::importRiggedFile(const QString &title, const QString &filter) {
+    if (!viewportWidget) return;
+    const QString path = QFileDialog::getOpenFileName(
+        mainWindow, title, rememberedStartDir(Constants::PREF_LAST_IMPORT_DIR), filter);
     if (path.isEmpty()) return; // user cancelled
 
     PreferencesManager::instance().setValue(Constants::PREF_LAST_IMPORT_DIR,
@@ -640,6 +824,10 @@ void MenuManager::openPreferencesDialog(const QString &initialTab) {
                           assetManagerWidget, &AssetManagerWidget::refreshAssetManager);
         QObject::connect(&dialog, &PreferencesDialog::navigateToLibraryRequested,
                           assetManagerWidget, &AssetManagerWidget::navigateToLibraryRoot);
+    }
+    if (viewportWidget) {
+        QObject::connect(&dialog, &PreferencesDialog::softBodySettingsChanged,
+                          viewportWidget, &pose::ViewportWidget::applySoftBodySettings);
     }
     dialog.exec();
 }

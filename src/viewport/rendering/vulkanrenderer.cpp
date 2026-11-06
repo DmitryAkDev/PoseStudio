@@ -5,6 +5,8 @@
 
 #include "vulkanrenderer.h"
 
+#include <cstdlib>
+
 #include "hdrtarget.h"
 #include "outlinemask.h"
 #include "postprocess.h"
@@ -22,6 +24,13 @@
 #include <limits>
 
 namespace pose {
+
+namespace {
+// POSESTUDIO_NO_BLOOM=1: the bloom chain off — a diagnostic, for what of a bright image is the
+// bloom's (a Gaussian splat capture's highlights, put back above 1.0 by the inverse tonemap,
+// bloom as a lamp would).
+const bool kNoBloom = std::getenv("POSESTUDIO_NO_BLOOM") != nullptr;
+} // namespace
 
 namespace {
 
@@ -42,15 +51,52 @@ UniqueFence makeSignalledFence(VkDevice device) {
     return UniqueFence(device, fence);
 }
 
+/// Sets the dynamic viewport + scissor to the whole of @p extent.
+void setFullViewport(VkCommandBuffer cmd, VkExtent2D extent) {
+    VkViewport viewport{};
+    viewport.width = static_cast<float>(extent.width);
+    viewport.height = static_cast<float>(extent.height);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    VkRect2D scissor{};
+    scissor.extent = extent;
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+}
+
+// The outline's width is 2 logical pixels — Blender's default outline weight — scaled to
+// physical pixels by the window's device pixel ratio (desktop) or the eye image's height (VR).
+constexpr float kOutlineWidthLogicalPx = 2.0f;
+
 } // namespace
+
+/// VR Mode's targets (see beginVr): the eye-sized scene targets and post chain, the headset
+/// composite's render pass (borrowed from the session), and the VR frame's own command buffer +
+/// fence — one VR frame in flight, independent of the desktop frames' slots.
+struct VulkanRenderer::VrTargets {
+    VkRenderPass                 renderPass = VK_NULL_HANDLE; // the session's, over its images
+    VkExtent2D                   extent{};
+    bool                         encodeSrgb = false;
+    bool                         reducedEffects = false; // no SSS / bloom in the eyes
+    float                        outlineWidthPx = kOutlineWidthLogicalPx;
+    bool                         hasFrame = false;     // a stereo frame has rendered: the eye targets hold one
+    bool                         lastOutlined = false; // ... with an outline mask
+    std::unique_ptr<HdrTarget>   hdr;
+    std::unique_ptr<OutlineMask> outline;
+    std::unique_ptr<PostProcess> post;
+    VkCommandBuffer              cmd = VK_NULL_HANDLE; // from the renderer's pool
+    UniqueFence                  fence;
+};
 
 VulkanRenderer::VulkanRenderer(VulkanContext& context, VkExtent2D initialExtent,
                                std::string shaderDir)
     : m_context(context), m_windowExtent(initialExtent) {
     // Every compiled shader is read up front: a missing .spv fails here with one clear message
     // (the usual cause is the shader-compile build step not having run) rather than partway
-    // through pipeline construction. The blobs are only needed while the pipelines are built.
-    ShaderLibrary shaders(std::move(shaderDir));
+    // through pipeline construction. The blobs are kept: VR Mode builds a second post chain
+    // from them later (beginVr).
+    m_shaders = std::make_unique<ShaderLibrary>(std::move(shaderDir));
+    ShaderLibrary& shaders = *m_shaders;
     shaders.preload();
 
     m_swapchain = std::make_unique<VulkanSwapchain>(m_context, m_windowExtent);
@@ -70,7 +116,8 @@ VulkanRenderer::VulkanRenderer(VulkanContext& context, VkExtent2D initialExtent,
                                       shaders.get("shadow.vert"), shaders.get("shadow.frag"),
                                       shaders.get("background.vert"),
                                       shaders.get("background.frag"),
-                                      shaders.get("outlinemask.frag"));
+                                      shaders.get("outlinemask.frag"),
+                                      shaders.get("splat.vert"), shaders.get("splat.frag"));
 
     // The grid samples the scene's shadow map (ground/contact shadow) through the scene-wide
     // set 3, so its pipeline is built against that layout — Scene must exist first.
@@ -80,7 +127,8 @@ VulkanRenderer::VulkanRenderer(VulkanContext& context, VkExtent2D initialExtent,
 
     m_postProcess = std::make_unique<PostProcess>(
         m_context, m_swapchain->renderPass(), m_hdrTarget->resolveInfo(),
-        m_hdrTarget->specResolveInfo(), m_outlineMask->descriptorInfo(), m_swapchain->extent(),
+        m_hdrTarget->specResolveInfo(), m_hdrTarget->photoResolveInfo(), m_outlineMask->descriptorInfo(),
+        m_swapchain->extent(),
         shaders.get("fullscreen.vert"), shaders.get("bloombright.frag"),
         shaders.get("bloomblur.frag"), shaders.get("composite.frag"),
         shaders.get("sssblur.frag"));
@@ -100,12 +148,145 @@ VulkanRenderer::~VulkanRenderer() {
     // were built against).
     vkDeviceWaitIdle(m_context.device());
 
+    if (m_vr) {
+        m_postProcess->clearMirrorSource(); // it points at the eye targets about to go
+        m_vr.reset();
+    }
     m_postProcess.reset();
     m_grid.reset();
     m_scene.reset();
     m_outlineMask.reset();
     m_hdrTarget.reset();
     m_swapchain.reset();
+}
+
+void VulkanRenderer::beginVr(VkRenderPass eyeRenderPass, VkExtent2D eyeExtent, bool encodeSrgb,
+                             VkRenderPass eyeDepthRenderPass, bool reducedEffects) {
+    endVr();
+    // Nothing may be in flight: the VR frames write the per-frame UBO slots the desktop frames
+    // were using, and from here on the desktop frame only composites (the mirror).
+    vkDeviceWaitIdle(m_context.device());
+
+    auto vr = std::make_unique<VrTargets>();
+    vr->renderPass = eyeRenderPass;
+    vr->extent = eyeExtent;
+    vr->encodeSrgb = encodeSrgb;
+    vr->reducedEffects = reducedEffects;
+    // A headset image is ~2000 px tall; the 2-logical-pixel outline is scaled against a 1080p
+    // frame so it stays a visible hairline in the headset and in the mirror.
+    vr->outlineWidthPx = kOutlineWidthLogicalPx * std::max(1.0f, static_cast<float>(eyeExtent.height) / 1080.0f);
+    // The same pass structure as the desktop targets (same formats, same MSAA count), so every
+    // scene pipeline — built against the desktop targets' passes — is compatible with these. The
+    // depth is kept (and resolved per eye) only when the session has a depth pass AND the scene
+    // is multisampled: the resolve shader reads a multisampled image.
+    const bool depthResolve = eyeDepthRenderPass != VK_NULL_HANDLE && m_context.sampleCount() != VK_SAMPLE_COUNT_1_BIT;
+    vr->hdr = std::make_unique<HdrTarget>(m_context, eyeExtent, /*storeDepth=*/depthResolve);
+    vr->outline = std::make_unique<OutlineMask>(m_context, eyeExtent);
+    ShaderLibrary& shaders = *m_shaders;
+    vr->post = std::make_unique<PostProcess>(
+        m_context, eyeRenderPass, vr->hdr->resolveInfo(), vr->hdr->specResolveInfo(),
+        vr->hdr->photoResolveInfo(), vr->outline->descriptorInfo(), eyeExtent, shaders.get("fullscreen.vert"),
+        shaders.get("bloombright.frag"), shaders.get("bloomblur.frag"), shaders.get("composite.frag"),
+        shaders.get("sssblur.frag"));
+    if (depthResolve) {
+        vr->post->enableDepthResolve(eyeDepthRenderPass, vr->hdr->depthInfo(),
+                                     static_cast<uint32_t>(m_context.sampleCount()), shaders.get("fullscreen.vert"),
+                                     shaders.get("depthresolve.frag"));
+    }
+
+    VkCommandBufferAllocateInfo ai{};
+    ai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    ai.commandPool = m_commandPool.get();
+    ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    ai.commandBufferCount = 1;
+    VK_CHECK(vkAllocateCommandBuffers(m_context.device(), &ai, &vr->cmd));
+    vr->fence = makeSignalledFence(m_context.device());
+
+    // The desktop composite mirrors the eye targets from now on.
+    m_postProcess->setMirrorSource(vr->hdr->resolveInfo(), vr->post->bloomInfo(), vr->outline->descriptorInfo(),
+                                   vr->hdr->photoResolveInfo());
+    m_vr = std::move(vr);
+}
+
+void VulkanRenderer::endVr() {
+    if (!m_vr) {
+        return;
+    }
+    vkDeviceWaitIdle(m_context.device());
+    m_postProcess->clearMirrorSource();
+    if (m_vr->cmd != VK_NULL_HANDLE) {
+        vkFreeCommandBuffers(m_context.device(), m_commandPool.get(), 1, &m_vr->cmd);
+    }
+    m_vr.reset();
+}
+
+void VulkanRenderer::drawVrFrame(const VrEyeView views[2], const VkFramebuffer eyeFramebuffers[2],
+                                 const VkFramebuffer eyeDepthFramebuffers[2]) {
+    if (!m_vr) {
+        return;
+    }
+    static_assert(kMaxFramesInFlight >= 2, "each eye writes its own per-frame UBO slot");
+    VkDevice device = m_context.device();
+    const VkFence fence = m_vr->fence.get();
+    // One VR frame in flight: the previous frame's command buffer and the UBO slots both eyes
+    // write must be free before this one records — and so must the desktop frames' (a desktop
+    // frame recorded before the first stereo frame still renders the scene through those slots;
+    // afterwards it only composites the mirror and these waits are free).
+    VK_CHECK(vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX));
+    for (const UniqueFence& desktopFence : m_inFlightFences) {
+        const VkFence handle = desktopFence.get();
+        VK_CHECK(vkWaitForFences(device, 1, &handle, VK_TRUE, UINT64_MAX));
+    }
+
+    VkCommandBuffer cmd = m_vr->cmd;
+    VK_CHECK(vkResetCommandBuffer(cmd, 0));
+    VkCommandBufferBeginInfo begin{};
+    begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    VK_CHECK(vkBeginCommandBuffer(cmd, &begin));
+
+    // The shadow map is view-independent: once per frame, shared by both eyes.
+    m_scene->recordShadowPass(cmd, 0);
+
+    const bool pbr = m_scene->isPbr();
+    const bool post = !m_vr->reducedEffects; // the SSS blur + bloom (skipped on a lighter GPU)
+    const bool tonemap = pbr && m_scene->lightingSettings().tonemap;
+    bool outlined = false;
+    // Right eye first, LEFT eye last: the eye targets are reused by both eyes in sequence, so
+    // they end the frame holding the left eye — the one the desktop mirror composites.
+    for (int eye = 1; eye >= 0; --eye) {
+        Camera eyeCamera;
+        eyeCamera.setExplicitView(views[eye].view, views[eye].projection);
+        outlined = recordScenePasses(cmd, eyeCamera, static_cast<uint32_t>(eye), *m_vr->hdr, *m_vr->outline,
+                                     *m_vr->post, m_vr->extent, post);
+
+        VkRenderPassBeginInfo eyePass{};
+        eyePass.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        eyePass.renderPass = m_vr->renderPass;
+        eyePass.framebuffer = eyeFramebuffers[eye];
+        eyePass.renderArea.extent = m_vr->extent;
+        vkCmdBeginRenderPass(cmd, &eyePass, VK_SUBPASS_CONTENTS_INLINE);
+        setFullViewport(cmd, m_vr->extent);
+        PostProcess::CompositeOptions options;
+        options.encodeSrgb = m_vr->encodeSrgb;
+        m_vr->post->recordComposite(cmd, tonemap, pbr && post, outlined ? m_vr->outlineWidthPx : 0.0f, options);
+        vkCmdEndRenderPass(cmd);
+
+        // The eye's depth, for the runtime's reprojection (XR_KHR_composition_layer_depth).
+        if (eyeDepthFramebuffers != nullptr && eyeDepthFramebuffers[eye] != VK_NULL_HANDLE &&
+            m_vr->post->hasDepthResolve()) {
+            m_vr->post->recordDepthResolve(cmd, eyeDepthFramebuffers[eye], m_vr->extent);
+        }
+    }
+    m_vr->lastOutlined = outlined;
+    m_vr->hasFrame = true;
+    VK_CHECK(vkEndCommandBuffer(cmd));
+
+    VK_CHECK(vkResetFences(device, 1, &fence));
+    VkSubmitInfo submit{};
+    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &cmd;
+    VK_CHECK(vkQueueSubmit(m_context.graphicsQueue(), 1, &submit, fence));
 }
 
 void VulkanRenderer::notifyResize(VkExtent2D newExtent) {
@@ -120,6 +301,10 @@ void VulkanRenderer::notifyResize(VkExtent2D newExtent) {
 
 void VulkanRenderer::addModel(const ModelData& data) {
     m_scene->addModel(data);
+}
+
+void VulkanRenderer::addSplatModel(const SplatData& data, const glm::mat4& transform) {
+    m_scene->addSplatModel(data, transform);
 }
 
 void VulkanRenderer::deleteModel(std::size_t index) {
@@ -223,7 +408,7 @@ void VulkanRenderer::recreateSwapchain() {
     // (the device is idle here).
     m_hdrTarget->resize(extent);
     m_outlineMask->resize(extent);
-    m_postProcess->resize(extent, m_hdrTarget->resolveInfo(), m_hdrTarget->specResolveInfo(),
+    m_postProcess->resize(extent, m_hdrTarget->resolveInfo(), m_hdrTarget->specResolveInfo(), m_hdrTarget->photoResolveInfo(),
                           m_outlineMask->descriptorInfo());
     m_camera.setViewportSize(static_cast<float>(extent.width), static_cast<float>(extent.height));
     m_framebufferResized = false;
@@ -350,36 +535,19 @@ bool VulkanRenderer::takeCapture(CapturedFrame& out) {
     return true;
 }
 
-void VulkanRenderer::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex, VkBuffer captureInto) {
-    VkCommandBufferBeginInfo begin{};
-    begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    VK_CHECK(vkBeginCommandBuffer(cmd, &begin));
-
-    // Key-light shadow pass first (its own depth-only render pass on the shadow map), so the
-    // scene pass below can sample the fresh map. Also fits this frame's light matrix, which
-    // Scene::record() writes into the camera UBO.
-    m_scene->recordShadowPass(cmd, m_currentFrame);
-
+bool VulkanRenderer::recordScenePasses(VkCommandBuffer cmd, const Camera& camera, uint32_t frameSlot,
+                                       HdrTarget& hdr, OutlineMask& outline, PostProcess& post,
+                                       VkExtent2D extent, bool postEffects) {
     // Selection-outline mask (its own small pass, skipped when nothing is selected): the
-    // composite dilates it into the outline, so it too must precede the swapchain pass.
-    const bool outlined = m_scene->recordOutlinePass(cmd, m_camera, m_currentFrame, *m_outlineMask);
-
-    const VkExtent2D extent = m_swapchain->extent();
-
-    VkViewport viewport{};
-    viewport.width = static_cast<float>(extent.width);
-    viewport.height = static_cast<float>(extent.height);
-    viewport.minDepth = 0.0f;
-    viewport.maxDepth = 1.0f;
-    VkRect2D scissor{};
-    scissor.extent = extent;
+    // composite dilates it into the outline, so it too must precede the composite's pass.
+    const bool outlined = m_scene->recordOutlinePass(cmd, camera, frameSlot, outline);
 
     // --- Offscreen HDR scene pass: backdrop + meshes + grid, in LINEAR HDR. --------------------
     // Five clear slots cover every attachment layout the HDR target uses (MSAA:
     // colourMS/depth/resolve/specMS/specResolve; single-sample: colour/depth/spec) — the
     // SPECULAR attachments clear to zero (no specular where nothing draws). The swapchain pass
     // below needs none: its one attachment loads DONT_CARE.
-    std::array<VkClearValue, 5> clears{};
+    std::array<VkClearValue, 7> clears{};
     // Viewport background #3E4042 = (62, 64, 66) as LINEAR values (sRGB->linear of each channel).
     // The HDR target is a linear format and the composite's sRGB swapchain store does the final
     // encode, so the displayed pixel comes back out as exactly #3E4042. Alpha clears to 0: the
@@ -389,33 +557,81 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageInde
     clears[2].color = {{0.0f, 0.0f, 0.0f, 0.0f}}; // single-sample: the spec attachment
     clears[3].color = {{0.0f, 0.0f, 0.0f, 0.0f}}; // MSAA: the spec MS attachment
     clears[4].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+    clears[5].color = {{0.0f, 0.0f, 0.0f, 0.0f}}; // the photo layer (coverage 0: nothing over the scene)
+    clears[6].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
 
     VkRenderPassBeginInfo scenePass{};
     scenePass.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    scenePass.renderPass = m_hdrTarget->renderPass();
-    scenePass.framebuffer = m_hdrTarget->framebuffer();
+    scenePass.renderPass = hdr.renderPass();
+    scenePass.framebuffer = hdr.framebuffer();
     scenePass.renderArea.extent = extent;
-    scenePass.clearValueCount = m_hdrTarget->attachmentCount();
+    scenePass.clearValueCount = hdr.attachmentCount();
     scenePass.pClearValues = clears.data();
     vkCmdBeginRenderPass(cmd, &scenePass, VK_SUBPASS_CONTENTS_INLINE);
-    vkCmdSetViewport(cmd, 0, 1, &viewport);
-    vkCmdSetScissor(cmd, 0, 1, &scissor);
+    setFullViewport(cmd, extent);
 
     // Imported meshes first (opaque, depth test+write), then the grid — a transparent overlay
     // that depth-tests against scene geometry and blends; the scene's set 3 + light matrix +
     // shadow dials feed its PCSS ground shadow.
-    m_scene->record(cmd, m_camera, m_currentFrame);
+    m_scene->record(cmd, camera, frameSlot);
     const LightingSettings& lighting = m_scene->lightingSettings();
-    m_grid->record(cmd, m_camera, m_scene->iblSet(), m_scene->lightViewProj(),
+    m_grid->record(cmd, camera, m_scene->iblSet(), m_scene->lightViewProj(),
                    glm::vec4(lighting.shadowIntensity, lighting.shadowSoftness,
                              lighting.shadowReach, 0.0f));
+    // Then the Gaussian splats (far-first, alpha-blended, depth-tested against the meshes): after
+    // the grid, so a capture's floor covers the grid's lines rather than wearing them.
+    m_scene->recordSplats(cmd, camera, frameSlot);
     vkCmdEndRenderPass(cmd);
 
-    // --- SSSSS then bloom (PBR mode only — the stylized modes author display-ready values). ----
+    // --- SSSSS then bloom (PBR mode only — the stylized modes author display-ready values;
+    // VR Mode's reduced-effects preference skips both). -------------------------------------
+    if (m_scene->isPbr() && postEffects) {
+        post.recordSss(cmd); // diffuses skin in place (HDR alpha = the SSS mask)
+        if (!kNoBloom) {
+            post.recordBloom(cmd); // then blooms the diffused image
+        }
+    }
+    return outlined;
+}
+
+void VulkanRenderer::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex, VkBuffer captureInto) {
+    VkCommandBufferBeginInfo begin{};
+    begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    VK_CHECK(vkBeginCommandBuffer(cmd, &begin));
+
+    const VkExtent2D extent = m_swapchain->extent();
     const bool pbr = m_scene->isPbr();
-    if (pbr) {
-        m_postProcess->recordSss(cmd);   // diffuses skin in place (HDR alpha = the SSS mask)
-        m_postProcess->recordBloom(cmd); // then blooms the diffused image
+    const bool tonemap = pbr && m_scene->lightingSettings().tonemap;
+    // The mirror shows the eye frame as rendered: with reduced effects there is no bloom in it.
+    const bool bloom = pbr && !kNoBloom && !(m_vr && m_vr->hasFrame && m_vr->reducedEffects);
+    float outlineWidthPx = 0.0f;
+    PostProcess::CompositeOptions composite;
+
+    if (m_vr && m_vr->hasFrame) {
+        // VR MODE: the desktop window is a MIRROR of the headset's left eye (drawVrFrame leaves
+        // the eye targets holding it). No scene passes here — the eye frame already rendered
+        // them — just the composite, cropped to the window's aspect so the near-square eye
+        // image is neither stretched nor letterboxed. (Until the first stereo frame has
+        // rendered, the eye targets hold nothing sampleable: the desktop renders itself.)
+        composite.fromMirror = true;
+        const float eyeAspect = static_cast<float>(m_vr->extent.width) / static_cast<float>(m_vr->extent.height);
+        const float windowAspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+        if (windowAspect > eyeAspect) {
+            composite.uvScale[1] = eyeAspect / windowAspect; // wider window: crop the eye's top/bottom
+            composite.uvOffset[1] = 0.5f * (1.0f - composite.uvScale[1]);
+        } else {
+            composite.uvScale[0] = windowAspect / eyeAspect; // taller window: crop the sides
+            composite.uvOffset[0] = 0.5f * (1.0f - composite.uvScale[0]);
+        }
+        outlineWidthPx = m_vr->lastOutlined ? m_vr->outlineWidthPx : 0.0f;
+    } else {
+        // Key-light shadow pass first (its own depth-only render pass on the shadow map), so the
+        // scene pass can sample the fresh map. Also fits this frame's light matrix, which
+        // Scene::record() writes into the camera UBO.
+        m_scene->recordShadowPass(cmd, m_currentFrame);
+        const bool outlined = recordScenePasses(cmd, m_camera, m_currentFrame, *m_hdrTarget, *m_outlineMask,
+                                                *m_postProcess, extent);
+        outlineWidthPx = outlined ? kOutlineWidthLogicalPx * m_uiScale : 0.0f;
     }
 
     // --- Swapchain pass: the fullscreen composite (tonemap + bloom add + outline). -------------
@@ -429,13 +645,8 @@ void VulkanRenderer::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageInde
     presentPass.clearValueCount = 0;
     presentPass.pClearValues = nullptr;
     vkCmdBeginRenderPass(cmd, &presentPass, VK_SUBPASS_CONTENTS_INLINE);
-    vkCmdSetViewport(cmd, 0, 1, &viewport);
-    vkCmdSetScissor(cmd, 0, 1, &scissor);
-    // The outline's width is 2 logical pixels — Blender's default outline weight — scaled to
-    // physical pixels by the window's device pixel ratio.
-    constexpr float kOutlineWidthLogicalPx = 2.0f;
-    m_postProcess->recordComposite(cmd, pbr && m_scene->lightingSettings().tonemap, pbr,
-                                   outlined ? kOutlineWidthLogicalPx * m_uiScale : 0.0f);
+    setFullViewport(cmd, extent);
+    m_postProcess->recordComposite(cmd, tonemap, bloom, outlineWidthPx, composite);
     vkCmdEndRenderPass(cmd);
 
     if (captureInto != VK_NULL_HANDLE) {

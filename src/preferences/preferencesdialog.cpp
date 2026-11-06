@@ -8,6 +8,8 @@
 #include "generalpreferencespanel.h"
 #include "assetspreferencespanel.h"
 #include "placeholderpreferencespanel.h"
+#include "vrpreferencespanel.h"
+#include "posingpreferencespanel.h"
 #include "factoryresetpreferencespanel.h"
 
 #include <QListWidget>
@@ -83,6 +85,10 @@ PreferencesDialog::PreferencesDialog(QWidget* parent)
              new PlaceholderPreferencesPanel(
                  tr("Navigation"),
                  tr("Viewport navigation settings will appear here."), this));
+    auto* posingPanel = new PosingPreferencesPanel(this);
+    connect(posingPanel, &PosingPreferencesPanel::softBodyChanged, this, &PreferencesDialog::softBodySettingsChanged);
+    addPanel(tr("Posing"),        posingPanel);
+    addPanel(tr("VR"),            new VrPreferencesPanel(this));
     addPanel(tr("System"),
              new PlaceholderPreferencesPanel(
                  tr("System"),

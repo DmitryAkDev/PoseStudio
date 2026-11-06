@@ -6,12 +6,16 @@
 #include "viewportwidget.h"
 
 #include "jointmodalinput.h"
+#include "openxrsystem.h" // the headset's Vulkan requirements, negotiated before the instance (vr/)
 #include "scene/jointtransform.h"
 #include "scene/shademode.h"
 #include "viewportstrip.h"
+#include "vrsettings.h"
 #include "vulkanwindow.h"
 
 #include <QAction>
+#include <QApplication>
+#include <QByteArrayList>
 #include <QCoreApplication>
 #include <QDebug>
 #include <QEvent>
@@ -30,6 +34,9 @@
 
 #include <vulkan/vulkan.h>
 
+#include <algorithm>
+#include <string>
+
 namespace pose {
 
 namespace {
@@ -44,7 +51,43 @@ ViewportWidget::ViewportWidget(QWidget* parent) : QWidget(parent) {
     layout->setContentsMargins(0, 0, 0, 0);
 
     m_instance = std::make_unique<QVulkanInstance>();
-    m_instance->setApiVersion(QVersionNumber(1, 1));
+    uint32_t apiVersion = kVulkanApiVersion;
+
+    // VR (opt-in, Preferences → VR): the headset runtime dictates instance extensions, a device
+    // and an API version range BEFORE the instance exists, so it is consulted here, first. Every
+    // failure is a normal outcome reported to the Preferences page; the viewport is the same
+    // without it. Off by default because connecting to a runtime at every launch would start
+    // SteamVR for people who never wear a headset.
+    if (VrSettings::isEnabled()) {
+        std::string reason;
+        m_xr = OpenXrSystem::create(reason);
+        if (!m_xr) {
+            VrSettings::setStatus(QString::fromStdString(reason));
+            qInfo() << "[vr] unavailable:" << QString::fromStdString(reason);
+        } else if (m_xr->maxVulkanApiVersion() < kVulkanApiVersion) {
+            VrSettings::setStatus(tr("The OpenXR runtime (%1) supports only Vulkan %2.%3; this viewport needs 1.1.")
+                                      .arg(QString::fromStdString(m_xr->runtimeName()))
+                                      .arg(VK_API_VERSION_MAJOR(m_xr->maxVulkanApiVersion()))
+                                      .arg(VK_API_VERSION_MINOR(m_xr->maxVulkanApiVersion())));
+            m_xr.reset();
+        } else {
+            apiVersion = std::max(kVulkanApiVersion, m_xr->minVulkanApiVersion());
+            QByteArrayList extensions;
+            for (const std::string& name : m_xr->vulkanInstanceExtensions()) {
+                extensions << QByteArray::fromStdString(name);
+            }
+            m_instance->setExtensions(extensions); // Qt adds its own surface extensions on top
+            VrSettings::setStatus(tr("Headset found: %1 (runtime: %2) — waiting for the viewport.")
+                                      .arg(QString::fromStdString(m_xr->systemName()),
+                                           QString::fromStdString(m_xr->runtimeName())));
+        }
+    } else {
+        VrSettings::setStatus(tr("VR support is off. Turn it on and restart PoseStudio to use VR Mode."));
+    }
+    VrSettings::setReady(false); // the window reports readiness once the device exists
+
+    m_instance->setApiVersion(QVersionNumber(static_cast<int>(VK_API_VERSION_MAJOR(apiVersion)),
+                                             static_cast<int>(VK_API_VERSION_MINOR(apiVersion))));
 #ifndef NDEBUG
     // Standard validation layer in debug builds; QVulkanInstance routes its messages to
     // qDebug() automatically. Released builds skip it for performance.
@@ -69,7 +112,26 @@ ViewportWidget::ViewportWidget(QWidget* parent) : QWidget(parent) {
     // Compiled shaders are mirrored next to the executable by the build (see CMakeLists).
     const QString shaderDir = QCoreApplication::applicationDirPath() + QStringLiteral("/shaders");
 
-    m_window = new VulkanWindow(m_instance.get(), kVulkanApiVersion, shaderDir);
+    // The instance exists: did it take every extension the headset runtime asked for? Qt drops
+    // the ones the driver lacks silently, and a runtime short of one cannot drive the device.
+    if (m_xr) {
+        const QByteArrayList enabled = m_instance->extensions();
+        for (const std::string& name : m_xr->vulkanInstanceExtensions()) {
+            if (!enabled.contains(QByteArray::fromStdString(name))) {
+                VrSettings::setStatus(tr("This GPU driver lacks a Vulkan instance extension the headset runtime "
+                                         "needs (%1).")
+                                          .arg(QString::fromStdString(name)));
+                qWarning() << "[vr] instance extension unavailable:" << QString::fromStdString(name);
+                m_xr.reset();
+                break;
+            }
+        }
+    }
+
+    m_window = new VulkanWindow(m_instance.get(), apiVersion, shaderDir);
+    m_window->setOpenXrSystem(m_xr.get()); // before the first expose builds the device
+    connect(m_window, &VulkanWindow::vrModeChanged, this, &ViewportWidget::vrModeChanged);
+    connect(m_window, &VulkanWindow::vrError, this, &ViewportWidget::vrError);
     // Signal-to-signal forward: undo/redo restoring a lighting state surfaces on the facade,
     // where the Environment panel listens.
     connect(m_window, &VulkanWindow::lightingRestored, this, &ViewportWidget::lightingRestored);
@@ -145,6 +207,10 @@ ViewportWidget::ViewportWidget(QWidget* parent) : QWidget(parent) {
     layout->addWidget(m_container);
 
     createStrip(); // the floating control strip in the top-right corner
+
+    // Application-wide, for the one key that must work wherever the focus is: Esc leaves VR Mode
+    // (eventFilter). The top-level window's own filter (anchorStrip) is installed in showEvent.
+    QCoreApplication::instance()->installEventFilter(this);
 }
 
 void ViewportWidget::importObj(const QString& path) {
@@ -153,6 +219,10 @@ void ViewportWidget::importObj(const QString& path) {
 
 void ViewportWidget::importFigure(const QString& path) {
     withWindow([&](VulkanWindow& w) { w.importFigure(path); });
+}
+
+void ViewportWidget::importSplat(const QString& path) {
+    withWindow([&](VulkanWindow& w) { w.importSplat(path); });
 }
 
 bool ViewportWidget::hasPosableFigure() const {
@@ -197,6 +267,10 @@ void ViewportWidget::setProjectClean() {
     withWindow([](VulkanWindow& w) { w.setProjectClean(); });
 }
 
+void ViewportWidget::markProjectDirty() {
+    withWindow([](VulkanWindow& w) { w.markProjectDirty(); });
+}
+
 void ViewportWidget::setShadeMode(int mode) {
     withWindow([mode](VulkanWindow& w) { w.setShadeMode(mode); });
 }
@@ -235,6 +309,18 @@ JointTransform ViewportWidget::jointTransform() const {
 
 bool ViewportWidget::beginJointTransformEdit() {
     return m_window && m_window->beginJointTransformEdit();
+}
+
+void ViewportWidget::setFigurePosition(int axis, double cm) {
+    withWindow([axis, cm](VulkanWindow& w) { w.setFigurePosition(axis, cm); });
+}
+
+void ViewportWidget::setFigureRotation(int axis, double degrees) {
+    withWindow([axis, degrees](VulkanWindow& w) { w.setFigureRotation(axis, degrees); });
+}
+
+void ViewportWidget::setFigureScale(double pct) {
+    withWindow([pct](VulkanWindow& w) { w.setFigureScale(pct); });
 }
 
 void ViewportWidget::setJointTransformDial(int dial, double value) {
@@ -283,6 +369,10 @@ void ViewportWidget::groundFigure() {
     withWindow([](VulkanWindow& w) { w.groundFigure(); });
 }
 
+void ViewportWidget::applySoftBodySettings() {
+    withWindow([](VulkanWindow& w) { w.applySoftBodySettings(); });
+}
+
 void ViewportWidget::setEnvironment(const QString& hdrPath) {
     withWindow([&](VulkanWindow& w) { w.setEnvironmentFile(hdrPath); });
 }
@@ -301,6 +391,18 @@ void ViewportWidget::redo() {
 
 void ViewportWidget::registerLightingUndo(const LightingSettings& preEdit) {
     withWindow([&](VulkanWindow& w) { w.registerLightingUndo(preEdit); });
+}
+
+bool ViewportWidget::setVrMode(bool on) {
+    return m_window && m_window->setVrMode(on);
+}
+
+bool ViewportWidget::vrModeActive() const {
+    return m_window && m_window->vrModeActive();
+}
+
+void ViewportWidget::recenterVr() {
+    withWindow([](VulkanWindow& w) { w.recenterVr(); });
 }
 
 QStringList ViewportWidget::shaderModeNames() {
@@ -341,6 +443,9 @@ void ViewportWidget::createStrip() {
     connect(m_window, &VulkanWindow::viewPresetChanged, m_strip, &ViewportStrip::setViewPreset);
     connect(m_window, &VulkanWindow::shadeModeChanged, m_strip, &ViewportStrip::setShadeMode);
     connect(m_window, &VulkanWindow::jointModalChanged, m_strip, &ViewportStrip::setJointModeBadge);
+    connect(m_window, &VulkanWindow::vrModeChanged, m_strip, &ViewportStrip::setVrActive);
+    connect(m_strip, &ViewportStrip::vrModeToggled, this, &ViewportWidget::vrModeRequested);
+    m_strip->setVrActive(m_window->vrModeActive());
     connect(this, &ViewportWidget::skeletonVisibilityChanged, m_strip,
             &ViewportStrip::setSkeletonChecked);
     m_strip->setViewPreset(m_window->currentView());
@@ -390,6 +495,18 @@ void ViewportWidget::moveEvent(QMoveEvent* event) {
 }
 
 bool ViewportWidget::eventFilter(QObject* watched, QEvent* event) {
+    // ESCAPE, anywhere in the application, leaves VR Mode (installed on the application for
+    // that; the event is read at the WINDOW it arrives at, once per press). Not while the joint
+    // mouse mode is on — its Esc puts the joint back, and JointModalInput consumes it — and not
+    // while a modal dialog has the keyboard (its own Esc closes it).
+    if (event->type() == QEvent::KeyPress && watched->isWindowType() && m_window && m_window->vrModeActive() &&
+        m_window->jointModal() < 0 && QApplication::activeModalWidget() == nullptr) {
+        const auto* key = static_cast<const QKeyEvent*>(event);
+        if (key->key() == Qt::Key_Escape && !key->isAutoRepeat()) {
+            m_window->setVrMode(false);
+            return true;
+        }
+    }
     if (watched == m_filteredWindow) {
         const QEvent::Type t = event->type();
         if (t == QEvent::Move || t == QEvent::Resize || t == QEvent::WindowStateChange) {
@@ -410,6 +527,9 @@ bool ViewportWidget::eventFilter(QObject* watched, QEvent* event) {
 }
 
 ViewportWidget::~ViewportWidget() {
+    if (QCoreApplication::instance()) {
+        QCoreApplication::instance()->removeEventFilter(this); // the Esc-leaves-VR filter
+    }
     // The QVulkanInstance (m_instance) owns the VkInstance, and the VulkanWindow's
     // device/renderer were created from it. Qt would otherwise destroy the window via the
     // base QWidget destructor — i.e. AFTER m_instance is gone — leaving the renderer to

@@ -39,7 +39,7 @@ LineOverlay::LineOverlay(VulkanContext& context, VkRenderPass renderPass,
     lineConfig.depthWriteEnable = false;
     lineConfig.blendEnable = false;
     lineConfig.colorWriteAlpha = false; // overlay lines must not touch the SSS mask
-    lineConfig.colorAttachmentCount = 2; // spec target present but masked off
+    lineConfig.colorAttachmentCount = 3; // spec + photo targets present but masked off
     lineConfig.pushConstantSize = 0;
     VkVertexInputBindingDescription lineBinding{};
     lineBinding.binding = 0;
@@ -161,6 +161,19 @@ void LineOverlay::record(VkCommandBuffer cmd, const Camera& camera, VkDescriptor
                 const glm::vec3 c = anyFig->boneWorldPosition(i);
                 emitPinMarker(c, 0.45f * markerRadius(c, cameraPos), userPinColor);
             }
+        }
+    }
+
+    // The VR controllers' pointer rays (setPointerLines): a segment each, and a marker where the
+    // ray ends on something (a joint, a model, the floor).
+    for (const PointerLine& pointer : m_pointerLines) {
+        if (count + 2 > kMaxSkeletonVerts) {
+            break;
+        }
+        verts[count++] = {pointer.from, pointer.color};
+        verts[count++] = {pointer.to, pointer.color};
+        if (pointer.marker) {
+            emitPinMarker(pointer.to, 0.25f * markerRadius(pointer.to, cameraPos), pointer.color);
         }
     }
 

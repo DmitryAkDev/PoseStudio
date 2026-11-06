@@ -17,6 +17,9 @@
  */
 
 #include "armature.h"
+#include "ikmath.h" // axisIndexOf
+#include "ikrig.h"
+#include "rigroles.h"
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -27,8 +30,6 @@ namespace pose {
 
 namespace {
 
-/// A channel whose limits span less than this is LOCKED: it has no dial (isTwistBone's measure).
-constexpr float kDialLockedRangeDeg = 2.0f;
 /// An unlimited channel (the hips' own rotation) reads 100 at half a turn.
 constexpr float kDialUnlimitedDeg = 180.0f;
 /// BEND FORWARD is the wider of the two bend channels — unless the narrower spans this share of
@@ -56,15 +57,6 @@ constexpr float kDialOffPlaneShare = 0.003f;
 /// stands closer than this share of the figure's height, where this share of it stands in.
 constexpr float kDialSweepMinShare = 0.04f;
 constexpr float kDialSweepDefaultShare = 0.08f;
-
-int orderAxis(char c) {
-    switch (c) {
-    case 'X': case 'x': return 0;
-    case 'Y': case 'y': return 1;
-    case 'Z': case 'z': return 2;
-    default:            return -1;
-    }
-}
 
 } // namespace
 
@@ -96,12 +88,13 @@ glm::vec3 Armature::limbDirection(int bone) const {
         return size;
     };
 
-    // The bone's LENGTH AXIS is the format's own statement: the rotation order's first axis, in
-    // the bone's orientation frame. (Read off the joints instead it is wrong wherever a bone's
+    // The bone's LENGTH AXIS is the format's own statement: the rotation order's first axis — the
+    // twist, applied innermost; the STORED order's last letter (lengthAxisLetter) — in the bone's
+    // orientation frame. (Read off the joints instead it is wrong wherever a bone's
     // children do not lie along it: the toes fan sideways from the ball, a mid-foot bone sits
     // millimetres from its ankle, the chest's heaviest children are the collars.) What the
     // joints say is only which WAY along it is distal.
-    const int       lengthAxis = std::max(0, orderAxis(src.rotationOrder.empty() ? 'X' : src.rotationOrder[0]));
+    const int       lengthAxis = std::max(0, axisIndexOf(lengthAxisLetter(src)));
     const glm::vec3 axis = glm::normalize(glm::vec3(src.orient[lengthAxis]));
     const glm::vec3 origin = bindPos(bone);
 
@@ -171,14 +164,29 @@ glm::vec3 Armature::limbDirection(int bone) const {
         const glm::vec3 toward = count > 0 ? sum / static_cast<float>(count) : glm::vec3(src.localBind[3]);
         if (std::abs(glm::dot(axis, toward)) > 1.0e-6f) {
             along = glm::dot(axis, toward);
+        } else if (count == 0 && src.parent >= 0) {
+            // A zero-length LEAF at its parent's joint (a rigging add-on's palm bones, each a
+            // leaf beside the finger it stands for): nothing of its own says which way is
+            // distal, and read as "+axis" the right side's — whose mirrored frame's length axis
+            // points proximally — swung the other way for the same dial (4 degrees apart,
+            // 2026-11-03). It lies the way its parent's segment lies.
+            along = glm::dot(axis, limbDirection(src.parent));
         }
     }
     return along >= 0.0f ? axis : -axis;
 }
 
 JointDial Armature::jointDial(int bone, JointDialKind kind) const {
-    JointDial   dial;
-    const int   joint = dialJoint(bone);
+    JointDial dial;
+    // A dial reads the joint's ROLE (a finger's Bend is its flexion, below), and the rig that
+    // carries the roles is a cache of the bind skeleton (see aliasedBoneIndex): a dial read
+    // before the first drag builds it, as the alias layer does, so the same joint never reads
+    // one dial without the rig and another with it (2026-11-03; a body mesh arriving later
+    // rebuilds it, setBodyMesh).
+    if (!m_ikRig && hasSkeleton()) {
+        const_cast<Armature*>(this)->prepareIkRig();
+    }
+    const int joint = dialJoint(bone);
     if (joint < 0) {
         return dial;
     }
@@ -195,11 +203,11 @@ JointDial Armature::jointDial(int bone, JointDialKind kind) const {
         JointDial out;
         float     lo = 0.0f, hi = 0.0f;
         limits(which, axis, lo, hi);
-        if (hi - lo < kDialLockedRangeDeg) {
+        if (hi - lo < kLockedRangeDeg) {
             return out; // locked: no dial
         }
         float full = sign > 0.0f ? hi : lo;
-        if (std::abs(full) < 0.5f * kDialLockedRangeDeg) {
+        if (std::abs(full) < 0.5f * kLockedRangeDeg) {
             full = sign > 0.0f ? lo : hi;
         }
         const float a = lo / full * 100.0f;
@@ -234,7 +242,7 @@ JointDial Armature::jointDial(int bone, JointDialKind kind) const {
         return std::abs(hi) > std::abs(lo) ? 1.0f : -1.0f;
     };
 
-    const int twistAxis = std::max(0, orderAxis(b.rotationOrder.empty() ? 'X' : b.rotationOrder[0]));
+    const int twistAxis = std::max(0, axisIndexOf(lengthAxisLetter(b)));
 
     if (kind == JointDialKind::Twist) {
         // The joint's own twist channel — or, where that is locked, its limb's twist bone's (the
@@ -243,7 +251,7 @@ JointDial Armature::jointDial(int bone, JointDialKind kind) const {
         int   axis = twistAxis;
         float lo = 0.0f, hi = 0.0f;
         limits(joint, twistAxis, lo, hi);
-        if (hi - lo < kDialLockedRangeDeg) {
+        if (hi - lo < kLockedRangeDeg) {
             twistBone = -1;
             const int main = mainChild(joint);
             if (main >= 0 && isTwistBone(main)) {
@@ -261,7 +269,7 @@ JointDial Armature::jointDial(int bone, JointDialKind kind) const {
             }
             const Bone& t = m_bones[static_cast<std::size_t>(twistBone)];
             for (int a = 0; a < 3; ++a) {
-                if (!(t.rotLimited[a] && (t.rotMax[a] - t.rotMin[a]) < kDialLockedRangeDeg)) {
+                if (!(t.rotLimited[a] && (t.rotMax[a] - t.rotMin[a]) < kLockedRangeDeg)) {
                     axis = a; // (a twist bone has exactly one free channel)
                 }
             }
@@ -303,12 +311,40 @@ JointDial Armature::jointDial(int bone, JointDialKind kind) const {
         const float big = std::max(std::abs(lo), std::abs(hi));
         const float small = std::min(std::abs(lo), std::abs(hi));
         float sign = 1.0f;
-        if (small <= kDialOneSidedShare * big) {
+        // A FINGER's bend dial is its long side — the flexion, on every finger joint the reference
+        // authors (a knuckle -90..50, a thumb's base -26..40): the geometric rule below reads the
+        // way a joint carries its limb forward or down, and a finger hanging in an A-pose carries
+        // its tip neither — the thumb's reads one way on one rig and the other on the next
+        // (2026-11-03: a character-creation rig's thumb Bend dial EXTENDED the thumb once its
+        // frame was the palm's). The toes keep the geometric rule: a toe points forward and curls
+        // DOWN, which the rule reads, and the reference's toe joints author their long side on
+        // either sign.
+        const bool finger = m_ikRig && m_ikRig->roles().built() && m_ikRig->roles().role(joint) == RigRole::Finger;
+        if (finger || small <= kDialOneSidedShare * big) {
             sign = std::abs(hi) >= std::abs(lo) ? 1.0f : -1.0f; // a fold: its long side
         } else {
             const glm::vec3 v = sweep(forward);
-            sign = std::abs(v.z) >= std::abs(v.y) ? (v.z >= 0.0f ? 1.0f : -1.0f)  // forward
-                                                  : (v.y <= 0.0f ? 1.0f : -1.0f); // ... or down
+            const bool      even = std::abs(hi) - std::abs(lo) <= kDialEvenShare * std::max(big, 1.0e-6f) &&
+                                   std::abs(lo) - std::abs(hi) <= kDialEvenShare * std::max(big, 1.0e-6f); // (the side bend's own test)
+            if (even && std::abs(v.x) > std::abs(v.y) && std::abs(v.x) > std::abs(v.z)) {
+                // An EVEN channel whose swing is SIDEWAYS (a rib helper's, a palm bone's: the
+                // bend dial of a joint that carries nothing fore and aft): outward for a side's
+                // bone, toward her left for a centre one — the side-bend rule below. Read as
+                // "forward" it was +1 on both sides, and on a rig conformed from an FBX file,
+                // whose two sides carry near-identical frames rather than mirror images, the same
+                // local sign is an UNMIRRORED turn: the Blender export's rib helpers turned 10
+                // degrees apart for the same dial, a rigging add-on's palms 4 (2026-11-03). The
+                // reference generations have no such channel, and read as before. EVEN only: a
+                // finger's knuckle hanging in an A-pose swings sideways too (its sweep's lateral
+                // part a hair over its downward one on the main family, well over on a biped
+                // export) and is no even channel (-90..50) — read outward, its Bend dial
+                // EXTENDED the finger on every A-pose rig for the day the rule stood unqualified.
+                const float outward = sideOf(joint) < 0 ? -v.x : v.x;
+                sign = outward >= 0.0f ? 1.0f : -1.0f;
+            } else {
+                sign = std::abs(v.z) >= std::abs(v.y) ? (v.z >= 0.0f ? 1.0f : -1.0f)  // forward
+                                                      : (v.y <= 0.0f ? 1.0f : -1.0f); // ... or down
+            }
         }
         return make(joint, forward, sign);
     }
@@ -364,7 +400,7 @@ bool Armature::jointDialSweep(const JointDial& dial, JointDialSweep& sweep) cons
     // frame and its parent's posed rotation put it in the model's space.
     glm::mat3 prefix(1.0f);
     for (const char ch : bone.rotationOrder) {
-        const int axis = orderAxis(ch);
+        const int axis = axisIndexOf(ch);
         if (axis < 0) {
             continue;
         }
@@ -408,6 +444,125 @@ bool Armature::jointDialSweep(const JointDial& dial, JointDialSweep& sweep) cons
     // (Toward the dial's positive side: the channel's angle grows with the dial where fullDeg > 0.)
     sweep.tipPerDegree = glm::radians(dial.fullDeg >= 0.0f ? 1.0f : -1.0f) * glm::cross(axisWorld, lever);
     return true;
+}
+
+} // namespace pose
+
+// ============================================================================================
+// THE FIGURE'S PLACE AND HEADING (2026-11-05; the user: "we have to be able to easily position the
+// character (up down left right) and twist the entire character"). Both live in the POSE: the
+// place is the root's pose translation — what the figure move (Ctrl+drag of the hips) and the
+// Ground button write, what a pose file carries as `@trans:` — and the heading is the root's own
+// rotation, which the hips' unlimited channels carry exactly. A turn is applied as a WORLD yaw
+// about the vertical through the root joint, so a lying figure spins on the floor rather than
+// about her spine, and the feet keep their heights.
+// ============================================================================================
+
+namespace pose {
+
+int Armature::figureRoot() const {
+    if (m_bones.empty()) {
+        return -1;
+    }
+    if (m_ikRig) {
+        return m_ikRig->rootNode();
+    }
+    // Without a rig: the rig's own rule — the first bone with two children or more below the
+    // anatomical root (a figure node at the origin with the hip as its lone child).
+    int node = -1;
+    for (std::size_t i = 0; i < m_bones.size(); ++i) {
+        if (m_bones[i].parent < 0) {
+            node = static_cast<int>(i);
+            break;
+        }
+    }
+    for (int guard = 0; node >= 0 && guard < 64; ++guard) {
+        int child = -1, children = 0;
+        for (std::size_t i = 0; i < m_bones.size(); ++i) {
+            if (m_bones[i].parent == node) {
+                ++children;
+                child = static_cast<int>(i);
+            }
+        }
+        if (children != 1) {
+            return node;
+        }
+        node = child;
+    }
+    return node;
+}
+
+glm::vec3 Armature::figurePosition() const {
+    const int root = figureRoot();
+    if (root < 0 || static_cast<std::size_t>(root) >= m_boneTranslation.size()) {
+        return glm::vec3(0.0f);
+    }
+    // The root's parent frame -> model -> world (the inverse of shiftPoseY's path).
+    const Bone& bone = m_bones[static_cast<std::size_t>(root)];
+    glm::vec3   t = m_boneTranslation[static_cast<std::size_t>(root)];
+    if (bone.parent >= 0 && static_cast<std::size_t>(bone.parent) < m_poseGlobal.size()) {
+        t = glm::mat3(m_poseGlobal[static_cast<std::size_t>(bone.parent)]) * t;
+    }
+    return glm::mat3(m_transform) * t;
+}
+
+void Armature::setFigurePosition(const glm::vec3& world) {
+    const int root = figureRoot();
+    if (root < 0 || static_cast<std::size_t>(root) >= m_boneTranslation.size()) {
+        return;
+    }
+    const Bone& bone = m_bones[static_cast<std::size_t>(root)];
+    glm::vec3   t = glm::inverse(glm::mat3(m_transform)) * world;
+    if (bone.parent >= 0 && static_cast<std::size_t>(bone.parent) < m_poseGlobal.size()) {
+        t = glm::transpose(glm::mat3(m_poseGlobal[static_cast<std::size_t>(bone.parent)])) * t;
+    }
+    if (t == m_boneTranslation[static_cast<std::size_t>(root)]) {
+        return;
+    }
+    m_boneTranslation[static_cast<std::size_t>(root)] = t;
+    recomposePoseLocal(static_cast<std::size_t>(root));
+    computeSkinMatrices();
+}
+
+glm::vec3 Armature::figureRotationDeg() const {
+    const int root = figureRoot();
+    if (root < 0 || static_cast<std::size_t>(root) >= m_poseGlobal.size()) {
+        return glm::vec3(0.0f);
+    }
+    // The root's world rotation (binds are translation-only, so poseGlobal's rotation part is the
+    // pose's), read as yaw about the world's vertical, then pitch about the figure's own lateral
+    // axis, then roll about her own forward axis ("YXZ": leftmost outermost). The tilt is shown
+    // with her left side DOWN positive, which is a negative roll about +z.
+    const glm::mat3 world = glm::mat3(m_transform) * glm::mat3(m_poseGlobal[static_cast<std::size_t>(root)]);
+    const glm::vec3 e = eulerFromMatrix(world, "YXZ"); // (e.x pitch, e.y yaw, e.z roll)
+    return glm::vec3(e.y, e.x, -e.z);
+}
+
+void Armature::setFigureRotationDeg(const glm::vec3& turnTipTilt) {
+    const int root = figureRoot();
+    if (root < 0 || static_cast<std::size_t>(root) >= m_bones.size()) {
+        return;
+    }
+    const glm::vec3 now = figureRotationDeg();
+    if (glm::length(now - turnTipTilt) < 1e-4f) {
+        return;
+    }
+    // The wanted world rotation W' from the three angles; the root's local R' from it: with W =
+    // T * P * OR * R * OR^-1 (T the model transform's rotation, P the parent's — the figure node,
+    // unrotated), R' = OR^-1 * P^-1 * T^-1 * W' * OR, read back into the root's channels.
+    Bone&           bone = m_bones[static_cast<std::size_t>(root)];
+    const glm::mat3 orient(bone.orient);
+    const glm::mat3 invOrient(bone.invOrient);
+    const glm::mat3 target(eulerMatrix(glm::vec3(turnTipTilt.y, turnTipTilt.x, -turnTipTilt.z), "YXZ"));
+    glm::mat3       parentRot(1.0f);
+    if (bone.parent >= 0 && static_cast<std::size_t>(bone.parent) < m_poseGlobal.size()) {
+        parentRot = glm::mat3(m_poseGlobal[static_cast<std::size_t>(bone.parent)]);
+    }
+    const glm::mat3 next = invOrient * glm::transpose(parentRot) * glm::inverse(glm::mat3(m_transform)) * target * orient;
+    m_boneEuler[static_cast<std::size_t>(root)] = eulerFromMatrix(next, bone.rotationOrder);
+    clampBoneEuler(root);
+    recomposePoseLocal(static_cast<std::size_t>(root));
+    computeSkinMatrices();
 }
 
 } // namespace pose
