@@ -19,6 +19,7 @@
 #include "outlinepass.h"
 #include "scenepipelines.h"
 #include "shadowpass.h"
+#include "splatcloud.h"
 #include "vulkancontext.h"
 #include "vulkanpipeline.h"
 
@@ -40,11 +41,13 @@ Scene::Scene(VulkanContext& context, VkRenderPass renderPass, VkRenderPass outli
              const std::vector<char>& shadowVertSpirv, const std::vector<char>& shadowFragSpirv,
              const std::vector<char>& backgroundVertSpirv,
              const std::vector<char>& backgroundFragSpirv,
-             const std::vector<char>& outlineMaskFragSpirv)
+             const std::vector<char>& outlineMaskFragSpirv,
+             const std::vector<char>& splatVertSpirv, const std::vector<char>& splatFragSpirv)
     : m_context(context) {
     // The shared plumbing first: every pass below builds against its layouts.
     m_pipelines = std::make_unique<ScenePipelines>(m_context, renderPass, vertSpirv, fragSpirv,
-                                                   backgroundVertSpirv, backgroundFragSpirv);
+                                                   backgroundVertSpirv, backgroundFragSpirv,
+                                                   splatVertSpirv, splatFragSpirv);
 
     // The shadow pass (map + pipeline) needs the pose set layout; the scene-wide set 3 needs the
     // map — so the pass is built right after the layouts and its map written into set 3 next,
@@ -102,12 +105,45 @@ void Scene::setShowSkeleton(bool on) { m_lineOverlay->setShowSkeleton(on); }
 
 bool Scene::showSkeleton() const { return m_lineOverlay->showSkeleton(); }
 
+void Scene::setVrPointerLines(std::vector<PointerLine> lines) { m_lineOverlay->setPointerLines(std::move(lines)); }
+
 void Scene::addModel(const ModelData& data) {
     m_models.push_back(std::make_unique<Model>(m_context, data, m_pipelines->materialSetLayout(),
                                                m_pipelines->poseSetLayout(),
                                                m_pipelines->fallbackDiffuse(),
                                                m_pipelines->fallbackNormal()));
     setSelectedModel(static_cast<int>(m_models.size()) - 1); // the new arrival is the selection
+}
+
+void Scene::addSplatModel(const SplatData& data, const glm::mat4& transform) {
+    m_models.push_back(std::make_unique<Model>(m_context, data, m_pipelines->splatSetLayout()));
+    m_models.back()->setTransform(transform);
+    setSelectedModel(static_cast<int>(m_models.size()) - 1);
+}
+
+void Scene::recordSplats(VkCommandBuffer cmd, const Camera& camera, uint32_t frameIndex) {
+    bool any = false;
+    for (const std::unique_ptr<Model>& model : m_models) {
+        if (model->splats() != nullptr) {
+            any = true;
+            break;
+        }
+    }
+    if (!any) {
+        return;
+    }
+    const VulkanPipeline& pipeline = m_pipelines->splat();
+    const VkDescriptorSet cameraSet = m_pipelines->cameraSet(frameIndex);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.handle());
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.layout(), 0, 1, &cameraSet, 0, nullptr);
+    for (const std::unique_ptr<Model>& model : m_models) {
+        SplatCloud* cloud = model->splats();
+        if (cloud == nullptr) {
+            continue;
+        }
+        cloud->prepareFrame(camera, model->transform(), frameIndex);
+        cloud->record(cmd, pipeline.layout(), frameIndex, camera, model->transform());
+    }
 }
 
 int Scene::selectedModelIndex() const {
@@ -386,7 +422,8 @@ int Scene::selectBoneByName(const std::string& name) {
     return fig ? fig->selectBoneByName(name) : -1;
 }
 
-int Scene::selectBoneAt(float px, float py, float vpW, float vpH, const Camera& camera) {
+bool Scene::pickBoneAt(float px, float py, float vpW, float vpH, const Camera& camera, int& outModel, int& outBone,
+                       glm::vec3& outGrab) {
     // A CLICK PICKS WHAT THE CURSOR IS ON (2026-09-26): the click is cast against every figure's
     // posed SKIN (Model::pickSurface) and the FIRST surface along the ray wins — its bone the joint
     // that weighs most on the skin at the hit, its point the grab point (Armature::setIkGrabPoint).
@@ -442,7 +479,10 @@ int Scene::selectBoneAt(float px, float py, float vpW, float vpH, const Camera& 
     // at the point it hit. A finger's or a toe's joint is dragged by the point the cursor is ON —
     // its drag moves the digit alone, and a point AT a joint has no lever on the bone it belongs
     // to. Neither snaps to a joint, and no joint of either is a snap candidate for a hit beside it
-    // (a click on the back of the hand is the hand's, not the knuckle's 10px away).
+    // (a click on the back of the hand is the hand's, not the knuckle's 10px away). A CARPAL — the
+    // hand's or the foot's own flesh below the wrist or the ankle (2026-10-28) — is the HAND's or
+    // the FOOT's click at the point it hit, like the face's the head's: it never snaps and is never
+    // a snap candidate; the selection below maps it.
     const auto classOf = [&](int model, int bone) {
         return m_models[static_cast<std::size_t>(model)]->boneClass(bone);
     };
@@ -536,7 +576,7 @@ int Scene::selectBoneAt(float px, float py, float vpW, float vpH, const Camera& 
     } else if (pickedBone < 0) {
         const BonePick pick = pickBone(m_models, px, py, vpW, vpH, camera);
         if (pick.bone < 0) {
-            return -1;
+            return false;
         }
         const Model& fig = *m_models[static_cast<std::size_t>(pick.model)];
         // The picked point: the joint itself for a pick of the joint, the clicked point of the
@@ -564,12 +604,25 @@ int Scene::selectBoneAt(float px, float py, float vpW, float vpH, const Camera& 
                 glm::vec3 point(0.0f);
                 int       bone = -1;
                 if (other->hasSkeleton() && other->pickSurface(toward, t, point, bone) && t < dist - kFallbackFleshDepth) {
-                    return -1; // hidden behind another part: not what the cursor is on
+                    return false; // hidden behind another part: not what the cursor is on
                 }
             }
         }
         pickedModel = pick.model;
         pickedBone = pick.bone;
+    }
+    outModel = pickedModel;
+    outBone = pickedBone;
+    outGrab = grab;
+    return true;
+}
+
+int Scene::selectBoneAt(float px, float py, float vpW, float vpH, const Camera& camera) {
+    int       pickedModel = -1;
+    int       pickedBone = -1;
+    glm::vec3 grab(0.0f);
+    if (!pickBoneAt(px, py, vpW, vpH, camera, pickedModel, pickedBone, grab)) {
+        return -1;
     }
     if (pickedModel != activeFigureIndex()) {
         // Switching figures: the previous one's selection goes away.
@@ -582,6 +635,86 @@ int Scene::selectBoneAt(float px, float py, float vpW, float vpH, const Camera& 
     figure.setSelectedBone(pickedBone); // (a bone of the face rig selects the HEAD: Armature::posingBone)
     figure.setIkGrabPoint(pickedBone, grab);
     return figure.selectedBone();
+}
+
+int Scene::selectNearestBone(const glm::vec3& point, float radius) {
+    int   pickedModel = -1;
+    int   pickedBone = -1;
+    float best = radius;
+    for (std::size_t m = 0; m < m_models.size(); ++m) {
+        const Model* fig = m_models[m].get();
+        if (!fig->hasSkeleton()) {
+            continue;
+        }
+        const Armature& arm = fig->armature();
+        for (std::size_t i = 0; i < fig->boneCount(); ++i) {
+            const float distance = glm::length(arm.boneWorldPosition(i) - point);
+            if (distance < best) {
+                best = distance;
+                pickedModel = static_cast<int>(m);
+                pickedBone = static_cast<int>(i);
+            }
+        }
+    }
+    if (pickedBone < 0) {
+        return -1;
+    }
+    if (pickedModel != activeFigureIndex()) {
+        if (Model* previous = figureModel()) {
+            previous->setSelectedBone(-1);
+        }
+    }
+    setActiveFigure(pickedModel);
+    Model& figure = *m_models[static_cast<std::size_t>(pickedModel)];
+    figure.setSelectedBone(pickedBone); // (a face-rig bone selects the head, as for a click)
+    figure.setIkGrabPoint(figure.selectedBone(), figure.armature().boneWorldPosition(static_cast<std::size_t>(pickedBone)));
+    return figure.selectedBone();
+}
+
+int Scene::shiftPressBoneAt(float px, float py, float vpW, float vpH, const Camera& camera, bool& wasMember) {
+    wasMember = false;
+    int       pickedModel = -1;
+    int       pickedBone = -1;
+    glm::vec3 grab(0.0f);
+    if (!pickBoneAt(px, py, vpW, vpH, camera, pickedModel, pickedBone, grab)) {
+        return -1;
+    }
+    Model& figure = *m_models[static_cast<std::size_t>(pickedModel)];
+    // Another figure than the active one, a digit (posed alone), or nothing selected yet: a plain
+    // selection, as without Shift.
+    if (pickedModel != activeFigureIndex() || figure.selectedBone() < 0 ||
+        figure.boneClass(pickedBone) == BoneClass::Digit) {
+        return selectBoneAt(px, py, vpW, vpH, camera);
+    }
+    const int primary = figure.armature().knownPosingBone(pickedBone); // (a face-rig bone: the head)
+    wasMember = primary == figure.selectedBone() || figure.inGroup(primary);
+    static const bool kShiftTrace = std::getenv("POSESTUDIO_PICK_TRACE") != nullptr;
+    if (kShiftTrace) {
+        std::fprintf(stderr, "[pick] shift press: picked %s (model %d), selected before %d, group %zu, member %d\n",
+                     figure.armature().boneName(static_cast<std::size_t>(pickedBone)).c_str(), pickedModel, figure.selectedBone(),
+                     figure.groupBones().size(), wasMember ? 1 : 0);
+    }
+    if (!figure.makeGroupPrimary(pickedBone)) {
+        return selectBoneAt(px, py, vpW, vpH, camera);
+    }
+    figure.setIkGrabPoint(pickedBone, grab);
+    return figure.selectedBone();
+}
+
+bool Scene::removeGroupBone(int bone) {
+    Model* fig = figureModel();
+    return fig != nullptr && fig->removeFromGroup(bone);
+}
+
+std::vector<int> Scene::groupBones() const {
+    const Model* fig = figureModel();
+    return fig != nullptr ? fig->groupBones() : std::vector<int>();
+}
+
+void Scene::restoreSelection(int primary, const std::vector<int>& secondaries) {
+    if (Model* fig = figureModel()) {
+        fig->restoreSelection(primary, secondaries);
+    }
 }
 
 } // namespace pose

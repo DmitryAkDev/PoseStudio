@@ -37,6 +37,7 @@ class QMoveEvent;
 
 namespace pose {
 
+class OpenXrSystem;
 class ViewportStrip;
 class VulkanWindow;
 struct JointTransform;
@@ -62,6 +63,9 @@ public:
     /// degraded to the Vulkan-unavailable message.
     void importFigure(const QString& path);
 
+    /// Imports a Gaussian splat scene (`.ply` / `.splat`) into the 3D scene as a static model.
+    void importSplat(const QString& path);
+
     /// Whether the scene holds a posable figure (gates the pose save/load menu actions).
     bool hasPosableFigure() const;
     /// Saves / loads the posed figure's joint rotations to/from @p path. Returns false on failure
@@ -84,6 +88,9 @@ public:
     void setProjectPath(const QString& path);
     bool isProjectDirty() const;
     void setProjectClean();
+    /// Marks the scene as having unsaved changes (a scene restored across a restart is unsaved
+    /// work again — main.cpp's --restore-scene).
+    void markProjectDirty();
     /// Sets the viewport shade mode by index into the picker's table (scene/shademode.h — the
     /// order shaderModeNames() lists). No-op if the viewport degraded.
     void setShadeMode(int mode);
@@ -115,6 +122,9 @@ public:
     bool beginJointTransformEdit();
     void setJointTransformDial(int dial, double value);
     void endJointTransformEdit();
+    void setFigurePosition(int axis, double cm); ///< The Figure group: see VulkanWindow::setFigurePosition.
+    void setFigureRotation(int axis, double degrees);
+    void setFigureScale(double pct); ///< A static model's Scale row (percent).
     /// The B / S / T key, wherever the keyboard focus is (the Edit menu's actions carry the keys
     /// application-wide): the joint mouse mode on dial @p kind (0/1/2 = Bend / Side-Side /
     /// Twist) of the selected joint — on, off again, or switched to it
@@ -138,6 +148,8 @@ public:
     /// Drops the posable figure onto the ground plane (the strip's Ground button): moves it so
     /// the current pose's lowest point rests at y = 0. No-op if the viewport degraded.
     void groundFigure();
+    /// The Posing preferences changed (the soft breasts): every figure re-posed with them.
+    void applySoftBodySettings();
 
     /// Toggles the skeleton overlay (the joint→parent bone lines drawn over the figure). Off by
     /// default — joints are grabbed directly on the figure — but joints stay clickable either way.
@@ -165,7 +177,27 @@ public:
     /// which is the single source of truth (each row also says how the scene draws in that mode).
     static QStringList shaderModeNames();
 
+    /// VR Mode (View → VR Mode): the scene in the headset found at startup, live, with the window
+    /// mirroring the headset's left eye. Returns whether VR is on afterwards; a start that fails
+    /// explains itself through vrError. Whether it CAN start is VrSettings::ready() — the shell
+    /// consults that before calling, so a headset-less launch gets the explanation instead.
+    /// No-op if the viewport degraded.
+    bool setVrMode(bool on);
+    bool vrModeActive() const;
+    /// Puts the user back in front of the figure, facing it (View → Recenter VR View).
+    void recenterVr();
+
 signals:
+    /// Re-emitted from the viewport when VR Mode starts or ends (by the user or because the
+    /// headset session was lost); the View menu's checkable entry follows it.
+    void vrModeChanged(bool on);
+    /// The strip's VR button or its view picker's VR Mode entry asked to enter (@p on) or leave
+    /// VR Mode. The shell handles it exactly as the View menu's entry — including the explanation
+    /// when VR cannot start — so every way in takes one path.
+    void vrModeRequested(bool on);
+    /// Re-emitted from the viewport with a user-readable message when VR Mode could not start or
+    /// was ended by the runtime. The shell shows it.
+    void vrError(const QString& message);
     /// Re-emitted from the viewport when undo/redo restores a lighting state, so the Environment
     /// panel can sync its widgets. The settings are already applied renderer-side.
     void lightingRestored(const LightingSettings& settings);
@@ -208,6 +240,7 @@ private:
         }
     }
 
+    std::unique_ptr<OpenXrSystem>    m_xr;                     // the headset found at startup (VR enabled in Preferences); null = none
     std::unique_ptr<QVulkanInstance> m_instance;               // owns the VkInstance
     VulkanWindow*                    m_window = nullptr;        // owned by m_container
     JointModalInput*                 m_modalInput = nullptr;    // the joint mouse mode's app-wide input (a child)

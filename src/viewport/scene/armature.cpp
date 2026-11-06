@@ -6,9 +6,12 @@
 
 #include "armature.h"
 
+#include "softbodysettings.h"
+
 #include "ikmath.h" // eulerMatrix (the pose composition)
 #include "ikrig.h"  // complete type for the unique_ptr
 #include "jointsolver.h" // likewise
+#include "namerules.h"   // mirroredName (the mirror pairing)
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -36,33 +39,6 @@ Armature::~Armature() = default;
 Armature::Armature(Armature&&) noexcept = default;
 Armature& Armature::operator=(Armature&&) noexcept = default;
 
-namespace {
-
-/// The other side's name for a left/right-prefixed bone name, or "" for a centre/unpaired one.
-/// Figures prefix `l`/`r` before an uppercase letter or underscore (`lShin`, `l_thigh`); a few
-/// use `Left`/`Right`. A plain lowercase continuation (`lowerJaw`, `rectus`) is not a side.
-std::string mirroredBoneName(const std::string& name) {
-    if (name.size() >= 2 && (name[0] == 'l' || name[0] == 'r')) {
-        const char next = name[1];
-        if ((next >= 'A' && next <= 'Z') || next == '_') {
-            std::string other = name;
-            other[0] = name[0] == 'l' ? 'r' : 'l';
-            return other;
-        }
-    }
-    static const char* const kWords[][2] = {{"Left", "Right"}, {"Right", "Left"},
-                                            {"left", "right"}, {"right", "left"}};
-    for (const auto& pair : kWords) {
-        const std::string from(pair[0]);
-        if (name.size() > from.size() && name.compare(0, from.size(), from) == 0) {
-            return pair[1] + name.substr(from.size());
-        }
-    }
-    return {};
-}
-
-} // namespace
-
 void Armature::build(const std::vector<ArmatureBone>& bones) {
     // Start from a fresh armature: EVERY member — skeleton, pose, selection, pins, transform,
     // and the whole IK state block (held orientations, the posture reference, the pin easing
@@ -78,6 +54,9 @@ void Armature::build(const std::vector<ArmatureBone>& bones) {
     std::vector<glm::vec3> bindGlobal(bones.size(), glm::vec3(0.0f));
     for (std::size_t i = 0; i < bones.size(); ++i) {
         const ArmatureBone& src = bones[i];
+        m_bones[i].drivenBy = src.drivenBy >= 0 && src.drivenBy < static_cast<int>(bones.size()) && src.drivenBy != static_cast<int>(i) ? src.drivenBy : -1;
+        m_bones[i].roleHint = src.roleHint;
+        m_bones[i].driveFactor = src.driveFactor;
         Bone& bone = m_bones[i];
         const bool hasParent = src.parent >= 0 && static_cast<std::size_t>(src.parent) < i;
         bone.parent = hasParent ? src.parent : -1;
@@ -99,7 +78,24 @@ void Armature::build(const std::vector<ArmatureBone>& bones) {
         bone.orient = eulerMatrix(src.orientation, kOrientXyz ? "XYZ" : "ZYX");
         bone.invOrient = glm::inverse(bone.orient);
         bone.orientationDeg = src.orientation;
-        bone.rotationOrder = src.rotationOrder;
+        // THE ROTATION ORDER IS THE ORDER THE CHANNELS ARE APPLIED IN (2026-10-27): the format's
+        // first letter — the twist, about the bone's own length — acts FIRST (innermost), the
+        // last — the wide bend — last: "YZX" is Rx · Rz · Ry. eulerMatrix composes its string
+        // leftmost OUTERMOST, so the engine keeps the order REVERSED ("XZY" for that bone) and
+        // every reader of the stored string — eulerMatrix, eulerFromMatrix, the solver's
+        // channel-axis prefix, the dials' sweep — composes the format's way; dump() writes the
+        // format's string back, and the length axis is the stored string's LAST letter
+        // (lengthAxisLetter). Composed the other way, as it was since the importer was written,
+        // one non-zero channel was the same and two were not: a thigh flexed and then moved
+        // Side-Side ROLLED about its own length where a hip abducts, and a bent forearm's twist
+        // on the one-bone generations swung it round the upper arm's line. The evidence: the
+        // orientation (the same convention, measured by the frames' length axes); the
+        // generations that cut a limb's twist out into a CHILD bone, which apply it innermost by
+        // construction and author the same ranges as the one-bone generations; and the format's
+        // reference importer, whose Euler type's order string is its application order.
+        // (POSESTUDIO_ORDER_AS_WRITTEN is the A/B: the composition as it was.)
+        bone.rotationOrder = kOrderAsWritten ? src.rotationOrder
+                                             : std::string(src.rotationOrder.rbegin(), src.rotationOrder.rend());
         bone.rotMin = src.rotationMin;
         bone.rotMax = src.rotationMax;
         bone.rotLimited = src.rotationLimited;
@@ -121,7 +117,7 @@ void Armature::build(const std::vector<ArmatureBone>& bones) {
         if (m_bones[i].parent >= 0) {
             m_children[static_cast<std::size_t>(m_bones[i].parent)].push_back(static_cast<int>(i));
         }
-        const std::string other = mirroredBoneName(m_boneNames[i]);
+        const std::string other = namerules::mirroredName(m_boneNames[i]);
         const int j = other.empty() ? -1 : boneIndex(other);
         m_mirrorBone[i] = j >= 0 ? j : static_cast<int>(i);
     }
@@ -210,6 +206,21 @@ void Armature::build(const std::vector<ArmatureBone>& bones) {
     computeSkinMatrices(); // bind pose until a caller poses a bone
 }
 
+const bool Armature::kOrderAsWritten = std::getenv("POSESTUDIO_ORDER_AS_WRITTEN") != nullptr;
+
+std::string Armature::formatRotationOrder(const Bone& b) {
+    // (The format's own string: the stored one reversed, unless the A/B keeps it as written.)
+    return kOrderAsWritten ? b.rotationOrder : std::string(b.rotationOrder.rbegin(), b.rotationOrder.rend());
+}
+
+char Armature::lengthAxisLetter(const Bone& b) {
+    // The bone's length axis is the format's FIRST letter (the twist) — the stored string's last.
+    if (b.rotationOrder.empty()) {
+        return 'X';
+    }
+    return kOrderAsWritten ? b.rotationOrder.front() : b.rotationOrder.back();
+}
+
 bool Armature::dump(const std::string& path) const {
     std::ofstream out(path);
     if (!out) {
@@ -219,11 +230,15 @@ bool Armature::dump(const std::string& path) const {
         const Bone& b = m_bones[i];
         const glm::vec3 t(b.localBind[3]);
         const glm::vec3& o = b.orientationDeg;
-        out << m_boneNames[i] << ' ' << b.parent << ' ' << b.rotationOrder << ' ' << t.x << ' '
+        out << m_boneNames[i] << ' ' << b.parent << ' ' << formatRotationOrder(b) << ' ' << t.x << ' '
             << t.y << ' ' << t.z << ' ' << o.x << ' ' << o.y << ' ' << o.z << ' ' << b.rotMin.x
             << ' ' << b.rotMin.y << ' ' << b.rotMin.z << ' ' << b.rotMax.x << ' ' << b.rotMax.y
             << ' ' << b.rotMax.z << ' ' << (b.rotLimited.x ? 1 : 0) << ' '
-            << (b.rotLimited.y ? 1 : 0) << ' ' << (b.rotLimited.z ? 1 : 0) << '\n';
+            << (b.rotLimited.y ? 1 : 0) << ' ' << (b.rotLimited.z ? 1 : 0);
+        if (!b.roleHint.empty()) {
+            out << " role=" << b.roleHint; // (an optional trailing token: the file's own word on the bone's role)
+        }
+        out << '\n';
     }
     if (!m_bodyMesh.empty()) {
         saveBodyMesh(path + ".mesh", m_bodyMesh); // the sidecar (see setBodyMesh)
@@ -235,6 +250,17 @@ void Armature::setBodyMesh(std::vector<BodyMeshPoint> mesh) {
     m_bodyMesh = std::move(mesh);
     m_ikRig.reset(); // rebuilt with the mesh on the next use (ensureIkRig)
     m_boneClass.clear(); // (... and the bone classes with it)
+    m_breasts.clear();
+    m_breastsReady = false;
+    m_buttocks.clear();
+    m_buttocksReady = false;
+    // THE SOFT BREASTS need the rig (the pectorals' roles) and this mesh (the breasts' size):
+    // with the preference on, the rig is built here, once the mesh is in — a figure loaded
+    // bowed from a pose file hangs them from its first frame. (The harness never turns it on.)
+    if (softbody::breastMotion() && !m_bodyMesh.empty() && ensureIkRig()) {
+        setupBreasts();
+        computeSkinMatrices();
+    }
 }
 
 bool Armature::loadDump(const std::string& path, std::vector<ArmatureBone>& out) {
@@ -258,6 +284,12 @@ bool Armature::loadDump(const std::string& path, std::vector<ArmatureBone>& out)
             while (ss >> tok) {
                 tokens.push_back(tok);
             }
+        }
+        // An optional trailing `role=<standard name>` token (ArmatureBone::roleHint) comes off first.
+        std::string roleHint;
+        if (!tokens.empty() && tokens.back().rfind("role=", 0) == 0) {
+            roleHint = tokens.back().substr(5);
+            tokens.pop_back();
         }
         constexpr std::size_t kFields = 17;
         if (tokens.size() < kFields + 1) {
@@ -288,6 +320,7 @@ bool Armature::loadDump(const std::string& path, std::vector<ArmatureBone>& out)
             return false;
         }
         b.rotationLimited = glm::bvec3(lx != 0, ly != 0, lz != 0);
+        b.roleHint = roleHint;
         if (b.parent >= static_cast<int>(out.size())) {
             out.clear();
             return false; // parents must precede children
@@ -335,6 +368,24 @@ void Armature::computeSkinMatrices() {
         dst[1] = glm::vec4(0.0f);
         return;
     }
+    // THE DRIVEN BONES (ArmatureBone::drivenBy, 2026-11-03): a rig's helper whose driver
+    // expression the file could not carry — a knee's "share" bone taking half the bend, a twist
+    // helper taking its share of the segment's twist — is re-derived from its driver here, the
+    // one place every pose change passes through, before the hierarchy walk. It is never an
+    // unknown of a solve (not on any active path, or locked) and never a dial; a pose file's
+    // value for it is overwritten on load. The drivers' Eulers are read, never written, so the
+    // bone order between the two does not matter.
+    for (std::size_t i = 0; i < m_bones.size(); ++i) {
+        const Bone& bone = m_bones[i];
+        if (bone.drivenBy < 0 || static_cast<std::size_t>(bone.drivenBy) >= m_bones.size()) {
+            continue;
+        }
+        const glm::vec3 driven = bone.driveFactor * m_boneEuler[static_cast<std::size_t>(bone.drivenBy)];
+        if (driven != m_boneEuler[i]) {
+            m_boneEuler[i] = driven;
+            recomposePoseLocal(i);
+        }
+    }
     // Accumulate each bone's posed global transform down the hierarchy (parents precede children),
     // then convert the rigid skinTransform = poseGlobal · inverseBind into a unit dual quaternion
     // (real = rotation stored (x,y,z,w); dual = 0.5·(0,t)·real). The transform is exactly rigid —
@@ -346,7 +397,23 @@ void Armature::computeSkinMatrices() {
         const Bone& bone = m_bones[i];
         poseGlobal[i] =
             (bone.parent >= 0) ? poseGlobal[bone.parent] * bone.poseLocal : bone.poseLocal;
-        const glm::mat4 skin = poseGlobal[i] * bone.inverseBind;
+        // THE SOFT BREASTS (armaturebreasts.cpp): a pectoral that carries a breast is shifted
+        // and tilted by what gravity does to it in this pose — ON ITS SKIN TRANSFORM ALONE. Its
+        // joint (poseGlobal, m_boneWorldPos) stays where the pose has it: a click that lands on a
+        // pectoral measures its grab offset from that joint every tick, and with the breast's
+        // displacement in it (as it was until 2026-11-05) the offset moved as the chest tilted and
+        // an un-bow by a pectoral grab rested 27 degrees from upright. Whatever hangs below a
+        // pectoral (nothing, on the rigs seen) rides the joint, not the breast.
+        glm::mat4 skinBase = poseGlobal[i];
+        if (!m_breasts.empty() && softbody::breastMotion()) {
+            for (const Breast& b : m_breasts) {
+                if (b.bone == static_cast<int>(i)) {
+                    skinBase = breastSwingMatrix(b, poseGlobal[i]) * poseGlobal[i];
+                    break;
+                }
+            }
+        }
+        const glm::mat4 skin = skinBase * bone.inverseBind;
         const glm::quat q = glm::normalize(glm::quat_cast(glm::mat3(skin)));
         const glm::vec3 t = glm::vec3(skin[3]);
         const glm::quat d = glm::quat(0.0f, t.x, t.y, t.z) * q; // (0,t)·q
@@ -475,6 +542,7 @@ std::vector<std::pair<std::string, glm::vec3>> Armature::capturePose() const {
 }
 
 void Armature::applyPose(const std::vector<std::pair<std::string, glm::vec3>>& pose) {
+    clearHangBases(); // (a pose from elsewhere: the arms' swing bases are re-read at the next press)
     for (glm::vec3& e : m_boneEuler) {
         e = glm::vec3(0.0f); // reset to bind pose first
     }
@@ -569,6 +637,7 @@ bool Armature::resetBone(int index, bool subtree) {
 }
 
 void Armature::resetPose() {
+    clearHangBases();
     for (glm::vec3& e : m_boneEuler) {
         e = glm::vec3(0.0f);
     }

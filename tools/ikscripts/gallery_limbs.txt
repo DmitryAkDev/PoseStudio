@@ -64,8 +64,24 @@ dragv -0.45 0 50 40
 shot 25_side_stride
 expect grab < 5
 expect gaze > -8
+expect swing.lShldr < -10
+expect swing.rShldr > 10
 release
 reset
+
+# THE STRIDE TURNS THE HIPS (2026-11-02): the same stride from the Home view - the pelvis turns
+# toward the lead leg (the hip's heading channel reads the turn) and the shoulders stay square.
+# (dragw moves the WORLD target, so the stride is the same whatever the view.)
+view home
+press lFoot
+dragw 0 0 0.45 50 40
+shot 25b_home_stride
+expect grab < 5
+expect steps == 0
+expect euler.hip.y < -4
+release
+reset
+view right
 
 # A lunge: a foot slid a stride back and let go of, then the hips taken down.
 press lFoot
@@ -130,5 +146,21 @@ view right
 press lHand
 dragv -0.10 1.30 70 60
 shot 28_side_lifted_by_hand
+release
+reset
+view front
+
+# ... and from the front she DANGLES (2026-11-02): the legs together and plumb from the hips, the knees
+# soft, the feet pointed, the free arm hanging - not the standing stance in mid-air (the legs apart,
+# the free arm out at the A-pose angle) she kept before.
+press lHand
+dragv 0 1.30 70 60
+report lifted_front
+expect hang.lThigh < 10
+expect hang.rThigh < 10
+expect hang.rShldr < 25
+expect euler.lShin.x > 5
+expect euler.rFoot.x > 15
+shot 28b_front_lifted_by_hand
 release
 quit

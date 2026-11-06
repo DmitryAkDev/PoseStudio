@@ -2,8 +2,13 @@
  * @file armature.h
  * @brief The runtime skeleton of a posable figure: its bones, the per-joint pose (Euler rotation
  *        + translation), forward kinematics into skinning dual quaternions, the user's joint
- *        pins, and the full-body-IK integration (armatureik.cpp: the drag lifecycle;
- *        armatureiksolve.cpp: the per-tick whole-body solve on scene/ik/jointsolver.h).
+ *        pins, and the full-body-IK integration — ONE class over several translation units:
+ *        armature.cpp (construction, FK, snapshots, the dump), armaturedials.cpp (the Transform
+ *        dials), armatureik.cpp (the drag lifecycle), armatureiksolve.cpp (the per-tick solve
+ *        on scene/ik/jointsolver.h, whose stages are armatureiksolvedrag / -posture / -rows.cpp
+ *        over armatureiksolvestate.h, tuned by armatureiksolvetuning.h), armatureikpost.cpp
+ *        (the post-steps), armatureikdigit.cpp (the bone classes, the digit drag),
+ *        armatureikfigure.cpp (the figure move) and armaturelanding.cpp (the landing bounce).
  *
  * An Armature is everything about a figure's pose that is NOT geometry: Model owns one next to
  * its meshes and GPU buffers, uploads the dual quaternions it computes, and forwards every posing
@@ -51,12 +56,18 @@ struct ArmatureBone {
     int         parent = -1;                 ///< Index into the bone list; -1 = the skeleton root.
     glm::vec3   localBindTranslation{0.0f};  ///< Rest position relative to the parent joint (model units).
     glm::vec3   orientation{0.0f};           ///< Rest orientation, Euler degrees (XYZ) — the frame pose rotations act in.
-    std::string rotationOrder = "XYZ";       ///< Order the pose Euler angles compose in.
+    std::string rotationOrder = "XYZ";       ///< The format's rotation_order: the order the channels are APPLIED in (first = innermost, the twist).
     // Per-axis pose-rotation limits (degrees): the joint's anatomical range of motion. Only axes
     // flagged in `rotationLimited` are enforced; the others rotate freely.
     glm::vec3   rotationMin{0.0f};
     glm::vec3   rotationMax{0.0f};
     glm::bvec3  rotationLimited{false, false, false};
+    /// A DRIVEN bone (ModelBone::drivenBy): its Euler = driveFactor * the driver's, re-derived at
+    /// every pose change (computeSkinMatrices). -1: not driven.
+    int         drivenBy = -1;
+    glm::vec3   driveFactor{0.0f};
+    /// ModelBone::roleHint: the standard's name for what the file says this bone is ("" = nothing said).
+    std::string roleHint;
 };
 
 /**
@@ -69,7 +80,8 @@ struct ArmatureBone {
  * unit dual quaternion for the shaders. The world transform of the whole figure (the model
  * matrix) also lives here — IK, picking, and grounding all need it alongside the pose.
  */
-struct IkSolveScratch; // the per-tick solve's shared stage state (armatureiksolvestate.h)
+struct IkSolveScratch;
+struct IkPinRowState; // the per-tick solve's shared stage state (armatureiksolvestate.h)
 
 /// WHAT an IK drag may move (Armature::beginIkDrag). Body: the whole figure — the plain drag, with
 /// the feet planted, balance, steps and every policy of the FBIK section. Chain: the grabbed CHAIN
@@ -89,9 +101,11 @@ struct IkSolveScratch; // the per-tick solve's shared stage state (armatureiksol
 /// the way down. See armatureikfigure.cpp.
 ///
 /// Part: what the app's Ctrl+drag ASKS for — resolved at the press by what was grabbed: Figure for
-/// a grab of the BODY itself (the hips, the abdomen, the chest: Armature::isBodyGrab), Chain for
-/// anything else (a limb, the head and neck), and a digit's own drag for a finger or a toe.
-/// Armature::ikScope() reads the resolved scope while the drag is in flight.
+/// a grab of the HIPS (the solve root, which a grab of the pelvis girdle is promoted to; from
+/// 2026-09-28 to 2026-10-28 the abdomen and the chest too — Armature::isBodyGrab, which the figure
+/// move's "a pin on the trunk holds her" still reads), Chain for anything else (a limb, the head
+/// and neck, and a spine joint: the trunk alone, down to the pelvis), and a digit's own drag for a
+/// finger or a toe.
 enum class IkScope { Body, Chain, Figure, Part };
 
 /// WHAT a bone is to the posing UI (2026-09-28; Armature::boneClass). Body: a joint of the body —
@@ -100,7 +114,11 @@ enum class IkScope { Body, Chain, Figure, Part };
 /// expressions, none of the IK's business, and not selectable — a click on the face selects the
 /// HEAD (Armature::posingBone). Digit: a joint of a finger or a toe — dragged, it moves its own
 /// digit alone, up to where the digit joins the hand or the foot (the DIGIT DRAG, armatureikdigit.cpp).
-enum class BoneClass { Body, Face, Digit };
+/// Carpal (2026-10-28): a bone below a wrist or an ankle that is neither the limb end nor a digit —
+/// the carpals, a hand's prop anchor, the mid-foot, the ball, the heel: the hand's or the foot's
+/// own flesh, not a joint to pose — a click on one selects the HAND or the FOOT (posingBone), as a
+/// click on the face selects the head, and it lights with the selected hand or foot.
+enum class BoneClass { Body, Face, Digit, Carpal };
 
 /// The three TRANSFORM DIALS of a joint (the Transform tab; Armature::jointDial): the bend in the
 /// joint's natural direction, the bend in its secondary direction, and the twist about its length.
@@ -240,6 +258,7 @@ public:
     void setSelectedBone(int index) {
         m_selectedBone = posingBone(index);
         m_ikGrabBone = -1; // (a grab point is the pick's that made the selection: Scene::selectBoneAt sets it after)
+        clearGroup();      // (a plain selection is of ONE joint: THE GROUP, below)
     }
     /// Selects the bone named @p name (diagnostics / the IK benchmark; a face-rig bone's name
     /// selects the head); the index of the bone NAMED, or -1.
@@ -248,6 +267,7 @@ public:
         if (index >= 0) {
             m_selectedBone = posingBone(index);
             m_ikGrabBone = -1;
+            clearGroup();
         }
         return index;
     }
@@ -262,14 +282,16 @@ public:
     /// selectable and a digit grab the limb's, as before 2026-09-28); POSESTUDIO_BONE_CLASS_TRACE
     /// prints what was found.
     BoneClass boneClass(int bone);
-    /// The bone a selection of @p bone selects: the HEAD for a bone of the face rig, else itself.
+    /// The bone a selection of @p bone selects: the HEAD for a bone of the face rig, the hand or
+    /// the foot (the limb end, m_boneLimbEnd) for a Carpal, else itself.
     int posingBone(int bone);
     /// posingBone() as the classes stand, without building the rig (@p bone itself until it is
     /// built): for read-only callers — the scripted test asks what a name's selection IS.
     int knownPosingBone(int bone) const;
     /// True when @p bone's flesh is LIT with the selection though the bone is neither the selected
     /// joint nor its twin: a bone of the FACE RIG while the head is selected — the face is the
-    /// head's, and lit by the head bone's own skin weights alone a click on a cheek lit the scalp.
+    /// head's, and lit by the head bone's own skin weights alone a click on a cheek lit the scalp —
+    /// or a CARPAL while its hand or foot is (the palm is the carpals' flesh, 2026-10-28).
     /// (Reads the classes as they stand: false until the rig has been built.)
     bool highlightedWithSelection(int bone) const;
     /// The highlighted joint's twin (see m_highlightTwin), or -1 without a selection or twin.
@@ -277,6 +299,42 @@ public:
         const int bone = highlightBone();
         return (bone >= 0 && bone < static_cast<int>(m_highlightTwin.size())) ? m_highlightTwin[static_cast<std::size_t>(bone)]
                                                                               : -1;
+    }
+
+    // --- THE GROUP (2026-10-27): several joints taken hold of at once. Shift+click adds a joint
+    // to the selection or takes it out; Shift+drag of any member pulls them all. The PRIMARY is the
+    // selected joint — the pressed one: its grab point, its drag plane and every policy of a plain
+    // drag are its — and the others are SECONDARIES riding the cursor's displacement with it
+    // (beginIkDrag, updateGroupTargets). A group drag is a whole-body drag: the body answers as it
+    // answers one joint — balance, steps, the hips yielding to a push, a tiptoe or a lift-off under
+    // a pull beyond reach — with every grabbed limb freed and priced as the dragged one.
+    /// Adds @p bone to the group as a secondary, or removes it when it is one; a bone of the face
+    /// rig stands for the head, and a finger's or a toe's joint — posed alone (the digit drag) —
+    /// or the primary itself is refused. Returns true when the bone is a member afterwards.
+    bool toggleGroupBone(int bone);
+    /// True when @p bone is a secondary of the group.
+    bool inGroup(int bone) const;
+    /// The secondaries, in the order they were added (never the primary).
+    const std::vector<int>& groupBones() const { return m_groupBones; }
+    void clearGroup();
+    /// Makes @p bone the PRIMARY — a Shift+press on a member drags the group through that joint,
+    /// its grab point the drag plane's: the previous primary joins the secondaries, @p bone leaves
+    /// them; a bone that was no member is added this way. A face-rig bone stands for the head; a
+    /// digit's joint is refused (false).
+    bool makeGroupPrimary(int bone);
+    /// Removes @p bone from the group — a Shift+CLICK on a member: a secondary simply leaves; the
+    /// primary hands the selection to the first secondary or, alone, is deselected. False for a
+    /// non-member.
+    bool removeFromGroup(int bone);
+    /// Bumped by every change of the group (the GPU's lit-joint upload keys on it).
+    std::uint32_t groupVersion() const { return m_groupVersion; }
+    /// Diagnostics (the scripted test, whose pixel lookup selects a bone BY NAME): puts the
+    /// selection back — @p primary selected (-1: nothing) with @p secondaries as the group.
+    void restoreSelection(int primary, const std::vector<int>& secondaries) {
+        m_selectedBone = primary;
+        m_ikGrabBone = -1;
+        m_groupBones = secondaries;
+        ++m_groupVersion;
     }
 
     // --- Forward-kinematic posing ---
@@ -380,14 +438,9 @@ public:
     /// skeleton or selection. @p scope: the whole body (the plain drag), or the grabbed chain
     /// alone (Ctrl+drag) — see IkScope.
     bool beginIkDrag(IkScope scope = IkScope::Body);
-    /// The scope of the drag in flight (IkScope::Body between drags).
-    IkScope ikScope() const { return m_ikScope; }
     /// True while the drag in flight is a DIGIT drag (beginIkDrag on a finger's or a toe's joint):
     /// the digit alone moves, whatever the scope asked for, and the rig has no drag of its own.
     bool ikDigitDrag() const { return m_digitDrag; }
-    /// True while the drag in flight MOVES THE FIGURE as she is posed (IkScope::Figure: the app's
-    /// Ctrl+drag of the body itself); the rig has no drag of its own.
-    bool ikFigureMove() const { return m_figureMove; }
     /// One FBIK drag tick: the whole body is SOLVED, to convergence, so the selected joint sits
     /// on @p targetWorld with every pin, the floor, the body volumes and balance honoured, directly
     /// in the pose's own unknowns (the Euler channels inside their authored limits + the root's
@@ -401,8 +454,13 @@ public:
     bool settleIkTick();
     /// Ends the FBIK drag (the solved pose stays).
     void endIkDrag();
-    /// The rig (null until the first IK drag built it) — diagnostics and the harness.
+    /// The rig (null until built: by prepareIkRig, the first IK drag or the first pick) —
+    /// diagnostics and the harness.
     const IkRig* ikRig() const { return m_ikRig.get(); }
+    /// Builds the rig now (the roles of the rig standard with it): a figure's import does, so that
+    /// the test tools' bone-name fallback (bonealiases.h) can resolve a name through the roles from
+    /// the first command, and the first click pays nothing. A static model (no bones) builds none.
+    void prepareIkRig() { ensureIkRig(); }
     /// True when the two bones are pieces of ONE rigid limb segment (a bend bone and its twist
     /// bones: a thigh from socket to knee), or the same bone. The scripted in-app test asks it:
     /// a pick that lands on a thigh's twist bone HAS found the thigh.
@@ -421,9 +479,20 @@ public:
     /// damped follower about a tick long, which rounds the starts and stops of the grabbed joint
     /// itself. (Blending whole poses in joint space, the obvious damping, slides planted feet.)
     static int ikDamping();
-    static void setIkDamping(int level);
     static constexpr int kIkDampingDefault = 1;
     static constexpr int kIkDampingLevels = 4;
+    /// A channel whose limits span less than this is LOCKED (a twist bone's swing axes, a hinge's
+    /// other channels): it has no dial and is never an unknown of a solve (isTwistBone's measure).
+    static constexpr float kLockedRangeDeg = 2.0f;
+    /// A FOLD channel (a knee's, an elbow's bend): at least kFoldRangeDeg of range, all but
+    /// kFoldNarrowFraction of it to one side of straight; and a fold joint is a HINGE — its other
+    /// channel, the twist excepted, spans no more than kFoldHingeOtherDeg (a knee's side channel
+    /// spans 10 degrees, an elbow's is locked; a thigh's abduction, -85..15 on two generations,
+    /// is no fold). isFoldChannel / foldAxisOf read the first two; the solve's posture model
+    /// and the digit drag add the hinge test.
+    static constexpr float kFoldRangeDeg = 100.0f;
+    static constexpr float kFoldNarrowFraction = 0.2f;
+    static constexpr float kFoldHingeOtherDeg = 60.0f;
 
     // --- User joint pins (see IkRig::beginDrag's userPins): a pinned joint is held exactly where
     // it is through every later IK drag of OTHER joints, until unpinned. Dragging a pinned joint
@@ -458,6 +527,7 @@ public:
     /// The bounce @p seconds after the landing: the pose for that moment. False once it is over
     /// (or none is in flight): the caller then calls endLandingBounce().
     bool landingBounceTick(float seconds);
+    float landingArmAngle(float seconds) const; ///< The arms' swing at that moment of the bounce (deg, forward).
     /// Ends the bounce, wherever it is: the pose she landed in, exactly, and the user's selection.
     void endLandingBounce();
     bool landingBounceActive() const { return m_landing.active; }
@@ -482,12 +552,15 @@ private:
         glm::mat4   orient{1.0f};
         glm::mat4   invOrient{1.0f};
         glm::vec3   orientationDeg{0.0f}; ///< The authored orientation (dump round-trip).
-        std::string rotationOrder = "XYZ";
+        std::string rotationOrder = "XYZ"; ///< REVERSED from the format's (see build): eulerMatrix composes leftmost outermost.
         // Per-axis pose-rotation limits (degrees) enforced by clampBoneEuler(); only axes flagged
         // in rotLimited are constrained (the figure's anatomical range of motion).
         glm::vec3   rotMin{0.0f};
         glm::vec3   rotMax{0.0f};
         glm::bvec3  rotLimited{false, false, false};
+        int         drivenBy = -1;        ///< See ArmatureBone::drivenBy.
+        glm::vec3   driveFactor{0.0f};
+        std::string roleHint;             ///< See ArmatureBone::roleHint (carried to the rig, written to the dump).
     };
 
     /// Re-poses bone @p index from its accumulated Euler (m_boneEuler) in its oriented frame, then
@@ -500,6 +573,13 @@ private:
     /// The way bone @p bone lies, distally, at bind (model space, unit): its own length axis — the
     /// rotation order's first axis in its orientation frame — pointing at what the joint carries.
     glm::vec3 limbDirection(int bone) const;
+    /// POSESTUDIO_ORDER_AS_WRITTEN: compose the pose channels in the rotation order AS WRITTEN
+    /// (leftmost outermost), the composition before 2026-10-27 — the A/B probe (see build).
+    static const bool kOrderAsWritten;
+    /// The format's own rotation_order string for @p b (the stored one is reversed; see build).
+    static std::string formatRotationOrder(const Bone& b);
+    /// The letter of the bone's LENGTH axis — the format's first channel, the twist.
+    static char lengthAxisLetter(const Bone& b);
     /// Builds the IK rig (graph, constraints, masses, body volumes) from the bind skeleton on
     /// first use — an IK drag or an FK rotation, which checks the body volumes. False for a
     /// boneless model.
@@ -548,6 +628,10 @@ private:
     // (a crouch drops the pelvis). Round-trips through capture/applyPose as "@trans:<bone>" rows.
     std::vector<glm::vec3>               m_boneTranslation;
     int                                  m_selectedBone = -1;
+    /// THE GROUP's secondaries (see toggleGroupBone): the other joints a Shift+drag pulls with the
+    /// selected one. Never the primary, a face-rig bone (the head stands for it) or a digit.
+    std::vector<int>                     m_groupBones;
+    std::uint32_t                        m_groupVersion = 0;
     // Skinning data (see skinDualQuats()), recomputed whenever the pose changes; the GPU layer
     // uploads it lazily per frame in flight when m_skinVersion moves.
     std::vector<glm::vec4>               m_skinDualQuats;
@@ -573,6 +657,13 @@ private:
     /// roll flat onto the floor at the hold's capped pace). A user pin's own node always keeps
     /// its current orientation (the pin is held 6-DoF).
     void captureFlatHold(bool restOrientation);
+    /// beginIkDrag's parts (armatureik.cpp), in the order it calls them: the drag's state reset in
+    /// two halves around the grab offset's capture, then the two drag-start readings.
+    void resetContactState();                                                              ///< the seat and kneel readings, the contacts' and the flat-foot model's state
+    void captureDragStart(const std::vector<glm::vec3>& positions, float groundOffsetY);  ///< the posture reference, every stage's state, the root's upright
+    void findWeightShift();                                                                ///< THE WEIGHT SHIFT: a two-footed stance's lift takes the hips over the standing foot
+    void resetFootAndHandState();                                                          ///< the balls, the eased targets, the hand slide and lay
+    void findTiptoeDrag();                                                                 ///< THE TIPTOE: whether this drag is one that can lift the heels
     // User joint pins (per bone, see togglePinSelectedBone): persistent until unpinned.
     std::vector<char>             m_bonePinned;
     // The drag-start Euler pose: the solve's POSTURE REFERENCE (every channel is pulled back
@@ -600,6 +691,24 @@ private:
     /// A TWIST bone: two locked swing channels and the free one ALONG the bone (a thigh's or a
     /// forearm's twist helper) — part of its limb's rigid segment, never a joint of its own.
     bool isTwistBone(int bone) const;
+    /// The mirror twins the names and the places left unpaired, by the rig standard's roles
+    /// (armatureik.cpp; after the rig is built).
+    void pairMirrorsByRole();
+    /// True when channel @p axis of bone @p b is a FOLD channel (kFoldRangeDeg, kFoldNarrowFraction).
+    bool isFoldChannel(int b, int axis) const;
+    /// The first fold channel of bone @p b, or -1: a knee's or an elbow's bend.
+    int  foldAxisOf(int b) const;
+    /// How many of bone @p b's channels are unlocked (kLockedRangeDeg).
+    int  freeChannelCount(int b) const;
+    /// True when @p node is @p ancestor or hangs below it (the solver's O(1) ancestry once the rig
+    /// is built; a parent walk before). False for -1 either way.
+    bool boneUnder(int node, int ancestor) const;
+    /// The bind length of the chain from @p from up to, not including, @p upTo (or the root): each
+    /// bone's local bind offset, summed child-first.
+    float chainLength(int from, int upTo) const;
+    /// The upper arm's joint of @p hand's arm — the bone below the collar on the hand's path to its limb
+    /// junction (the shoulder socket), or the hand's parent on a rig with no such chain.
+    int   armSocketOf(int hand) const;
     /// The child a limb continues through: the one with the biggest subtree (-1 for a leaf).
     int  mainChild(int bone) const;
     /// The rigid limb segment @p bone belongs to: its near joint (up past any twist bones) and
@@ -633,6 +742,11 @@ private:
         /// Its hand came down on the floor DURING this drag: the solve has the arm from then on,
         /// and balance stays blind to it (balancePositions).
         bool landed = false;
+        /// Its hand's contact LIFTED during this drag (held, then not): the arm is the hang's, held off
+        /// the floor by it, and keeps NO floor rows in the solve (ikPlaneRows) — rows only the body
+        /// could answer, and a prop: the heavy male's released arms rested along his body with the
+        /// thumbs on the floor, and the thumbs' rows held his chest up (2026-10-29).
+        bool released = false;
         /// Its hand was ON THE FLOOR when the drag began (a contact): once that contact is unloaded
         /// or lifted the wrist RELAXES toward neutral (hangIdleArms) — riding its posture reference,
         /// a hand lifted off all fours stayed bent back 80 degrees, flat, held out like a paw.
@@ -641,9 +755,37 @@ private:
         int   foldAxis = 0;
         float foldSign = 1.0f;
         int   hand = -1;
+        /// THE STRIDE SWING (hangIdleArms): whether a two-footed stance could be read at the press.
+        /// The swing itself is ABSOLUTE — the stance's split now, faded by the hips' drop — applied to
+        /// the arm's BASE hang (`wants`), which is remembered across drags (m_hangBase): a turn the
+        /// stop or a limit cut short does not corrupt the next drag's home.
+        bool hasSwing = false;
+        /// IDLE ELBOWS SOFTEN (hangIdleArms): the elbow is the hang's to bend -- at the bind at the
+        /// press, or where the hang itself left it (m_hangElbowDeg). A posed elbow keeps its bend.
+        bool elbowOurs = false;
     };
     std::vector<HangArm>          m_jsHangArms;
     bool                          m_jsHangArmsFound = false;
+    /// THE STRIDE SWING the arm CARRIES, per socket (degrees, + forward): measured at the end of
+    /// every hang tick as the arm's fore-aft angle against the hang's own un-swung target — what the
+    /// stance's swing actually turned it by, a turn the stop or a limit cut short included — and
+    /// undone at the next press to find the arm's un-swung base. Without it the next drag read a
+    /// cut-short swing as the arm's home and a stance closed again left the arm 8 degrees forward;
+    /// a remembered base DIRECTION was tried instead and broke the un-bow (the hang moves an arm
+    /// between drags for other reasons too: plumb under a fold). Forgotten for an arm found POSED
+    /// at a press, and by a pose reset or load (clearHangBases); unknown, the found pose is taken
+    /// to carry its stance's swing (a loaded stride pose keeps its arms until the stance changes).
+    std::vector<float>            m_hangSwingDeg;
+    std::vector<char>             m_hangBaseValid;
+    /// Per socket: the elbow's fold channel where the hang LEFT it (IDLE ELBOWS SOFTEN), and whether
+    /// it did -- an elbow found there at the next press is still the hang's to bend; forgotten with
+    /// the swing bases (clearHangBases) and for an arm found posed.
+    std::vector<float>            m_hangElbowDeg;
+    std::vector<char>             m_hangElbowValid;
+    void clearHangBases() {
+        m_hangBaseValid.assign(m_hangBaseValid.size(), 0);
+        m_hangElbowValid.assign(m_hangElbowValid.size(), 0);
+    }
     /// Per bone: where a POST-STEP (the arms' hang, the head's righting) last left it, and whether
     /// one has turned it this drag. When such a bone becomes one of the SOLVE's unknowns — a hanging
     /// hand comes down on the floor and is a contact, the body is lifted and every segment is the
@@ -659,18 +801,25 @@ private:
     /// drag the solve bends the neck and the righting has the head bone alone). Balance is blind
     /// to these, and to these only.
     std::vector<int>              m_jsHeadFree;
+    std::vector<char>             m_jsNeckLift;           ///< Per bone: the neck chain the solve has for THE FACE LIFT this tick (the righting leaves those)
     int                           m_jsHeadBase = -1;
     glm::mat3                     m_jsHeadIntrinsic{1.0f}; ///< The drag-start righting, in the chest's frame (see rightIdleHead).
+    float                         m_jsHeadIntrinsicHang = 0.0f; ///< How far the righting was faded at the press (0-1): that share of the intrinsic relaxes with the rise.
+    float                         m_jsTrunkHomeShare = 0.0f;    ///< THE TRUNK COMES UP WITH THE RISE: how far the spine's references have turned home (ikPostureModel; kTrunkHomeStep).
+    bool                          m_jsHandsPlanted = false;     ///< This tick: a live, non-shadow wrist contact stands (ikTrunkPolicy) — the trunk waits for it to go before it comes up.
     bool                          m_jsHeadFound = false;
     /// How far the pelvis's pitch is an unknown of this trunk drag (solveIk: the bow), 0-1.
     float                         m_jsTrunkHinge = 0.0f;
     std::vector<int>              m_jsSpineChain;         ///< -1, then the spine's bones from the root's spine child to the chest junction (lazily; empty = not searched)
+    int                           m_jsSpineChainChest = -1; ///< ... the chest junction the chain ENDED at, or -1 when it ran out first (ensureSpineChain)
     std::vector<glm::vec3>        m_jsStartTranslation;   ///< Drag-start pose translations.
     /// Per bone: the pin target the solve is USING — the rig's, approached at a capped pace
     /// whenever the rig moves one (ground healing, a heel lift, a landing).
     std::vector<glm::vec3>        m_jsPinTarget;
     std::vector<char>             m_jsPinTargetValid;
     bool                          m_jsPinsEasing = false; ///< A pin target is still en route.
+    bool                          m_jsPostStepMoving = false; ///< The last tick's post-steps (the arms' hang, the head's righting) turned something: the settle goes on (settleIkSolveTick).
+    bool                          m_jsSoftBodyMoving = false; ///< The soft breasts still bounce: the settle ticks them alone once the pose is at rest (no solve).
     /// The release SETTLE is the drag continued under a still cursor (settleIkSolveTick): the
     /// followed target the last drag tick solved to, and the flag that keeps the rig from
     /// reading new intents or beginning new steps meanwhile.
@@ -690,6 +839,8 @@ private:
     std::vector<glm::vec3>        m_jsBallTarget;
     glm::vec3                     m_jsKneeUnderEased = glm::vec3(0.0f); ///< a dragged knee's foot target (kneeHangUnder), approached at the pins' pace
     char                          m_jsKneeUnderValid = 0;
+    float                         m_jsLyingHangY = 0.0f;   ///< THE LYING FOOT'S HANG HEIGHT, eased at the pins' pace (ikPinRowsEnd; a drawn-up knee's lying foot)
+    char                          m_jsLyingHangYValid = 0;
     std::vector<float>            m_jsFootAllow;          ///< a letting-go foot's joints' depth through the floor at the release's first tick (m): forgiven by its floor rows
     char                          m_jsFootAllowValid = 0;
     /// The ankle's offset from the ball as the drag found the foot (see the heel row in solveIk).
@@ -725,7 +876,12 @@ private:
     std::vector<float>            m_jsFootUnrollProgress; ///< how far a lying foot has rolled back onto its toes (0 lying, 1 handed over or not a lying foot): the knee's ceiling above it
     std::vector<char>             m_jsKneeHeldDown;       ///< per bone, this tick: a knee held down by its ceiling (kneeBelowHips) — its lying foot stays lying
     std::vector<char>             m_jsKneeHeldDownPrev;   ///< ... and last tick's (the feet's rows come before the knees' in the pin loop)
+    std::vector<float>            m_jsKneeHold;           ///< Per knee the hips were LOW over at the press: its hold's share, a function of the target's rise (ikPinRows; kept through the settle).
+    std::vector<float>            m_jsKneeUnrollBaseY;    ///< Per lying foot: the height its knee was planted at, for the unroll's ceiling (ikPinRowsEnd) ...
+    std::vector<char>             m_jsKneeUnrollBaseValid; ///< ... and whether it has one.
+    std::vector<float>            m_jsKneeUnrollExtra;    ///< ... and the extra lift the ceiling has gained since the handover (kKneeUnrollExtra).
     std::vector<char>             m_jsFootUnrolled;   ///< the foot rolled back to standing this drag: its posture references are the standing ones from then
+    std::vector<char>             m_jsBallLanded;     ///< ... and its ball's target has met its spot since the handover: the gentle landing pace is over (ikPinRows)
     std::vector<float>            m_jsFlatRiseBase;   ///< the rise's progress at that handover: the heel's and the soles' turn to standing is measured from it
     /// The balance requirement's RAMP (JointSolver::Problem::balanceSlack): how far outside
     /// the support polygon the centre of mass may still sit. Set to the current distance
@@ -746,12 +902,30 @@ private:
     float                         m_jsWeightLift = 0.0f;       ///< The shift's share applied this tick (0-1): the traces, the harness.
     glm::vec2                     m_jsWeightEased{0.0f};       ///< The shift the root's home carries this tick, approached at the pins' pace (kPinEaseStep).
     bool                          m_jsWeightEasing = false;    ///< ... and still on its way (the settle waits for it, as for a pin).
+    /// THE STRIDE TURNS THE HIPS (ikPosturePolicy): the stance's fore-aft split as the drag FOUND it
+    /// (the left foot ahead of the right, metres; read at the first tick), the yaw's baseline — a pose
+    /// found striding is taken to carry its stance's turn, as the arm swing's base is. Unread below -1e8.
+    float                         m_jsStrideSplitStart = -1.0e9f;
     glm::vec3                     m_jsHold{0.0f};         ///< The released joint's hold (settle).
     /// The damped follower's state (see ikDamping): the target the solve is given and
     /// its velocity per second; seeded at the first tick of a drag from the raw target.
     glm::vec3                     m_jsFollowPos{0.0f};
     glm::vec3                     m_jsFollowVel{0.0f};
     bool                          m_jsFollowValid = false;
+    // THE GROUP's drag (beginIkDrag / updateGroupTargets): each secondary effector's position at
+    // the press and its target this tick (model space; index-aligned with the rig's
+    // secondaryEffectors()), the primary's grab point at the press, the raw cursor of the last
+    // drag tick, and the group's own damped follower on it — the primary's twin, so the
+    // secondaries trail the cursor exactly as the primary does.
+    std::vector<glm::vec3>        m_jsGroupStartPos;
+    std::vector<glm::vec3>        m_jsGroupTargets;
+    std::vector<char>             m_jsGroupTargetValid;
+    glm::vec3                     m_jsGroupCursorStart{0.0f};
+    glm::vec3                     m_jsGroupCursorRaw{0.0f};
+    bool                          m_jsGroupCursorValid = false;
+    glm::vec3                     m_jsGroupFollowPos{0.0f};
+    glm::vec3                     m_jsGroupFollowVel{0.0f};
+    bool                          m_jsGroupFollowValid = false;
     /// The drag's first target (the grab point) and the pelvis's VERTICAL YIELD derived from how
     /// far, and how vertically, the target has gone below it — or above it, when the drag began
     /// with height left in the legs (0-1; see kRootYieldStiffness).
@@ -789,10 +963,27 @@ private:
     std::vector<char>             m_incidentalContact;
     /// Per bone: how far GONE a live contact's hold was last tick (0..1; solveIk's fade, eased).
     std::vector<float>            m_jsContactGone;
+    /// Per bone: the body's rise term (m_jsRootRise / m_jsContactRise) when the live contact FORMED,
+    /// -1 while the bone is no live contact. The rise unloads a contact by the rise SINCE it formed:
+    /// a hand that touches down under a body that has already risen (2026-10-27: a prone-up's right
+    /// hand, left a centimetre off the floor by the hand drag before it, landed at tick 84 of the
+    /// hips' rise) was planted and unloaded in the same tick — a pin that held nothing, bringing
+    /// the arm into the solve with the palm's rows, and the arm flipped basins, 219mm at a thumb.
+    /// (IK_JS_RISE_UNLOAD_ABSOLUTE: the drag's whole rise, as before.)
+    std::vector<float>            m_jsContactRiseBase;
     /// Per node, this tick: a live contact whose hold the solve has faded out entirely (the rise, a
     /// kneel-up). Its pin stands until the rig's lift-off, but it holds nothing — and its arm is the
     /// hang's (hangArmHeld), not a rider's: unloaded under a kneel-up the hands rode the rising
     /// trunk forward-down and lay on the floor ahead of her, arms straight, until the pins went.
+    // Per-tick BUFFERS, kept across ticks for their capacity (each assigned before it is read):
+    std::vector<glm::mat3>        m_jsRotationsBuf;   ///< syncRigRotations: every bone's world rotation
+    std::vector<glm::vec3>        m_jsPositionsBuf;   ///< dragIkTick: every joint's position
+    std::vector<char>             m_jsHeldBeforeBuf;  ///< dragIkTick: per hang arm, held before the contacts updated
+    std::vector<char>             m_jsDeferredBuf;    ///< dragIkTick: per node, its lift-off deferred (IkRig::setLiftOffDeferred)
+    std::vector<char>             m_jsHangHeld;       ///< hangIdleArms: per hang arm, hangArmHeld() cached through the parts ...
+    bool                          m_jsHangHeldCached = false; ///< ... while this is set (the inputs do not change meanwhile)
+    std::vector<glm::vec3>        m_jsHeadNudgeBuf;   ///< rightIdleHead: the head chain's Euler with one channel nudged (its Jacobian by differences)
+    mutable std::vector<char>     m_fkInSubBuf;       ///< fkVolumeDepth: the rotated bone's subtree mask
     std::vector<char>             m_jsContactUnloaded;
     /// Per node, this tick: a HAND contact the body's RISE has unloaded because its arm has no length
     /// to give (ikPinRows: !armSlack under m_jsRootRise / m_jsContactRise at 1). Handed to the rig
@@ -801,6 +992,13 @@ private:
     /// and a straight arm on a shrugged collar fell between the two: weightless on the floor, then
     /// 17cm in the air with its pin standing, and swung 144mm in a tick by the torso's volume rows.
     std::vector<char>             m_jsContactRiseUnloaded;
+    /// Per node: a hand contact whose ARM is being re-based where the rise's unload finds it (the
+    /// fade block of ikPinRows, rebaseContactArm: every tick of the unload); cleared when the node
+    /// is no live contact. Without it the fading hold let the arm snap back to its drag-start fold.
+    std::vector<char>             m_jsContactRebased;
+    /// Per node: a hand contact's unload by the rise, EASED in time (kHandUnloadStep a tick; the fade
+    /// block of ikPinRows). The ceiling rises with it and the rig's lift-off flags read it.
+    std::vector<float>            m_jsHandUnload;
     /// Per bone: a hard live contact (a knee over its planted foot) that is still COMING DOWN — it
     /// is re-seated where it lands (dragIkTick).
     std::vector<char>             m_jsContactLanding;
@@ -828,6 +1026,7 @@ private:
     /// taken down onto all fours and back up in one drag kept both hands on the floor - the trunk
     /// folding at the hips to leave them there - on the five rigs whose arms could reach.
     float                         m_jsContactRise = 0.0f;
+    float                         m_jsProneLie = 0.0f;     ///< THE PRONE: a kneel-start pelvis drag's target ahead of a planted knee and down toward the belly's lying height (ikChooseUnknowns; a function of the target, kept through the settle)
     float                         m_jsProneShare = 0.0f;   ///< a pelvis drag's hips AHEAD of a planted knee (solveIk): the pelvis's tilt price and the feet's rows fade with it
     float                         m_jsKneelUpRise = 0.0f;  ///< a kneel-start TRUNK drag's upward travel (smoothstep 5-20cm): it unloads the HAND contacts, whose arms cannot always make the rise that would (dragIkTick)
     float                         m_jsKneelHold = 0.0f;    ///< a kneel-start TRUNK drag's hold of the knees DOWN (a ceiling): 1 while the trunk can give what is asked, or for the whole drag when it began folded (dragIkTick)
@@ -890,6 +1089,14 @@ private:
     /// lay's band (re-captured whenever it leaves and returns).
     glm::mat3                     m_jsHandLayFrom{1.0f};
     float                         m_jsHandLayEase = 0.0f;
+    int                           m_jsAkimboBone = -1;    ///< AKIMBO (the hand lay): the shoulder whose abduction channel is referred OUT while a hand lies on the hip
+    int                           m_jsAkimboAxis = 0;
+    float                         m_jsAkimboRefDeg = 0.0f; ///< the channel value that stands the upper arm kHandLayElbowOutDeg out
+    float                         m_jsAkimboShare = 0.0f;  ///< the lay x the surface's lateral share x the hips' band x the ease (0 = off)
+    float                         m_jsAkimboEase = 0.0f;   ///< the time ease (kHandLayElbowEaseStep a tick, decaying when the lay lets go)
+    float                         m_jsDangle = 0.0f;       ///< THE DANGLE: how far the suspended body has gone over to hanging (kDangleStep a tick while suspended, back on landing)
+    std::vector<glm::vec3>        m_jsDangleRef;           ///< per bone, the hanging references (the thighs plumb, the knees soft, the feet pointed) — ikPostureDofs
+    std::vector<unsigned char>    m_jsDangleValid;         ///< per bone, a bit per channel that has one
     bool                          m_jsHandLayValid = false;
     /// ... and which SIDE of the hand lies on it: +1 the palm, -1 its BACK — whichever needed the
     /// least turn where the target entered the band (a hand behind the back rests on its back: the
@@ -926,11 +1133,130 @@ private:
         int                    selected = -1;
         int                    grabBone = -1;
         glm::vec3              grabLocal{0.0f};
+        /// THE ARMS' BOUNCE (2026-11-04): each hanging arm swings forward over the dip and back —
+        /// its shoulder's forward channel (the Bend dial's) from the landing pose's value.
+        struct ArmSwing {
+            int   bone = -1;
+            int   axis = 0;
+            float sign = 1.0f;
+            float base = 0.0f;
+            int   elbowBone = -1; ///< The arm's elbow, bending with the forward swing (none where the arm has no fold dial).
+            int   elbowAxis = 0;
+            float elbowSign = 1.0f;
+            float elbowBase = 0.0f;
+        };
+        std::vector<ArmSwing>  arms;
+        float                  armSwingDeg = 0.0f; ///< The swing's amplitude, sized by the impact like the dip.
+        float                  lastSeconds = 0.0f; ///< The previous tick's time (the soft body's dt).
+        bool                   tail = false;       ///< The dip is over; the breasts still settle (the pose is home).
     };
     LandingBounce                 m_landing;
+    // --- SOFT BREASTS (armaturebreasts.cpp): the pectoral bones hung by gravity, by their size ---
+    struct Breast {
+        int       bone = -1;
+        int       parent = -1;
+        float     size = 0.0f;       ///< 0 (a flat chest: no swing) .. 1 (a full breast), off the skin's protrusion.
+        glm::vec3 pivotBind{0.0f};   ///< The breast's base on the chest wall behind the nipple (model space at bind).
+        glm::vec3 pivotTopBind{0.0f}; ///< Its upper attachment on the chest wall, kBreastLever over the nipple: the swing's pivot.
+        float     protrusion = 0.0f; ///< The nipple's distance forward of the base (m).
+        float     lever = 0.05f;     ///< The nipple's distance from the swing's pivot (m).
+        float     side = 1.0f;       ///< +1 the left breast (outward is +x), -1 the right.
+        glm::vec3 disp{0.0f};        ///< The mass's displacement from the sculpt (m, chest frame: sideways, along the chest, out along the tether).
+        glm::vec3 vel{0.0f};
+    };
+    std::vector<Breast> m_breasts;                   ///< One per side (the pectoral that carries the breast), or none.
+    bool                m_breastsReady = false;      ///< setupBreasts ran (with the rig and the body mesh).
+    bool                m_breastDynamic = false;     ///< The spring's state is in use (between ticks); else the resting swing applies.
+    glm::vec3           m_breastGravity{0.0f, -1.0f, 0.0f}; ///< Effective gravity in g (world): g less the chest's acceleration, smoothed.
+    glm::vec3           m_breastAccel{0.0f};         ///< The chest's acceleration in g (world), smoothed: what the mass feels, before the dead band and the cap.
+    glm::vec3           m_breastChestPos{0.0f};
+    glm::vec3           m_breastChestVel{0.0f};
+    int                 m_breastChestSamples = 0;
+    void      setupBreasts();
+    glm::vec3 breastGravityInChest(const Breast& b, bool effective) const; ///< Gravity (g) in the chest's frame: effective (less the chest's acceleration) or the pose's own.
+    glm::vec3 breastRestDisplacement(const Breast& b, bool effective = true) const; ///< Where the mass rests under that gravity (m, chest frame): the effective one, or the pose's own.
+    glm::mat4 breastSwingMatrix(const Breast& b, const glm::mat4& boneGlobal) const;
+    void      tickBreasts(float dt, bool& movingOut);
+    void      kickBreasts(float impactSpeed);
+    void      settleBreasts();
+    bool      breastsMoving() const;
+    // --- SOFT BUTTOCKS (armaturebuttocks.cpp): the glutes' skin as a soft-body delta field the GPU blends ---
+    struct Buttock {
+        float     side = 1.0f;     ///< +1 the left cheek (outward is +x), -1 the right.
+        glm::vec3 apexBind{0.0f};  ///< The cheek's fullest point at bind (model space): the field's centre.
+        glm::vec3 disp{0.0f};      ///< The mass's displacement (m, hips frame: sideways, along the trunk; z unused).
+        glm::vec3 vel{0.0f};
+    };
+    std::vector<Buttock>       m_buttocks;              ///< The two cheeks, or none.
+    std::vector<unsigned char> m_buttockAllowed;        ///< Per bone: 0 no field on its skin, 1 either cheek (the hips, the pelvis bone), 2 the left (its thigh), 3 the right.
+    bool                       m_buttocksReady = false; ///< setupButtocks ran (with the rig and the body mesh).
+    bool                       m_buttockDynamic = false;
+    int                        m_buttockRoot = -1;      ///< The hips joint: the field's frame and the acceleration read.
+    float                      m_buttockRadius = 0.13f; ///< The field's reach about an apex (m, figure-scaled).
+    float                      m_buttockFront = 0.0f;   ///< The field reaches no further forward than this depth (bind z).
+    glm::vec3                  m_buttockHipsPos{0.0f}, m_buttockHipsVel{0.0f}, m_buttockAccel{0.0f};
+    int                        m_buttockSamples = 0;
+    void setupButtocks();
+    void tickButtocks(float dt, bool& movingOut);
+    void kickButtocks(float impactSpeed);
+    void settleButtocks();
+    bool buttocksMoving() const;
+public:
+    /// One tick of the soft body (the breasts' spring under effective gravity): called from the
+    /// drag and settle ticks, the landing bounce and the fall. Returns true while something still
+    /// moves (the settle waits for it). A no-op unless softbody::breastMotion is on.
+    bool  tickSoftBody(float dt);
+    /// Ends a tick sequence: the resting swing applies from here (no spring state).
+    void  settleSoftBody();
+    /// A landing: the breasts keep falling at a share of the impact speed as the chest stops.
+    void  kickSoftBody(float impactSpeed);
+    /// True while the spring's state is away from rest (the fall's tail keeps ticking for it).
+    bool  softBodyMoving() const;
+    /// The settings changed (the Posing preference): set up if needed and re-pose.
+    void  applySoftBodySettings();
+    /// The swing of the left (0) or right (1) breast, degrees — the scripts' `breastl` / `breastr`.
+    float breastSwingDeg(int side) const;
+    /// How far that breast is drawn out along its tether (mm): the hang, dynamic or resting.
+    float breastHangMm(int side) const;
+    /// How far that breast has moved sideways as rendered (mm, + outward toward the armpit): on her back the spread, on her side the fall.
+    float breastSideMm(int side) const;
+    // --- SOFT BUTTOCKS (armaturebuttocks.cpp) ---
+    /// Sets up the soft-body delta fields the Model bakes into its vertex data at import (the
+    /// buttocks: the cheeks' apexes and the skin that may carry the field); needs the rig and the
+    /// body mesh. The fields exist whether or not the preference is on; the weights read 0 off.
+    void  setupSoftBodyFields();
+    /// The soft-body delta field's weight at a render vertex (its bind position and the bone that
+    /// weighs most on it): 0 outside the glutes, 1 at a cheek's fullest point; @p side is the
+    /// cheek (0 left, 1 right) or -1.
+    float softBodyFieldWeight(const glm::vec3& bindPos, int dominantBone, int& side) const;
+    /// A soft-body corrective's weight the GPU blends (metres): index = cheek × 2 + axis (0
+    /// sideways, 1 along the trunk). 0 unless the buttocks are on and moving.
+    float softBodyWeight(int index) const;
+    /// How far the left (0) or right (1) cheek has moved (mm): the scripts' `buttl` / `buttr`.
+    float buttockMoveMm(int side) const;
+
+    // --- THE FIGURE'S PLACE AND HEADING (armaturedials.cpp; the Transform tab's Figure group) ---
+    /// The rig root (the hips): the rig's root node, or without a rig the first bone with two
+    /// children or more below the anatomical root; -1 with no skeleton.
+    int       figureRoot() const;
+    /// Where the figure stands: the root's pose translation, in world metres (the figure move's
+    /// and the Ground button's quantity, a pose file's `@trans:` row).
+    glm::vec3 figurePosition() const;
+    void      setFigurePosition(const glm::vec3& world);
+    /// Which way the figure faces and leans: the root's world rotation as (turn, tip, tilt) in
+    /// degrees — a TURN about the vertical (0 = facing +z as imported, positive = toward her
+    /// left), then a TIP about her own lateral axis (positive = forward, face down), then a TILT
+    /// about her own forward axis (positive = toward her left). Setting them turns the whole pose
+    /// about the root joint, in the root's own unlimited channels; the feet keep their heights
+    /// under a turn alone.
+    glm::vec3 figureRotationDeg() const;
+    void      setFigureRotationDeg(const glm::vec3& turnTipTilt);
+private:
     // --- The bone classes and THE DIGIT DRAG (armatureikdigit.cpp) ---
     /// Per bone: its BoneClass (classifyBones, with the rig: empty until then).
     std::vector<char>             m_boneClass;
+    /// Per bone: the limb end a Carpal hangs below — its wrist or its ankle (classifyBones), else -1.
+    std::vector<int>              m_boneLimbEnd;
     void classifyBones();
     /// The digit drag in flight: the grabbed bone and the grabbed point in its frame (the joint
     /// itself without a grab point), and the bones whose channels answer the cursor — the digit's,
@@ -976,6 +1302,10 @@ private:
     /// and returns it (m_jsFollowPos); a drag's first tick seeds it ON the target, and records
     /// the drag's first target (m_jsStartTarget).
     glm::vec3 followIkTarget(const glm::vec3& raw);
+    /// THE GROUP's targets for this tick (dragIkTick): each secondary effector's position at the
+    /// press carried by the cursor's displacement since — through the group's own follower —
+    /// bounded by the floor and the body volumes as the primary's target is (dragIkTo).
+    void updateGroupTargets();
     void buildJointSolver();
     /// One solve of the current drag's tasks, applied in full: toward @p dragTarget (a drag
     /// tick), or with the released joint held at @p holdTarget / free (the release). Returns
@@ -1008,6 +1338,10 @@ private:
     /// The POSTURE MODEL: every unknown's stiffness and reference (the trunk drag, the seat roll, the
     /// sagittal lock, the kneel tilt, the rise home, the root's home).
     void ikPostureModel(IkSolveScratch& s);
+    void ensureSpineChain(); ///< The spine chain once per skeleton (m_jsSpineChain, m_jsSpineChainChest): read by ikChooseUnknowns and ikPosturePolicy
+    void ikPosturePolicy(IkSolveScratch& s); ///< ... its policy: the thigh boxes, the spine chain, the weight lift, contrapposto, the trunk home, the seat roll, the sagittal lock, the kneel tilt
+    void ikPostureDofs(IkSolveScratch& s);   ///< ... every channel priced and referred
+    void ikPostureRoot(IkSolveScratch& s);   ///< ... the root's home and translation unknowns
     /// The spine's COUPLING rows (the neck as its top, the pelvis's hinge as its base) and the posture
     /// EASING.
     void ikSpineCoupling(IkSolveScratch& s);
@@ -1019,12 +1353,24 @@ private:
     /// toes), a live contact's fading unilateral hold, a landed hand's palm and fingertip, the knee-
     /// drag foot's release.
     void ikPinRows(IkSolveScratch& s, std::size_t p);
+    /// ... in parts over the pin's IkPinRowState (armatureiksolvestate.h), in this order:
+    void ikPinRowFlatFoot(IkSolveScratch& s, IkPinRowState& st);    ///< A KNEELING FOOT LIES FLAT: the lying model's share, references, roll and unroll
+    void ikPinRowLiveContact(IkSolveScratch& s, IkPinRowState& st); ///< a live contact's unilateral hold, the ceilings, the landed hand's palm, the fade
+    void ikPinRowFootFree(IkSolveScratch& s, IkPinRowState& st);    ///< the prone release, and the place row pushed
+    void ikPinRowFootModel(IkSolveScratch& s, IkPinRowState& st);   ///< a standing foot's rows: ball, heel, sole, toes
+    void ikPinRowHold(IkSolveScratch& s, IkPinRowState& st);        ///< a user pin's hold; the seat's rock
+    /// The heading a foot was found at (its lateral axis's turn about the vertical) and the standing
+    /// ball offset turned to it: the flat-foot model's and the standing foot's readings.
+    bool      footYawFound(std::size_t node, int ballBone, float& yaw) const;
+    glm::vec3 standingBallOffset(std::size_t node, int ballBone) const;
     /// The PIN ROWS, part three: the rows that need every pin known — the letting-go foot's spring and
     /// hang, the elbow drag's hand hold, the knee's hanging foot.
     void ikPinRowsEnd(IkSolveScratch& s);
     /// The CURSOR's row and its company: the hips drawn under a rising trunk, the sway's level chest, a
-    /// slid foot's sole, a hand slid along the floor, a suspended body's hang.
+    /// slid foot's sole, a hand slid along the floor, a hand laid on the body, a suspended body's hang.
     void ikCursorRows(IkSolveScratch& s);
+    void ikHandSlideRows(IkSolveScratch& s); ///< ... its part: a dragged hand at the floor's height lies on its palm
+    void ikHandLayRows(IkSolveScratch& s);   ///< ... its part: a dragged hand resting against a body volume lies on its palm, or its back
     /// The BALANCE row: the support polygon (grown into, a stepping foot kept in it), the slack ramp,
     /// the hinge's and the follow's release, the seat that keeps no balance.
     void ikBalanceRow(IkSolveScratch& s);
@@ -1051,6 +1397,39 @@ private:
     /// that hung at the press — and that nothing has hold of — so it keeps hanging under the trunk
     /// as it now is. True when it moved one.
     bool hangIdleArms();
+    /// One hanging arm's turn this tick (hangIdleArms' parts: found, stopped, applied in that order).
+    struct HangTurn {
+        const HangArm* arm = nullptr;
+        std::size_t    s;
+        glm::vec3      before;
+        glm::vec3      delta;
+        glm::vec3      wanted;
+        glm::vec3      out{0.0f}; // the arm's outward axis (levelled lateral, toward its side), or zero
+        glm::vec3      unswung{0.0f}; // the wanted direction before THE STRIDE SWING's tilt (see m_hangSwingDeg)
+        glm::vec3      fore{0.0f};    // the trunk's fore axis now, or zero
+        float          swingAsked = 0.0f; // the swing the tilt asked (degrees, + forward)
+        float          depthBefore = 0.0f;
+        float          floorDepthBefore = 0.0f; // the arm's depth under the floor alone (negative = clear)
+        float          fraction = 1.0f;
+    };
+    /// ... IDLE ARMS HANG in parts (armatureikpost.cpp), in the order hangIdleArms calls them:
+    void               findHangArms();                                          ///< the once-per-drag search for the arms that hang
+    std::vector<float> hangArmSwings() const;                                   ///< THE STRIDE SWING per arm this tick
+    bool               softenHangElbows(const std::vector<float>& swings);      ///< the elbow softens near the floor, bends with the swing
+    bool               relaxLiftedWrists();                                     ///< a lifted hand's wrist eases to neutral
+    bool               relaxIdleFingers();                                      ///< IDLE HANDS RELAX; a hand coming down opens
+    void               findHangTurns(const std::vector<float>& swings, std::vector<HangTurn>& turns);       ///< each arm's wanted direction and turn
+    void               stopHangTurns(std::vector<HangTurn>& turns);             ///< THE STOP: at the volumes and the floor, order-independent, outward where blocked
+    bool               applyHangTurns(const std::vector<HangTurn>& turns);      ///< the turns applied; the carried swing remembered
+    bool               hangStanceSplit(float armSide, const glm::vec3& fore, float& split) const; ///< the stance's fore-aft split for an arm's side
+    float              hangSwingDegOf(float split) const;                       ///< the swing a split gives (degrees, + forward)
+    bool               hangHandLifted(const HangArm& arm) const;                ///< no pin but a shadow stands in the arm
+    bool hangTurnFor(const HangArm& arm, const glm::vec3& wanted, HangTurn& turn, float stepDeg = -1.0f) const; // (stepDeg <= 0: the hang's pace, kArmHangStepDeg; a large value = the whole turn) ///< the least swing that points the arm at `wanted`
+    float              hangTurnDepth(const HangTurn& t) const;                  ///< how deep the arm stands in the volumes / under the floor
+    float              hangTurnFloorDepth(const HangTurn& t) const;             ///< ... under the floor alone (negative = clear by that much)
+    void               hangTurnTo(const HangTurn& t, float fraction);           ///< the shoulder turned that far along the turn
+    static float       hangTurnAllow(const HangTurn& t);                        ///< how deep a turn may leave its arm
+    void               hangStopFraction(HangTurn& t);                           ///< one turn stopped at the volumes and the floor
     /// True when a pin or a floor contact of the drag sits in the arm: the solve has it, not the hang.
     bool hangArmHeld(const HangArm& arm) const;
     /// THE HEAD STAYS UP (armatureikpost.cpp): after a tick's solve, turns the neck and the head —

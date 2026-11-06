@@ -10,7 +10,17 @@
 
 **Check for updates at startup** (on by default). A few seconds after launch PoseStudio asks GitHub for the latest release and tells you when a newer one exists. Nothing but the request is sent. **Help → Check for Updates…** does the same on demand.
 
+**Show What's New after an update** (on by default). The first time a new version of PoseStudio starts, a window with that version's release notes opens once the splash screen is dismissed — see [Privacy and Updates](privacy-updates.md#whats-new-after-an-update). **Help → What's New…** opens the same window on demand.
+
 **Count camera changes as unsaved** (off by default). Moving the camera — orbiting, panning, dollying, switching named views, framing the selection — does not mark a project dirty, so closing the window or starting a new scene after a camera move asks nothing. Turn this on if you want a changed framing to count as an unsaved change; the camera is always saved with the project file either way.
+## Posing
+
+**Soft breasts follow the pose** — on by default: a figure's breasts hang and swing with the chest's orientation against gravity, by the size she has, and bounce on a landing (see [Posing](posing.md#soft-breasts)). Off, every figure keeps the breasts as sculpted. **Soft buttocks jiggle with movement** — on by default: the buttocks bounce a little with the hips' movement and on a landing (sideways about half as far as the breasts, up and down about as far) and never hang in a pose (see [Posing](posing.md#soft-buttocks)). **Strength (%)** scales both: 100 is the calibrated amount, 0 holds them still, 200 doubles it. All three apply to the figures in the scene at once.
+
+## VR
+
+**Enable VR support** (off by default). PoseStudio connects to the headset runtime (Meta Quest Link, Virtual Desktop, SteamVR — anything that speaks OpenXR) as it starts, so turning this on takes a restart; **View → VR Mode** offers the restart itself the first time you choose it. **Status** says what the startup found: the headset and runtime that are ready, or why VR Mode cannot start. **Render scale** is the resolution each eye is rendered at, as a fraction of the headset's recommended size — lower it if the headset image stutters, raise it on a strong GPU. **Reduced effects in the headset** skips the skin's subsurface blur and the bloom per eye for a lighter GPU. Both apply when VR Mode next starts. See [VR Mode](vr.md).
+
 ## Interface, Input, Navigation, System
 
 These pages are placeholders: they name the settings that are planned (appearance, keyboard bindings, viewport navigation, performance and storage) but hold none yet.

@@ -73,6 +73,22 @@ namespace Constants {
     // release version the user chose to skip ("0.3.14"), silenced at startup until a newer one.
     inline constexpr const char* PREF_UPDATE_CHECK_ENABLED = "UpdateCheckEnabled";
     inline constexpr const char* PREF_UPDATE_SKIPPED_VERSION = "UpdateCheckSkippedVersion";
+    /// The What's New window (src/help/whatsnewdialog.h): whether it opens on the first start of a
+    /// new version ("1"/"0", absent = on), and the last version it was decided for.
+    inline constexpr const char* PREF_WHATS_NEW_ENABLED = "WhatsNewEnabled";
+    inline constexpr const char* PREF_WHATS_NEW_SEEN_VERSION = "WhatsNewSeenVersion";
+    /// VR Mode (src/core/vrsettings.h): whether the headset runtime is consulted at startup
+    /// ("1"/"0", absent = OFF — opt-in, takes a restart), and the per-eye render scale ("1.00",
+    /// a fraction of the headset's recommended resolution, applied when VR Mode next starts).
+    /// The Posing preferences: the soft breasts (absent = on) and their strength in percent (absent = 100).
+    inline constexpr const char* PREF_SOFTBODY_BREASTS = "SoftBodyBreasts";
+    inline constexpr const char* PREF_SOFTBODY_BREAST_STRENGTH = "SoftBodyBreastStrength";
+    inline constexpr const char* PREF_SOFTBODY_BUTTOCKS = "SoftBodyButtocks";
+    inline constexpr const char* PREF_VR_ENABLED = "VrEnabled";
+    inline constexpr const char* PREF_VR_RENDER_SCALE = "VrRenderScale";
+    /// "1"/"0", absent = off: skip the subsurface blur and bloom in the headset (a lighter GPU's
+    /// frame rate over skin realism); applies when VR Mode next starts.
+    inline constexpr const char* PREF_VR_REDUCED_EFFECTS = "VrReducedEffects";
 
     // BCP-47 code of the UI language, "en" (default) or "ru". Applied at startup by installing
     // the matching embedded .qm; an unknown value simply installs no translator (English).

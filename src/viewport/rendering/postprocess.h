@@ -50,11 +50,15 @@ public:
     /// @param hdrSpecResolve      The HDR target's resolved SPECULAR descriptor — sampled by the
     ///                            SSS V-pass, which adds it back after diffusing (the blur must
     ///                            never smear glints; smeared specular reads as wet skin).
+    /// @param hdrPhotoResolve     The HDR target's resolved PHOTO LAYER — the Gaussian splats,
+    ///                            premultiplied colour + coverage in the trainers' own colour
+    ///                            space, which the composite lays over the tonemapped scene.
     /// @param outlineMask         The selection-outline coverage mask (OutlineMask) the composite
     ///                            dilates into the outline (re-fed on resize).
     PostProcess(VulkanContext& context, VkRenderPass swapchainRenderPass,
                 const VkDescriptorImageInfo& hdrResolve,
                 const VkDescriptorImageInfo& hdrSpecResolve,
+                const VkDescriptorImageInfo& hdrPhotoResolve,
                 const VkDescriptorImageInfo& outlineMask, VkExtent2D extent,
                 const std::vector<char>& fullscreenVertSpirv,
                 const std::vector<char>& brightFragSpirv, const std::vector<char>& blurFragSpirv,
@@ -69,6 +73,7 @@ public:
     /// target and outline mask. Caller must have made the device idle.
     void resize(VkExtent2D extent, const VkDescriptorImageInfo& hdrResolve,
                 const VkDescriptorImageInfo& hdrSpecResolve,
+                const VkDescriptorImageInfo& hdrPhotoResolve,
                 const VkDescriptorImageInfo& outlineMask);
 
     /// Records the screen-space subsurface scattering blur: two full-res masked passes, HDR
@@ -80,13 +85,46 @@ public:
     /// resolution. Call between the HDR scene pass and the swapchain pass, PBR mode only.
     void recordBloom(VkCommandBuffer cmd);
 
+    /// The composite's optional inputs (VR Mode — see VulkanRenderer::drawVrFrame): draw from the
+    /// MIRROR source (setMirrorSource) instead of this chain's own targets, through a crop of its
+    /// UV space (scale + offset — the desktop viewport shows a VR eye cropped to its own aspect),
+    /// and encode sRGB in the shader when the target format cannot (a UNORM headset swapchain).
+    struct CompositeOptions {
+        bool  fromMirror = false;
+        float uvScale[2] = {1.0f, 1.0f};
+        float uvOffset[2] = {0.0f, 0.0f};
+        bool  encodeSrgb = false;
+    };
+
     /// Records the fullscreen composite draw. The caller has begun the swapchain render pass and
     /// set the full-extent viewport/scissor. @p tonemap applies ACES (PBR + dial on); @p bloom
     /// adds the bloom target (PBR only — must match whether recordBloom ran this frame);
     /// @p outlineWidthPx > 0 paints the selection outline that wide (physical pixels) around
     /// the coverage in the outline mask — pass 0 whenever the mask pass didn't run this frame
     /// (the mask's contents are then stale).
-    void recordComposite(VkCommandBuffer cmd, bool tonemap, bool bloom, float outlineWidthPx);
+    void recordComposite(VkCommandBuffer cmd, bool tonemap, bool bloom, float outlineWidthPx,
+                         const CompositeOptions& options = {});
+
+    /// Points the MIRROR composite (CompositeOptions::fromMirror) at another chain's outputs: its
+    /// HDR resolve, its bloom target (bloomInfo()), its outline mask and its photo layer — the
+    /// desktop viewport's window onto what the headset sees. Kept across resize();
+    /// clearMirrorSource() drops it (call before those images are destroyed).
+    void setMirrorSource(const VkDescriptorImageInfo& hdrResolve, const VkDescriptorImageInfo& bloom,
+                         const VkDescriptorImageInfo& outlineMask, const VkDescriptorImageInfo& photo);
+    void clearMirrorSource();
+    /// The final bloom target (sampled, SHADER_READ_ONLY after recordBloom) — a mirror source.
+    VkDescriptorImageInfo bloomInfo() const;
+
+    /// VR Mode's DEPTH RESOLVE (XR_KHR_composition_layer_depth): the eye target's multisampled
+    /// depth (@p msaaDepth = HdrTarget::depthInfo of a storeDepth target, @p sampleCount samples)
+    /// resolved — the nearest sample — into the headset's single-sample depth image through
+    /// @p depthRenderPass (the session's depth-only pass, cleared to 1.0 here). Build once after
+    /// construction; recordDepthResolve then runs per eye.
+    void enableDepthResolve(VkRenderPass depthRenderPass, const VkDescriptorImageInfo& msaaDepth,
+                            uint32_t sampleCount, const std::vector<char>& fullscreenVertSpirv,
+                            const std::vector<char>& depthResolveFragSpirv);
+    bool hasDepthResolve() const { return m_depthResolvePipeline != nullptr; }
+    void recordDepthResolve(VkCommandBuffer cmd, VkFramebuffer framebuffer, VkExtent2D extent);
 
 private:
     /// One single-sample RGBA16F render target + the framebuffer that draws into it.
@@ -99,6 +137,7 @@ private:
     void destroyTargets();
     void updateDescriptors(const VkDescriptorImageInfo& hdrResolve,
                            const VkDescriptorImageInfo& hdrSpecResolve,
+                   const VkDescriptorImageInfo& hdrPhotoResolve,
                            const VkDescriptorImageInfo& outlineMask);
     void runFullscreenPass(VkCommandBuffer cmd, VkFramebuffer framebuffer, VkExtent2D extent,
                            const VulkanPipeline& pipeline, VkDescriptorSet set,
@@ -132,6 +171,12 @@ private:
     VkDescriptorSet           m_compositeSet = VK_NULL_HANDLE; // 0 = HDR resolve, 1 = bloom A, 2 = outline mask
     VkDescriptorSet           m_sssHSet = VK_NULL_HANDLE;      // 0 = HDR resolve
     VkDescriptorSet           m_sssVSet = VK_NULL_HANDLE;      // 0 = SSS scratch, 1 = spec resolve
+    VkDescriptorSet           m_mirrorSet = VK_NULL_HANDLE;    // the composite over setMirrorSource's images
+    bool                      m_hasMirror = false;
+    VkDescriptorImageInfo     m_mirrorInfos[4]{};              // hdr, bloom, outline, photo (re-written on resize)
+    VkDescriptorSet           m_depthResolveSet = VK_NULL_HANDLE; // 0 = the MSAA depth (enableDepthResolve)
+    VkRenderPass              m_depthResolvePass = VK_NULL_HANDLE; // borrowed (the session's)
+    uint32_t                  m_depthSamples = 1;
 
     // Selection-outline colour (linear rgb), pushed to the composite: the app's accent blue
     // (kSelectionAccentLinear) — the composite paints it after tonemapping and the sRGB
@@ -143,6 +188,7 @@ private:
     std::unique_ptr<VulkanPipeline> m_blurPipeline;   // bloom pass (direction via push constant)
     std::unique_ptr<VulkanPipeline> m_sssPipeline;    // SSSSS masked blur (bloom pass, full res)
     std::unique_ptr<VulkanPipeline> m_compositePipeline; // swapchain pass
+    std::unique_ptr<VulkanPipeline> m_depthResolvePipeline; // the session's depth pass (VR, optional)
 };
 
 } // namespace pose

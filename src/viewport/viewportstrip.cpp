@@ -17,6 +17,7 @@
 #include "scene/shademode.h"
 
 #include <QCoreApplication>
+#include <QAction>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QList>
@@ -137,6 +138,11 @@ static const char* const kPickerNoops[] = {
     QT_TRANSLATE_NOOP("ViewportStrip", "Left View"),
     QT_TRANSLATE_NOOP("ViewportStrip", "Right View"),
 };
+// A mode or view added to either table must be added above too; the count guard catches that
+// (a rename it cannot: the spelling is checked by nothing).
+static_assert(static_cast<int>(sizeof(kPickerNoops) / sizeof(kPickerNoops[0]))
+                  == kShadeModeCount + kViewEntryCount,
+              "kPickerNoops must list every shade mode and every view name");
 
 } // namespace
 
@@ -209,6 +215,19 @@ ViewportStrip::ViewportStrip(QWidget* owner)
             emit viewSelected(kViewEntries[index].preset);
         }
     });
+    // VR Mode, at the bottom of the view picker — off the camera views by a separator, since it
+    // is not a view: the headset shows the scene and this viewport mirrors it. An action of its
+    // own, outside the picker's exclusive view group, so the caption keeps reading the camera.
+    // It only ASKS (vrModeToggled): the check mark is put back and the real state arrives
+    // through setVrActive once the headset has the scene — a start that cannot happen (no
+    // headset) leaves it as it was.
+    m_viewPicker->pickerMenu()->addSeparator();
+    m_vrMenuAction = m_viewPicker->pickerMenu()->addAction(tr("VR Mode"));
+    m_vrMenuAction->setCheckable(true);
+    connect(m_vrMenuAction, &QAction::triggered, this, [this](bool on) {
+        m_vrMenuAction->setChecked(!on);
+        emit vrModeToggled(on);
+    });
     row->addWidget(m_viewPicker);
 
     // "Home": snap the camera back to the default perspective framing. "Ground": drop the figure
@@ -218,6 +237,19 @@ ViewportStrip::ViewportStrip(QWidget* owner)
     // (unlike the one-shot Home/Ground), so it's checkable and shows its state; off by default,
     // joints are grabbed directly on the figure and stay clickable either way.
     const int fieldHeight = m_shaderPicker->sizeHint().height();
+
+    // The VR button, right of the view picker: enters / leaves VR Mode and is LIT while it is
+    // on (the checkable icon-button look the Skeleton button has). Like the picker's entry it
+    // only asks; the lit state is the viewport's (setVrActive).
+    m_vrButton = makeIconButton(this, QStringLiteral("ViewportVrButton"),
+                                QStringLiteral(":/resources/icons/vr-mode.png"),
+                                tr("Enter or leave VR Mode"), fieldHeight, true);
+    connect(m_vrButton, &QPushButton::clicked, this, [this](bool on) {
+        m_vrButton->setChecked(!on); // back until the state is real
+        emit vrModeToggled(on);
+    });
+    row->addWidget(m_vrButton);
+
     m_homeButton = makeIconButton(this, QStringLiteral("ViewportHomeButton"),
                                   QStringLiteral(":/resources/icons/home.png"),
                                   tr("Reset to the default view"), fieldHeight, false);
@@ -292,6 +324,12 @@ void ViewportStrip::setJointModeBadge(int kind) {
     if (was != (kind >= 0)) {
         anchorTo(m_anchor); // the strip grew or shrank by a row
     }
+}
+
+void ViewportStrip::setVrActive(bool on) {
+    // (setChecked raises toggled, not clicked / triggered: the user-only signals stay quiet.)
+    m_vrButton->setChecked(on);
+    m_vrMenuAction->setChecked(on);
 }
 
 } // namespace pose

@@ -10,7 +10,7 @@ cmake_minimum_required(VERSION 3.21)
 # C is enabled alongside C++ because a couple of third-party dependencies ship C implementation
 # files we compile directly into the target (e.g. miniz's inflate sources for the figure importer).
 # Without C in the language list, CMake classifies .c files as non-buildable and silently skips them.
-project(PoseStudio VERSION 0.3.16 LANGUAGES C CXX)
+project(PoseStudio VERSION 0.4.2 LANGUAGES C CXX)
 
 # ==============================================================================
 # [ COMPILER CONFIGURATION ]
@@ -152,7 +152,93 @@ FetchContent_Declare(tinyexr
     GIT_TAG        v1.0.13
     SOURCE_SUBDIR  headers-only-do-not-configure
 )
-FetchContent_MakeAvailable(glm vma tinyobjloader nlohmann_json miniz stb tinyexr)
+# ufbx: the FBX reader (binary and ASCII FBX from version 3000, skinning, blend shapes, the whole
+# node transform stack, axis and unit conversion, embedded textures). Single-source C (ufbx.c +
+# ufbx.h), MIT or public domain; compiled into the target like miniz. Pinned to a release tag.
+FetchContent_Declare(ufbx
+    GIT_REPOSITORY https://github.com/ufbx/ufbx.git
+    GIT_TAG        v0.23.1
+    GIT_SHALLOW    TRUE
+)
+# cgltf: the glTF 2.0 reader behind the GLB / glTF character importer (import/gltf/) — a single
+# C header (cgltf.h, MIT) that parses the JSON and the GLB container, loads the buffers (external
+# .bin files and base64 data URIs alike) and reads accessors of every component type; images stay
+# encoded (the Qt layer decodes them, as for every format). Implementation compiled in the ONE TU
+# gltffigureimporter.cpp (CGLTF_IMPLEMENTATION), the tinyobjloader treatment. Pinned to a release tag.
+FetchContent_Declare(cgltf
+    GIT_REPOSITORY https://github.com/jkuhlmann/cgltf.git
+    GIT_TAG        v1.15
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  headers-only-do-not-configure
+)
+FetchContent_MakeAvailable(glm vma tinyobjloader nlohmann_json miniz stb tinyexr ufbx cgltf)
+
+# LightUSD (the library formerly named TinyUSDZ): the USD reader behind the USD character importer
+# (import/usd/) — USDA, USDC (crate) and USDZ packages, UsdSkel skeletons and skin weights,
+# UsdPreviewSurface materials, no dependency outside its own tree (Apache 2.0; the full OpenUSD
+# needs TBB and more, and a clone of this project must build with Qt and the Vulkan SDK alone).
+# Like OpenXR below it IS configured and built, as a STATIC library (lightusd_static); its reader
+# layer ("Tydra") turns a stage into render-ready meshes, skeletons and materials. Every optional
+# part is off: tools, tests, examples, MaterialX, audio, scripting, the glTF/OBJ/FBX bridges.
+set(LIGHTUSD_BUILD_TESTS OFF CACHE BOOL "LightUSD: no tests" FORCE)
+set(LIGHTUSD_BUILD_EXAMPLES OFF CACHE BOOL "LightUSD: no examples" FORCE)
+set(LIGHTUSD_BUILD_TOOLS OFF CACHE BOOL "LightUSD: no tools" FORCE)
+set(LIGHTUSD_BUILD_SHARED_LIBS OFF CACHE BOOL "LightUSD: static" FORCE)
+set(LIGHTUSD_WITH_TYDRA ON CACHE BOOL "LightUSD: the render-scene layer is what we read" FORCE)
+set(LIGHTUSD_WITH_USDMTLX OFF CACHE BOOL "LightUSD: no MaterialX" FORCE)
+set(LIGHTUSD_WITH_AUDIO OFF CACHE BOOL "LightUSD: no audio" FORCE)
+set(LIGHTUSD_WITH_USD_TO_GLTF OFF CACHE BOOL "LightUSD: no glTF bridge" FORCE)
+set(LIGHTUSD_WITH_USDOBJ OFF CACHE BOOL "LightUSD: no OBJ bridge" FORCE)
+set(LIGHTUSD_WITH_USDFBX OFF CACHE BOOL "LightUSD: no FBX bridge" FORCE)
+set(LIGHTUSD_WITH_USDVOX OFF CACHE BOOL "LightUSD: no voxel bridge" FORCE)
+set(LIGHTUSD_WITH_USDVOL ON CACHE BOOL "LightUSD: volumes stay on (its render-scene layer links the VDB reader even when they are off)" FORCE)
+set(LIGHTUSD_WITH_MCP_SERVER OFF CACHE BOOL "LightUSD: no MCP server" FORCE)
+set(LIGHTUSD_WITH_QJS OFF CACHE BOOL "LightUSD: no JavaScript" FORCE)
+set(LIGHTUSD_WITH_WAMR OFF CACHE BOOL "LightUSD: no WebAssembly" FORCE)
+set(LIGHTUSD_WITH_GEOGRAM OFF CACHE BOOL "LightUSD: no geogram" FORCE)
+set(LIGHTUSD_WITH_PYTHON OFF CACHE BOOL "LightUSD: no Python binding" FORCE)
+set(LIGHTUSD_WITH_PXR_COMPAT_API OFF CACHE BOOL "LightUSD: no pxr-compatible API" FORCE)
+set(LIGHTUSD_WITH_C_API OFF CACHE BOOL "LightUSD: no C API" FORCE)
+set(LIGHTUSD_WITH_EXR OFF CACHE BOOL "LightUSD: no EXR textures (the Qt layer decodes images)" FORCE)
+set(LIGHTUSD_WITH_TIFF OFF CACHE BOOL "LightUSD: no TIFF textures" FORCE)
+set(LIGHTUSD_USE_CCACHE OFF CACHE BOOL "LightUSD: no ccache" FORCE)
+set(LIGHTUSD_ENABLE_THREAD ON CACHE BOOL "LightUSD: its crate reader may use threads (off is for browser builds)" FORCE)
+set(LIGHTUSD_NO_WERROR ON CACHE BOOL "LightUSD: a warning in the library must not fail this build" FORCE)
+FetchContent_Declare(lightusd
+    GIT_REPOSITORY https://github.com/lighttransport/tinyusdz.git
+    GIT_TAG        v1.0.0-rc4
+    GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(lightusd)
+# (CMAKE_AUTOMOC is on project-wide and would scan the library's .hh headers for Q_OBJECT — a
+# warning per header, nothing more; the library has no Qt in it.)
+if(TARGET lightusd_static)
+    set_target_properties(lightusd_static PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
+endif()
+
+# OpenXR: the loader behind VR Mode (src/viewport/vr/). Unlike the header-only libraries above
+# this one IS configured and built — the Khronos OpenXR-SDK repository (the PRE-GENERATED loader
+# sources: no Python at configure time, unlike OpenXR-SDK-Source) builds a STATIC openxr_loader
+# that links into the executable, so the package carries no extra DLL. The loader finds the
+# active runtime (Meta Quest Link, SteamVR, Virtual Desktop, Monado) through the registry /
+# ~/.config at xrCreateInstance time; the runtime's own Vulkan requirements are negotiated at
+# startup (OpenXrSystem) when VR support is enabled in Preferences.
+set(DYNAMIC_LOADER OFF CACHE BOOL "OpenXR: link the loader statically" FORCE)
+set(BUILD_LOADER ON CACHE BOOL "OpenXR: the loader is what we need" FORCE)
+set(BUILD_TESTS OFF CACHE BOOL "OpenXR: no tests" FORCE)
+set(BUILD_API_LAYERS OFF CACHE BOOL "OpenXR: no API layers" FORCE)
+set(BUILD_CONFORMANCE_TESTS OFF CACHE BOOL "OpenXR: no conformance tests" FORCE)
+FetchContent_Declare(openxr
+    GIT_REPOSITORY https://github.com/KhronosGroup/OpenXR-SDK.git
+    GIT_TAG        release-1.1.65
+    GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(openxr)
+if(TARGET OpenXR::openxr_loader)
+    set(POSESTUDIO_OPENXR_TARGET OpenXR::openxr_loader)
+else()
+    set(POSESTUDIO_OPENXR_TARGET openxr_loader)
+endif()
 
 # ==============================================================================
 # [ TARGET DEFINITION & SOURCE FILES ]
@@ -179,6 +265,8 @@ add_executable(
     src/help/helpwindow.h
     src/help/helpmanual.cpp               # the manual's manifest, embedded Markdown pages and page styling
     src/help/helpmanual.h
+    src/help/whatsnewdialog.cpp           # "What's New in x.y.z": the version's release notes, once per version at startup
+    src/help/whatsnewdialog.h
 
     # --- Asset Manager ---
     src/assets/assetmanagerwidget.cpp
@@ -242,6 +330,17 @@ add_executable(
     src/viewport/vulkanwindow_ik.cpp      # the FBIK drag loop, ground fall, X/Y/Z wheel hold
     src/viewport/vulkanwindow_pose.cpp    # pose utilities, pins, pose files, delete, undo/redo
     src/viewport/vulkanwindow_bench.cpp   # POSESTUDIO_IK_PERF / _BENCH diagnostics
+    src/viewport/vulkanwindow_vr.cpp      # VR Mode: the OpenXR session's lifecycle, wait thread, stereo frame
+    # The OpenXR layer (Qt-free: OpenXR + Vulkan + GLM): the headset found at startup, the session
+    # and its swapchains, the eye/placement math. rendering/ never includes these.
+    src/viewport/vr/openxrsystem.cpp
+    src/viewport/vr/openxrsystem.h
+    src/viewport/vr/openxrsession.cpp
+    src/viewport/vr/openxrsession.h
+    src/viewport/vr/openxrinput.cpp     # the controllers: actions, bindings, sticks/trigger/buttons, aim poses, haptics
+    src/viewport/vr/openxrinput.h
+    src/viewport/vr/vrmath.cpp
+    src/viewport/vr/vrmath.h
     src/viewport/ikdiagnostics.h          # the diagnostics state (null unless enabled)
     src/viewport/vulkanwindow_script.cpp  # POSESTUDIO_IK_SCRIPT: the scripted in-app posing test
     src/viewport/ikscript.h               # its state (null unless enabled)
@@ -275,6 +374,7 @@ add_executable(
     src/viewport/rendering/shaderlibrary.cpp # SPIR-V loading by name + the one in-code shader list
     src/viewport/rendering/shaderlibrary.h
     src/viewport/rendering/ibldata.h        # the CPU-baked IBL products the GPU layer uploads
+    src/viewport/rendering/vreyeview.h      # a VR eye's view + projection — the one VR type the core knows
     src/viewport/rendering/vulkancontext.cpp
     src/viewport/rendering/vulkancontext.h
     src/viewport/rendering/vulkanswapchain.cpp
@@ -305,6 +405,27 @@ add_executable(
     src/viewport/import/vertex.h
     src/viewport/import/modeldata.h
     src/viewport/import/meshimporter.h
+    # The rigged-character readers (FBX, glTF / GLB, USD): each a file -> the skinned ModelData +
+    # its raw skeleton; what they share (the facing / centre / floor step, the texture finder, the
+    # import summary) lives in import/rigged/; the conformer gives the skeleton its anatomy.
+    src/viewport/import/rigged/riggedimport.cpp
+    src/viewport/import/rigged/riggedimport.h
+    src/viewport/import/fbx/fbxfigureimporter.cpp   # the FBX figure reader (ufbx)
+    src/viewport/import/fbx/fbxfigureimporter.h
+    src/viewport/import/gltf/gltffigureimporter.cpp # the glTF / GLB figure reader (cgltf; the single CGLTF_IMPLEMENTATION TU)
+    src/viewport/import/gltf/gltffigureimporter.h
+    src/viewport/import/usd/usdfigureimporter.cpp   # the USD / USDZ figure reader (LightUSD + its render-scene layer)
+    src/viewport/import/usd/usdfigureimporter.h
+    src/viewport/import/splat/splatimporter.cpp     # GAUSSIAN SPLATS: the .ply / .splat reader
+    src/viewport/import/splat/splatimporter.h
+    src/viewport/splatimportservice.cpp             # the Qt-facing splat import (reader, progress, upload)
+    src/viewport/splatimportservice.h
+    src/viewport/scene/splatcloud.cpp               # the splats on the GPU: buffers, the far-first sort, the draw
+    src/viewport/scene/splatcloud.h
+    src/viewport/scene/ik/rigconformer.cpp          # the rig standard's conformer: frames, orders and limits per role
+    src/viewport/scene/ik/rigconformer.h
+    src/viewport/riggedimportservice.cpp            # the Qt-facing rigged-character import (reader by extension, conform, upload)
+    src/viewport/riggedimportservice.h
     src/viewport/import/importerregistry.cpp
     src/viewport/import/importerregistry.h
     src/viewport/import/obj/objimporter.cpp   # single TINYOBJLOADER_IMPLEMENTATION TU
@@ -384,6 +505,9 @@ add_executable(
     src/viewport/scene/armatureikpost.cpp   # the drag tick's post-steps: the idle arms' hang, the head's righting
     src/viewport/scene/armatureikdigit.cpp  # the bone classes (body / face rig / digit) and the digit drag
     src/viewport/scene/armaturelanding.cpp  # the landing bounce: a figure dropped onto her feet absorbs the landing
+    src/viewport/scene/armaturebreasts.cpp     # THE SOFT BREASTS: the pectorals hung by gravity, by their size; their bounce
+    src/viewport/scene/armaturebuttocks.cpp    # THE SOFT BUTTOCKS: the glutes' skin as a delta field the GPU blends, jiggling with the hips' movement
+    src/viewport/scene/softbodysettings.h
     src/viewport/scene/armatureikfigure.cpp # the figure move: Ctrl + the body itself moves the figure as she is posed
     src/viewport/scene/armaturedials.cpp    # the transform dials: a joint's rotation as Bend Forward / Bend Sideways / Twist, 0-100
     src/viewport/scene/jointtransform.h     # ... and what the Transform tab shows of them (plain data)
@@ -406,6 +530,10 @@ add_executable(
     src/viewport/scene/ik/skeletongraph.cpp   # undirected joint graph, dynamically re-rootable
     src/viewport/scene/ik/bonealiases.cpp     # the bone-alias table the two posing test tools share
     src/viewport/scene/ik/bonealiases.h
+    src/viewport/scene/ik/rigroles.cpp        # the rig standard's roles: what each bone is, by structure
+    src/viewport/scene/ik/rigroles.h
+    src/viewport/scene/ik/namerules.cpp       # the one reading of a bone name: its side token, a digit's token, the twist and segment words
+    src/viewport/scene/ik/namerules.h
     src/viewport/scene/ik/skeletongraph.h
     src/viewport/scene/ik/balancecontroller.cpp # CoM + support polygon + pelvis correction
     src/viewport/scene/ik/balancecontroller.h
@@ -416,6 +544,7 @@ add_executable(
     src/viewport/scene/ik/ikrigpolicy.cpp     # per-tick policy: intents, the lift-off test, the step policy's entry
     src/viewport/scene/ik/ikrigstepping.cpp   # balance-driven foot re-planting
     src/viewport/scene/ik/ikrigcontacts.cpp   # live contact re-detection mid-drag, landings
+    src/viewport/scene/ik/ikrigvolumes.cpp    # the self-collision body volumes: the mesh fit, the drag-start mask, the target clamp
     src/viewport/scene/ik/bodymesh.cpp        # the body mesh sample the volumes are fitted to (+ its dump sidecar)
     src/viewport/scene/ik/jointsolver.cpp     # THE IK solver: whole-body regularized least squares on the Euler channels
     src/viewport/scene/ik/jointsolver.h
@@ -431,6 +560,10 @@ add_executable(
     src/preferences/preferencespanel.h
     src/preferences/generalpreferencespanel.cpp
     src/preferences/generalpreferencespanel.h
+    src/preferences/vrpreferencespanel.cpp  # VR support toggle, headset status, render scale
+    src/preferences/vrpreferencespanel.h
+    src/preferences/posingpreferencespanel.cpp # the soft breasts' switch and strength
+    src/preferences/posingpreferencespanel.h
     src/preferences/assetspreferencespanel.cpp
     src/preferences/assetspreferencespanel.h
     src/preferences/placeholderpreferencespanel.cpp # one class for every not-yet-built tab (Interface/Input/Navigation/System)
@@ -445,12 +578,15 @@ add_executable(
     src/core/assetlibraries.h
     src/core/librarypaths.cpp             # resolves the per-user "My PoseStudio Library" (+ hdri/)
     src/core/librarypaths.h
+    src/core/importformats.h                # which extensions take which import route (menu, Asset Manager, command line, viewport)
     src/core/preferencesmanager.cpp
     src/core/preferencesmanager.h
     src/core/installping.cpp              # per-launch anonymous install ping (signed; official builds only)
     src/core/installping.h
     src/core/updatecheck.cpp              # startup "newer release on GitHub?" check + Help → Check for Updates
     src/core/updatecheck.h
+    src/core/vrsettings.cpp                # VR Mode's preferences + the startup headset report
+    src/core/vrsettings.h
     
     # --- Embedded Resources ---
     resources/resources.qrc   # Injects images, UI styles, and SQL templates
@@ -601,6 +737,15 @@ target_include_directories(PoseStudio PRIVATE
     src/viewport/import
     src/viewport/import/obj
     src/viewport/import/figure
+    src/viewport/import/fbx
+    src/viewport/import/gltf
+    src/viewport/import/usd
+    src/viewport/import/splat
+    src/viewport/import/rigged
+    src/viewport/vr
+    ${ufbx_SOURCE_DIR}                       # so <ufbx.h> resolves
+    ${cgltf_SOURCE_DIR}                      # so <cgltf.h> resolves
+    ${lightusd_SOURCE_DIR}/src               # so <lightusd.hh> and <tydra/render-data.hh> resolve
     ${glm_SOURCE_DIR}                        # so <glm/glm.hpp> resolves
     ${vma_SOURCE_DIR}/include                # so <vk_mem_alloc.h> resolves
     ${tinyobjloader_SOURCE_DIR}             # so <tiny_obj_loader.h> resolves
@@ -609,6 +754,7 @@ target_include_directories(PoseStudio PRIVATE
     ${CMAKE_SOURCE_DIR}/cmake/miniz-shim     # supplies miniz_export.h (miniz's CMake is skipped)
     ${stb_SOURCE_DIR}                        # so <stb_image.h> resolves
     ${tinyexr_SOURCE_DIR}                    # so <tinyexr.h> resolves
+    ${openxr_SOURCE_DIR}/include             # so <openxr/openxr.h> resolves (the loader target exports it too)
 )
 
 # miniz's C implementation, compiled directly into the target (its split source layout: core +
@@ -619,6 +765,7 @@ target_sources(PoseStudio PRIVATE
     ${miniz_SOURCE_DIR}/miniz_tinfl.c
     ${miniz_SOURCE_DIR}/miniz_tdef.c
     ${miniz_SOURCE_DIR}/miniz_zip.c
+    ${ufbx_SOURCE_DIR}/ufbx.c
 )
 
 # GLM must be told, project-wide, to match Vulkan conventions: angles in radians and a
@@ -630,6 +777,10 @@ target_compile_definitions(PoseStudio PRIVATE
     # The app's version string (Constants::APP_VERSION, the title bar, the About overlay, the
     # install ping) is stamped from project(... VERSION) above, so a release bumps one number.
     POSESTUDIO_VERSION="${PROJECT_VERSION}"
+    # OpenXR's headers only declare the Vulkan graphics binding structs (XrGraphicsBindingVulkanKHR,
+    # the KHR_vulkan_enable entry points) under this define — set project-wide so every VR TU
+    # agrees, like the GLM flags above.
+    XR_USE_GRAPHICS_API_VULKAN
 )
 
 # ------------------------------------------------------------------------------
@@ -663,6 +814,8 @@ target_link_libraries(PoseStudio PRIVATE
     Qt6::Concurrent  # off-thread IBL bake on HDRI switches (QtConcurrent::run + QFutureWatcher)
     Qt6::Network     # the anonymous install ping (src/core/installping.*) and the update check (src/core/updatecheck.*)
     Vulkan::Vulkan
+    ${POSESTUDIO_OPENXR_TARGET} # the static OpenXR loader (VR Mode, src/viewport/vr/)
+    lightusd_static             # the static USD reader (the USD character importer, src/viewport/import/usd/)
 )
 
 # ==============================================================================
@@ -696,17 +849,22 @@ add_executable(PoseStudioIkHarness
     src/viewport/scene/armatureikpost.cpp
     src/viewport/scene/armatureikdigit.cpp
     src/viewport/scene/armaturelanding.cpp
+    src/viewport/scene/armaturebreasts.cpp
+    src/viewport/scene/armaturebuttocks.cpp
     src/viewport/scene/armatureikfigure.cpp
     src/viewport/scene/armaturedials.cpp
     src/viewport/scene/ik/ikmath.cpp
     src/viewport/scene/ik/skeletongraph.cpp
     src/viewport/scene/ik/bonealiases.cpp
+    src/viewport/scene/ik/rigroles.cpp
+    src/viewport/scene/ik/namerules.cpp
     src/viewport/scene/ik/balancecontroller.cpp
     src/viewport/scene/ik/ikrig.cpp
     src/viewport/scene/ik/ikrigdrag.cpp
     src/viewport/scene/ik/ikrigpolicy.cpp
     src/viewport/scene/ik/ikrigstepping.cpp
     src/viewport/scene/ik/ikrigcontacts.cpp
+    src/viewport/scene/ik/ikrigvolumes.cpp
     src/viewport/scene/ik/bodymesh.cpp
     src/viewport/scene/ik/jointsolver.cpp
 )
@@ -888,6 +1046,9 @@ set(SHADER_SOURCES
     composite.frag
     sssblur.frag
     outlinemask.frag
+    depthresolve.frag
+    splat.vert
+    splat.frag
 )
 
 set(COMPILED_SPV_FILES "")

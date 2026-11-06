@@ -1,0 +1,121 @@
+# SOFT BREASTS (armaturebreasts.cpp): the breasts hang with the chest's orientation against
+# gravity and bounce on a landing. The Posing preference is on by default, so the app runs this
+# with it on; `breastl` / `breastr` read the swing in degrees, `breasthangl` / `breasthangr` the
+# hang along the tether in mm. Standing they rest as sculpted; a bow swings them (the sag toward
+# the belly relieved) and draws them out toward the floor, the nipple leading; Reset Pose rests
+# them again; the Ground button's landing bounces them and the arms, then rests. The amounts are
+# the BASE FIGURE'S (fullness 1: a large-busted character hangs twice as far, a modest one a
+# quarter, a flat chest not at all), and so are the gates: run on another body, read the numbers.
+view right
+shot 01_standing
+closeup chest 0.30
+shot 01b_standing_closeup
+view home
+view right
+expect breastl < 0.5
+expect breastr < 0.5
+expect breasthangl < 0.5
+
+# A LEVEL-CHESTED BOW — the user's pose (the chest horizontal, a hand reaching for the floor): the
+# breast hangs off the chest wall as a teardrop, the nipple at its lowest point pointing at the
+# floor; looked at from the side, from three-quarters and from below.
+press chest@0.6
+dragv -0.17 -0.12 50 40
+release
+shot 02b_level_bow
+expect breastl > 5
+expect breasthangl > 15
+expect breasthangr > 15
+closeup chest 0.30
+shot 02c_level_bow_closeup
+orbit 40 -12
+shot 02d_level_bow_threeq
+orbit -80 0
+shot 02e_level_bow_below
+reset
+view home
+view right
+expect breastl < 0.5
+expect breasthangl < 0.5
+
+# A deep bow by the chest: a static hang, there at the end of the settle as during the drag.
+press chest@0.6
+dragv -0.30 -0.25 50 40
+shot 02_bow_drag
+expect breastl > 10
+expect breastr > 10
+release
+shot 03_bow_rest
+expect breastl > 10
+expect breasthangl > 10
+# ... and in close-up: the nipples lead, pointing at the floor, the breast's base where it was.
+closeup chest 0.30
+shot 03b_bow_closeup
+reset
+view home
+view right
+expect breastl < 0.5
+
+# Lying back: the hips down onto the floor, then the chest reclined — the breasts lift toward the
+# chin (a swing; no hang into the chest: lying down gravity presses them, which is a morph's job).
+press hip
+dragv 0 -0.80 60 30
+release
+press chest@0.6
+dragv 0.45 -0.35 60 40
+release
+shot 04_reclined
+expect breastl > 3
+expect breasthangl < 0.5
+reset
+
+# ON HER BACK (the hip rolled back 90 degrees, in the air: the floor is not the point) the breasts
+# flatten a little — pressed back toward the chest wall, `breasthangl` reads NEGATIVE — and fall a
+# little to the sides (`breastsidel` / `breastsider` + outward); ON HER SIDE they fall toward the
+# lower side: the upper breast in toward the sternum, the lower one out. More on a fuller bust.
+view home
+fk hip -90 0 0
+expect breasthangl < -4
+expect breastsidel > 8
+expect breastsider > 8
+view top
+closeup chest 0.34
+shot 07_on_her_back_from_above
+reset
+view home
+fk hip 0 0 90
+expect breastsidel < -5
+expect breastsider > 5
+view top
+closeup chest 0.34
+shot 08_on_her_side_from_above
+reset
+view home
+
+# The landing: lifted half a metre and dropped, shot through the bounce, at rest afterwards.
+view home
+lift 0.5
+ground
+wait 24
+shot 05_landing
+wait 90
+shot 06_landed
+expect breastl < 0.5
+expect lowest >= -5
+
+# SOFT BUTTOCKS (armaturebuttocks.cpp): the glutes' skin jiggles with the hips' movement at half
+# the breasts' amounts and NEVER hangs — standing, bowed or lying they read 0 at rest (`buttl` /
+# `buttr`, mm) — and a quick sideways drag of the hips sets them swaying; the settle rests them.
+reset
+expect buttl < 0.01
+view back
+closeup hip 0.40
+press hip
+dragv 0.10 0 6 10
+expect buttl > 2.5
+expect buttr > 2.5
+shot 09_hips_jolt_back
+release
+expect buttl < 0.5
+expect buttr < 0.5
+reset
