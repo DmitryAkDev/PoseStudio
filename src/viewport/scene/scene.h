@@ -20,6 +20,7 @@
 #include "shademode.h"
 #include "armature.h" // IkScope
 #include "jointtransform.h"
+#include "lineoverlay.h" // PointerLine (setVrPointerLines)
 
 #include <glm/glm.hpp>
 #include <vulkan/vulkan.h>
@@ -44,6 +45,7 @@ class ShadowPass;
 class VulkanContext;
 struct ModelData;
 struct Ray;
+struct SplatData;
 
 /**
  * @class Scene
@@ -60,7 +62,8 @@ public:
           const std::vector<char>& shadowVertSpirv, const std::vector<char>& shadowFragSpirv,
           const std::vector<char>& backgroundVertSpirv,
           const std::vector<char>& backgroundFragSpirv,
-          const std::vector<char>& outlineMaskFragSpirv);
+          const std::vector<char>& outlineMaskFragSpirv,
+          const std::vector<char>& splatVertSpirv, const std::vector<char>& splatFragSpirv);
     ~Scene();
 
     Scene(const Scene&) = delete;
@@ -71,6 +74,9 @@ public:
     /// import landed). Call from the GUI thread between frames (the upload blocks briefly on its
     /// own one-time submit; it touches no in-flight state).
     void addModel(const ModelData& data);
+    /// Adds a Gaussian splat scene (splatcloud.h) as a static model at @p transform (the import
+    /// service turns the capture's y-down frame over); it becomes the selection.
+    void addSplatModel(const SplatData& data, const glm::mat4& transform);
 
     // --- Object selection (the outlined model) ---
     /// The selected model's index, or -1 when nothing is selected. The selection is what the
@@ -140,6 +146,11 @@ public:
     /// (skeleton / pins / the orthographic floor line — always, even with no models). The caller
     /// has begun the render pass and set the dynamic viewport/scissor.
     void record(VkCommandBuffer cmd, const Camera& camera, uint32_t frameIndex);
+    /// The GAUSSIAN SPLAT pass (splatcloud.h): every splat model's cloud, sorted far-first for
+    /// this view and alpha-blended, depth-tested against the opaque geometry. Recorded by the
+    /// renderer AFTER the grid, so the floor's lines lie under a capture's floor instead of
+    /// drawing across its legs (a splat writes no depth). No-op without a splat model.
+    void recordSplats(VkCommandBuffer cmd, const Camera& camera, uint32_t frameIndex);
 
     // The grid's ground shadow samples the scene's shadow map through the scene-wide set 3 (the
     // IBL set — binding 2 is the shadow map). Grid's pipeline is built against this layout and
@@ -164,6 +175,9 @@ public:
     /// drawn or not — can be seen).
     void setShowSkeleton(bool on);
     bool showSkeleton() const;
+    /// The VR controllers' pointer rays, drawn by the line overlay from now on (VR Mode sets
+    /// them every frame; empty = none, the state outside VR Mode).
+    void setVrPointerLines(std::vector<PointerLine> lines);
 
     // --- Shading ---
     /// Selects the viewport shade mode: an index into the picker's table (scene/shademode.h),
@@ -183,6 +197,29 @@ public:
     /// if within a small radius; see bonepicker.h). Returns the selected bone index, or -1 if
     /// none is selected.
     int selectBoneAt(float px, float py, float vpW, float vpH, const Camera& camera);
+    /// Selects the figure joint nearest the world point @p point within @p radius (metres) — a VR
+    /// controller's HAND GRAB: the joint is taken where the hand is, its grab point the joint
+    /// itself. Every figure's joints compete, the nearest of any figure wins and its figure
+    /// becomes the active one. Returns the selected bone, or -1 with none within reach.
+    int selectNearestBone(const glm::vec3& point, float radius);
+    /// The pick selectBoneAt and shiftPressBoneAt share: the figure, the bone and the grab point
+    /// under the pixel, with no selection made. False on a miss.
+    bool pickBoneAt(float px, float py, float vpW, float vpH, const Camera& camera, int& outModel, int& outBone,
+                    glm::vec3& outGrab);
+    /// A SHIFT press at the pixel (THE GROUP, 2026-10-27): the same pick, but the selection is
+    /// EXTENDED rather than replaced — the picked joint becomes the PRIMARY (Armature::makeGroupPrimary),
+    /// the previous selection joining the group, and its grab point is set; @p wasMember says whether
+    /// it was a member already (a CLICK then removes it: removeGroupBone). A pick on another figure
+    /// than the active one, or of a finger or a toe, or with nothing selected, is a plain selection.
+    /// Returns the primary, or -1 on a miss.
+    int shiftPressBoneAt(float px, float py, float vpW, float vpH, const Camera& camera, bool& wasMember);
+    /// Removes @p bone from the active figure's group (Armature::removeFromGroup).
+    bool removeGroupBone(int bone);
+    /// The active figure's group secondaries (empty without a figure).
+    std::vector<int> groupBones() const;
+    /// Diagnostics (the scripted test): puts the active figure's selection and group back
+    /// (Armature::restoreSelection) after a by-name lookup replaced them.
+    void restoreSelection(int primary, const std::vector<int>& secondaries);
     /// A/B probe (the scripts' `pick2d on|off`): the 2D projection pick alone, as before the
     /// skin cast of 2026-09-26 — which parts a click may reach through others.
     void setPick2D(bool on) { m_pick2D = on; }
@@ -258,6 +295,24 @@ public:
     bool beginLandingBounce(int index, float impactSpeed);
     bool landingBounceTick(int index, float seconds);
     void endLandingBounce(int index);
+    /// THE SOFT BREASTS (Armature::tickSoftBody) on model @p index: the fall's tick, its tail's
+    /// test and rest; the settings applied to every figure; the active figure's swing (scripts).
+    bool  tickSoftBody(int index, float dt);
+    bool  softBodyMoving(int index) const;
+    void  settleSoftBody(int index);
+    void  applySoftBodySettings();
+    float breastSwingDeg(int side) const;
+    float breastHangMm(int side) const;
+    float breastSideMm(int side) const;
+    float buttockMoveMm(int side) const; ///< THE SOFT BUTTOCKS: how far the left (0) / right (1) cheek has moved (mm).
+    /// THE FIGURE'S PLACE AND HEADING on the active figure (the Transform tab's Figure group):
+    /// position in world centimetres; the rotation as turn / tip / tilt (`axis` 0/1/2) in degrees.
+    /// True when something moved.
+    bool  setFigurePosition(int axis, float cm);
+    bool  setFigureRotationDeg(int axis, float degrees);
+    /// A STATIC model's uniform scale in percent of its imported size (the Transform tab's Scale
+    /// row); false for a figure or with nothing static selected.
+    bool setFigureScalePct(float pct);
 
     // --- Pose snapshot (for undo/redo) ---
     std::vector<std::pair<std::string, glm::vec3>> capturePose() const;
@@ -277,6 +332,10 @@ private:
     /// that isn't the outlined selection.
     Model*       figureModel();
     const Model* figureModel() const;
+    /// The selected model when it is STATIC (no skeleton: an OBJ, a splat scene) and no figure is
+    /// active — what the Transform tab's Figure group places then; else null.
+    Model*       selectedStaticModel();
+    const Model* selectedStaticModel() const;
 
     VulkanContext& m_context;
 

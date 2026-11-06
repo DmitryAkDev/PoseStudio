@@ -11,10 +11,131 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > public repository; this changelog and `CMakeLists.txt` (whose `project(VERSION)` stamps
 > `Constants::APP_VERSION` at build time) are the authoritative version record, and releases are tagged from 0.3.0 onward.
 
-## [Unreleased]
+## [0.4.2] - 2026-11-05
+
+Characters from more places, photographs you can pose in, and a body with some give. Rigged characters now come in from glTF, USD and VRM files as they do from FBX, every one conformed to the rig standard and posed by the full-body IK; a Gaussian splat capture — a photographed person or place — imports as a static scene drawn exactly as it was trained, for a figure to stand in or beside; and a figure's breasts and buttocks move with her, by her size, hanging with the chest's orientation and bouncing to a quick move or a landing. The Transform tab's new Figure group places and turns the whole figure, or a static object, by the numbers.
+
+### Added
+- **glTF and USD import**: File → Import → **.GLB (GL Transmission Format .glTF)** reads `.glb` and `.gltf` files, File → Import → **.USD (Universal Scene Description)** reads `.usd`, `.usda`, `.usdc` and `.usdz` packages — a rigged character in either is conformed to the rig standard like an FBX one and posed by the full-body IK, a plain mesh imports as a static model with its materials. Double-clicking such a file in the Asset Manager, "open with" and files on the command line import them too. glTF: metallic-roughness materials with the base colour, metallic-roughness (its green channel as the roughness map), normal and alpha-mode cutout maps, embedded or data-URI or file images, the older specular-glossiness extension as a fallback; a file that requires Draco or meshopt compression or Basis Universal textures is refused with a message. USD: the stage's units and up axis, UsdSkel skeletons and skin weights, UsdPreviewSurface materials, textures read from inside a USDZ package. Verified on the Khronos sample models and on four rigged characters exported to every encoding, whose IK harness results match the same characters imported from FBX.
+- **VRM import**: File → Import → **.VRM (VRM Avatar)** reads VRM 0.x and 1.0 avatars through the glTF reader; the avatar's humanoid bone map is taken as given over PoseStudio's structural reading of the skeleton (an avatar's skirt or hair chains are never mistaken for limbs), the mapped bones carry the rig standard's names, and the import log names each bone where the two readings differed.
+- **Gaussian splat scenes**: File → Import → **.PLY / .SPLAT / .SPZ (Gaussian Splat)** brings a 3D Gaussian Splatting scene — the trained `.ply`, the compact `.splat` or the compressed `.spz` (versions 1 to 3; an antialiased-trained scene is drawn with its opacity compensation) — into the scene as a static object, drawn as the trainers meant it: sorted far to near for every view, blended in the colour space the training used, its colour evaluated for the viewing direction, and kept at its photographed colours exactly, whatever the lighting dials say. It is turned the right way up on import; figures stand in it and in front of it, and a figure standing inside a capture keeps her own shading underneath it — nothing of her specular or subsurface scattering bleeds into the capture. The Transform tab's Figure group now places, turns and — new — **scales** a selected static object (a splat scene, an OBJ) as it does a figure. The Asset Manager's double-click, the command line and projects take the files too.
+- **Place and turn the whole figure**: the Transform tab's new **Figure** group moves the active figure left-right, up-down and back-forward in centimetres and turns, tips and tilts her in degrees (about the vertical, about her own left-right axis, about her own front-back axis), as she is posed — scrub fields like the joint dials, one undo step each. The place and the turn are part of the pose, so a pose file and a project carry them and Reset Pose puts her back as imported. (A `Ctrl` drag on the hips still moves her with the mouse, and the Ground button drops her to the floor.)
+- **Soft breasts**: a figure's breasts hang and swing with the chest's orientation against gravity — forward in a bow, flattened and settled outward lying on her back, toward the lower side on her side (rolling with the fall), toward the head hanging from a hand — by the size she actually has (read off her mesh at import: a large bust hangs and bounces a great deal, a modest one a little, a flat chest not at all), hanging from the breast's base and drawn out toward the floor with the nipple leading, with a little lag and a firm bounce that only a quick move sets off while you drag (a steady or a trembling hand sets off nothing) — up and down and side to side, a drop swaying them a little apart, never in and out, the breast moving as one solid mass rather than swinging from its top — and a drop-and-bounce when she lands from the Ground button — where her knees now dip deeper and her hanging arms swing forward with the elbows bending and settle back. Nothing of it is in the pose or a pose file. Preferences → **Posing**: the switch (on by default) and a strength dial.
+- **Soft buttocks**: a figure's buttocks jiggle with the hips' movement — a quick drag, a landing from the Ground button — sideways about half as far as the breasts and up and down about as far, and never hang: a pose by itself leaves them as sculpted. A soft-body deformation of the glutes' skin blended on the GPU like the pose correctives, so it works on every rigged figure whether or not its rig has a bone there. Preferences → Posing has its own switch (on by default); the Strength dial scales both.
 
 ### Changed
-* **Interface text is ready for translation.** Every menu, dialog, tooltip and message in the app is now marked as translatable, so other languages can be added later without reworking the code. Nothing changes on screen: PoseStudio is English-only for now. (#33 — thanks @DmitryAkDev)
+- The Alembic, BVH, Collada, PLY and STL placeholders are gone from the File → Import menu: every remaining entry is a working importer.
+- The FBX, glTF and USD readers share one import service and one post-read step (facing, centring, floor, the raw skeleton); the FBX reader's output is unchanged, bit for bit, on every reference file.
+- A roughness map may name the channel it is read from, and a material may use its base map's own alpha as its cutout (what glTF and USD author); the native figures and OBJ are unaffected.
+- The build fetches cgltf (the glTF reader) and LightUSD, the library formerly named TinyUSDZ (the USD reader, built as a static library), alongside the other `FetchContent` dependencies; nothing new to install.
+
+## [0.4.1] - 2026-11-04
+
+VR. Put on a headset and the scene is around you, life-size: the figure stands on your real floor at her true height, you walk around her and look from any angle while the scene stays live — and with the controllers you pose her from inside it, grabbing joints on a pointer ray or in your hand, the whole body following as it does from the desk. Any PC VR setup works through OpenXR: a Meta Quest over Quest Link or Air Link, Virtual Desktop, or SteamVR.
+
+### Added
+- **VR Mode** (View → VR Mode): the scene in a VR headset, life-size and live — the figure stands on your real floor at her true height and you walk around her while you pose her from the desk. Any PC VR setup works through OpenXR: a Meta Quest over Quest Link or Air Link, Virtual Desktop, or SteamVR. The desktop viewport mirrors the headset's left eye meanwhile; View → Recenter VR View puts you back in front of the figure, facing her (VR Mode also does that as it starts). The viewport strip has a VR button right of the view picker, lit while VR Mode is on, and the picker's last entry is VR Mode; Esc at the desktop leaves it.
+- **VR controllers**: the left stick walks you through the scene the way you are looking, the right stick turns you smoothly, and each controller draws a pointer ray — the trigger is the left mouse button: pull it on a joint and the joint is selected and carried on the ray, the whole body following as in a viewport drag, until you let go and the figure settles; pull it on empty space to select the model the ray is on. Reach out so the controller is at a joint and pull for a hand grab — the joint comes along in your hand — and twist the controller while holding a joint to twist it. The right stick pushes or pulls a held joint along the ray; A pins the selected joint, B / Y undo and redo, X grounds the figure, the left menu button recenters. Meta Touch, Valve Index, Windows Mixed Reality and Vive controllers are bound.
+- **VR quality**: each frame's depth goes to the headset with the picture (the depth layer), so a late frame is reprojected against the real geometry; Preferences → VR → "Reduced effects in the headset" skips the subsurface blur and bloom per eye for a lighter GPU; `POSESTUDIO_VR_PERF=1` prints the headset frame rate, late frames and the GUI thread's work per frame once a second.
+- **Restarts keep the scene**: the restart that turning VR support on (or connecting a headset after launch) needs now saves the scene to a temporary project and reopens it in the new process, unsaved as it was — nothing is lost and nothing is asked. A `.pss` project on the command line opens that project.
+- Preferences → **VR**: "Enable VR support" (off by default; PoseStudio consults the headset runtime as it starts, so it takes a restart — the VR Mode entry offers the restart itself), the headset status that startup found, and a per-eye render scale.
+
+### Changed
+- The release pipeline's actions moved to their Node 24 majors (`actions/checkout@v7`, `softprops/action-gh-release@v3`, `actions/upload-artifact@v7`): the 0.4.0 build warned that the Node 20 ones it used are deprecated.
+- The build fetches the Khronos OpenXR-SDK (the loader, linked statically) alongside the other `FetchContent` dependencies; nothing new to install.
+
+## [0.4.0] - 2026-11-03
+
+Rigged characters from FBX files, with a rig standard behind them — and the posing rounds since 0.3.16: several joints dragged together, strides that swing the arms and turn the hips, hands that rest naturally, a figure that hangs when lifted, and the posing engine refactored inside with the same poses to the last bit.
+
+### Added
+
+**Import rigged characters from FBX files.**
+
+- **File → Import → .FBX (FBX File)**, a double-click on an `.fbx` in the Asset Manager, or the file on the command line.
+- The character arrives with its meshes, materials and textures (embedded, or found beside the file), standing on the floor at her true height and facing the camera. Static FBX meshes import as models.
+- The skeleton is read into PoseStudio's own **rig standard**: every bone is given its role by the skeleton's structure — the hips, the spine, the head, each limb's joints and twist helpers, the fingers and toes — and every joint the standard's rotation frame and anatomical range of motion, which FBX files do not carry.
+- The whole posing system then works on the character as on a native figure: full-body IK, the Transform dials, `B` / `S` / `T`, pins, the Ground button, pose files.
+- The rig's own helper bones are driven again, though FBX drops their driver expressions: a corrective bone at a knee or an elbow takes half the joint's bend, and a limb's twist is spread along its twist helpers. A rig authored for linear blend skinning is skinned linearly, as in its authoring tool, so bends and twists read as the rig's author intended.
+- A click on a helper bone (a corrective bone beside a knee, an anchor) selects the joint it belongs to.
+- A character saved in a T-pose imports with the arms out; lower them first, as the manual says for the older native generations.
+
+**Five rigging conventions worked through** — a rigging add-on's, a game engine's, a character-creation tool's own and its Blender export, and an animation package's biped:
+
+- A rig that writes the side at the **end** of a bone's name (`thigh_r`) now weighs its limbs per side, so dragging it by the hips or a thigh socket moves the body as on a native figure.
+- A rig whose foot has one joint kneels with its ankle's full range.
+- A game-engine rig whose toes are one bone, whose hips are named "pelvis" and whose pelvis bone is a leaf kneels, sits, lies down and gets up.
+- A twist helper's skin no longer counts as the knee's, which had planted a knee in mid-air.
+- The Transform dials mirror between the two sides of such rigs too.
+- A biped export — digits named only by number, twist bones with end markers of their own, one long chest bone on a two-link spine, a toe bone bound below the sole — imports with its thumb a thumb (read by place, the index finger's knuckle had been taken for it, and the first relaxed hand curled the index sideways), its twist helpers driven, its chest a chest (grabbed so near the hips it had been a hips drag), and its seat a seat.
+- A finger's Bend dial curls the finger on every rig (on a hand hanging in an A-pose it could extend the knuckle instead).
+
+**Imported characters carry the rig standard's bone names.**
+
+- `hips`, `spine1`, `upper_arm_l`, `thumb1_r`, `ball_l` and so on, the side last — whatever the file called them. The face rig and the helper bones keep their file names.
+- The Transform tab and the joint menu read the same names on every FBX character, and since they all share the standard's frames and ranges too, **a pose file saved on one FBX character loads on any other**.
+- Their balance masses are read off the roles as well, so a two- or three-link spine weighs as the native figures' trunk does and a bow by the chest reaches where it should.
+- A standard name two bones would carry (two chest riders of a side) is applied to neither of them, and the import log says so.
+
+**Move several joints together.**
+
+- `Shift` + click adds a joint to the selection, and takes it out again.
+- `Shift` + drag any selected joint and they all move together, by the same amount, through the one you pressed.
+- The body answers as it does to a single joint — planted feet, balance, steps, a fold or a crouch under a push, tiptoe and lift-off under a pull — so both hands can be raised, pushed forward or brought down at once, or a hand and a foot placed together. Fingers and toes stay posed on their own.
+
+**A stride turns the hips.** Sliding a foot ahead of the other along the floor turns the pelvis toward the leading leg, the lead hip forward as a walker's is, while the shoulders stay square. Bringing the feet back together turns it back; a foot lifted into the air turns nothing.
+
+**Idle arms swing with a stride.** Arms hanging at her sides swing against the legs as the feet step apart, the leading arm's elbow bending a little, and come back as the stance closes. The swing fades as the hips come down, so a lunge keeps its arms at her sides. Posed arms are left alone.
+
+**Idle arms hang with a soft elbow.** An arm hanging at her side bends a little at the elbow (about 12 degrees, the hand resting a little in front of the thigh) instead of hanging dead straight — in a bow, a kneel, a crouch or a walk alike. The bend never brings the arm into contact with anything. An elbow you have turned yourself is left as you set it; Reset Pose straightens it.
+
+**A hand on the hip stands akimbo.** Bringing a hand to rest on the hip takes the elbow out to the side, as a person's does, instead of leaving the arm straight with the hand pressed to the hip. Drag the elbow afterwards for a straighter arm.
+
+**Lifted off the floor, she hangs.** A figure pulled up past her reach by a hand dangles from it as a body does — the legs together and straight down, the knees soft, the feet pointed, the free arm at her side — instead of keeping her standing stance in mid-air. Lower her and she lands and stands back up as before.
+
+**A "What's New" window.** The first time a new version starts, its release notes open in a window of their own as soon as the splash screen is clicked away — once per version. **Help → What's New…** opens it again; **Release Notes** in the window opens the full history in the manual; **Preferences → General → Show What's New after an update** turns the automatic window off.
+
+### Changed
+
+**The posing engine knows the body by role.** Every bone of a skeleton is given a role — the hips, each link of the spine and the neck, the head, the collars, each limb's joints and twist helpers, the hands' carpals and fingers, the feet's heel, mid-foot, ball and toes, the face rig — inferred from the skeleton's structure, and the engine asks for "the left thigh" or "the head" by role where it used to match bone names. Nothing changes on screen: the reference figures pose exactly as before. It is the first step of the PoseStudio rig standard (`docs/RIG_STANDARD.md`).
+
+**Ctrl + drag on the torso bends the torso alone.**
+
+- Ctrl + dragging the chest, the upper chest or the belly bends the spine from the grabbed joint down to the pelvis and stops there: the pelvis and the legs stay where they are, the arms and the head ride the chest.
+- Since 0.3.16 a Ctrl + drag anywhere on the body moved the whole figure; that is the hips' gesture alone now. The collar bones and the base of the neck count as the upper chest, so a Ctrl + drag anywhere on the upper chest or the throat bends the torso.
+- A pinned hand below the chain holds, its arm folding or straightening to keep it there.
+
+**The posing engine, refactored inside — same poses, to the last bit.** The full-body-IK code was read end to end and cleaned up, twice: its longest functions split into named parts, every rule that had been copied written once, dead code removed, its hot paths tightened. Every step was verified against the previous build on all eight reference figures with identical output, and the in-app gallery and the 23-character sweep read as before. For the user, a lighter drag tick and nothing else.
+
+**Interface text is ready for translation.** Every menu, dialog, tooltip and message is marked as translatable, so other languages can be added later without reworking the code. PoseStudio stays English-only for now. (#33, #38 — thanks @DmitryAkDev)
+
+### Fixed
+
+**Joints turn in their authored rotation order.** Each joint's three rotations were composed in the reverse of the order the figure file states. One rotation alone was unaffected, so elbows and knees always checked out; two together were not — a thigh bent forward and then moved Side-Side rolled about its own length instead of moving out to the side. Every joint of every generation now composes as the figure authors it, by the dials, the keys and a drag alike, and the posing that had grown around the old composition was re-set with it: a kneel, a crouch and a sit keep the knees over the feet. **Poses saved with earlier versions load slightly differently** at joints with two or three rotations set: the numbers in the file are the same, composed the right way round now.
+
+**Lying down on her belly works on every body.** From all fours, dragging the hips forward and down lays the figure out flat — back straight, hips on the thighs and the belly, face down, the hands along her sides — on heavy and long-armed characters as on the base figures. Before, the arms stood as struts under the chest on such bodies and the hips hung 20cm in the air.
+
+**Getting up off the belly works on bodies that lie flatter than the base figure.** A mid-thigh helper bone that touched the floor before the knee was treated as the knee, and dragging the hips up arched her into a cobra instead of coming up onto all fours. Helper bones are no longer floor contacts; the knee is. A knee resting on the floor no longer floats up when a hand is dragged, and stays a floor contact while the belly rests on the floor too.
+
+**Standing up by the hips ends upright, looking ahead.** Pulled up to standing from all fours or out of a sit-up, she rose with her trunk still folded and her gaze on the floor. The trunk now unfolds as she rises and the head comes up to look ahead; hands that were on the floor let go cleanly as the shoulders rise beyond the arms' reach (their fading hold used to spring the spine back, up to 34cm at a fingertip in one frame); and from an all-fours whose feet lie far behind her, the hips pulled up stand her up by stepping the feet forward.
+
+**She stands up off her knees.** Pulling the hips up from a kneel sat back on the heels raised her to a tall kneel and no further. The knees now let go once the hips are asked above a tall kneel, the feet roll back onto their toes and the legs straighten over them; a knee keeps its footing until its foot has rolled over, so nothing jumps on the way. Getting up off the belly still ends on all fours.
+
+**A hand that lets go of the floor no longer throws the arm.** Pushing up off the belly, kneeling up off all fours, standing up from a crouch with a hand on the floor: once the arm pulling on a planted hand came straight, the hand's hold went from everything to nothing in one solve and the arm snapped back, up to 22cm at a thumb in a single frame. The hold now fades over about half a second, the arm is left where the body took it, and once the hand lifts it hangs from the shoulder with the fingers relaxing. A drag let go of while an arm is still swinging into its hang, or the head still coming up, finishes that motion instead of freezing mid-swing.
+
+**A knee drawn up out of a kneel on a heavy body no longer flings the foot.** The lifted foot of a half kneel was asked to hang straight under the knee while it still pointed down, waited behind, and swung under in one frame once it levelled — 16-20cm at a toe on larger figures. The foot's target now waits for a foot the floor is holding back and leads it on at a steady pace.
+
+**Arms kept off the floor move smoothly as she lies down.** The turn that keeps her idle arms clear of the floor was chosen from sixteen fixed directions, so the arms hopped between two of them as the body went down — a visible twitch of the hands, worst on long-armed characters. The clearing direction is found exactly now and the arms follow it continuously.
+
+**A click anywhere on the hand selects the hand.** The small bones inside the hand (and the foot's ball, heel and mid-foot) were selectable joints of their own, so a click on the palm as often took one of them. They are the hand's own flesh now: a click on them selects the hand, which lights up whole, as a click on the face selects the head.
+
+**A seated figure reaching with a hand hinges at the hips.** With the hips pinned to a seat, reaching with a hand bent the spine over an upright pelvis. A hand reach now rocks the pelvis as a trunk drag does, so a hand brought to the knee leans her from the hips.
+
+**Skin textures on characters that mix UV layouts.** Each material zone reads its maps through the UV layout its material names, instead of the geometry's default layout for every zone. A newer-generation character that keeps the previous generation's skin maps had every skin feature slightly off — a seam along the scalp, a patch between the shoulder blades, the notch of the throat displaced. Figures on a single layout render exactly as before.
+
+**Eyelashes no longer render as grey strips on the newest figure generation.** That generation's eyelash follower carries only a placeholder material in its own file; its real materials live in a hierarchical materials preset the character lists under its *tear* follower, and the importer applied each follower's presets to that follower alone. A hierarchical preset is now applied to every follower it names, whichever slot lists it. Other figures render exactly as before.
+
+**Manual contents highlight.** In Help → User Manual, the highlighted contents entry could land on whichever row sat under a resting mouse pointer after the tree re-laid out, instead of the page that was opened; it now stays on the opened entry. (#37 — thanks @DmitryAkDev)
 
 ## [0.3.16] - 2026-09-30
 

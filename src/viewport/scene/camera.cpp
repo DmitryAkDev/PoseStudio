@@ -24,6 +24,8 @@ constexpr float kPi = 3.14159265f;
 } // namespace
 
 void Camera::setViewportSize(float width, float height) {
+    m_viewportWidth = width > 0.0f ? width : 1.0f;
+    m_viewportHeight = height > 0.0f ? height : 1.0f;
     m_aspect = (height > 0.0f) ? (width / height) : 1.0f;
     rebuildProjection();
 }
@@ -44,6 +46,7 @@ void Camera::restoreFraming(const glm::vec3& target, float yaw, float pitch, flo
 }
 
 void Camera::orbit(float deltaYaw, float deltaPitch) {
+    m_explicit = false; // an orbit gesture returns the camera to its orbit framing
     m_yaw += deltaYaw;
     m_pitch = std::clamp(m_pitch + deltaPitch, kMinPitch, kMaxPitch);
     setOrthographic(false); // auto perspective: turning an axis view unlocks it
@@ -109,7 +112,17 @@ void Camera::frame(const glm::vec3& center, float radius) {
     }
 }
 
+void Camera::setExplicitView(const glm::mat4& view, const glm::mat4& projection) {
+    m_explicit = true;
+    m_explicitView = view;
+    m_explicitEye = glm::vec3(glm::inverse(view)[3]);
+    m_projection = projection;
+}
+
 glm::vec3 Camera::position() const {
+    if (m_explicit) {
+        return m_explicitEye;
+    }
     // Spherical -> Cartesian offset from the target.
     const float cosPitch = std::cos(m_pitch);
     const glm::vec3 offset(
@@ -120,6 +133,9 @@ glm::vec3 Camera::position() const {
 }
 
 glm::mat4 Camera::view() const {
+    if (m_explicit) {
+        return m_explicitView;
+    }
     return glm::lookAt(position(), m_target, glm::vec3(0.0f, 1.0f, 0.0f));
 }
 

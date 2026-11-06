@@ -11,12 +11,19 @@
  * stepped, and no bone outside the digit moves. (Until 2026-09-28 a grab of either was PROMOTED to
  * the limb's real end joint — a finger pull was an arm gesture, an eye grab a head drag — see
  * IkRig::beginDrag, whose promotion stays for the small bones that are neither: a pectoral on the
- * chest, a carpal on the hand.) Qt-free (std + GLM).
+ * chest.) A CARPAL — what is below a wrist or an ankle and is neither the limb end nor a digit:
+ * the carpals, a hand's prop anchor, the mid-foot, the ball, the heel — is the hand's or the foot's
+ * own flesh (2026-10-28): a click on one selects the HAND or the FOOT, as a click on the face
+ * selects the head, and it lights with it. (Until then it was a Body bone: selectable, the hand's
+ * flesh split among four carpals and a click on the palm as often a carpal's as the hand's — "the
+ * hand node can be difficult to select, and posing carpals in IK mode is not practical".) Qt-free
+ * (std + GLM).
  */
 
 #include "armature.h"
 #include "armatureiksolvetuning.h"
 
+#include "ikmath.h"
 #include "ikrig.h"
 #include "jointsolver.h"
 
@@ -38,7 +45,6 @@ void Armature::classifyBones() {
     const int    head = rig.headNode();
     const int    root = rig.rootNode();
     ensureHandMaps();
-    const float footHeight = kDigitFootHeight * rig.sizeScale();
     // (Parents precede children: one pass carries "below the head", "of the body", "foot-class"
     // and the LIMB END a bone hangs below — its wrist, or its ankle: the foot's most proximal
     // foot-class joint — with that hand's or foot's REACH, its farthest joint at bind.)
@@ -49,12 +55,13 @@ void Armature::classifyBones() {
     std::vector<float> reach(n, 0.0f);
     int faces = 0;
     int digits = 0;
+    int carpals = 0;
     for (std::size_t b = 0; b < n; ++b) {
         const int  p = m_bones[b].parent;
         const bool hasParent = p >= 0 && static_cast<std::size_t>(p) < b;
         underHead[b] = hasParent && (p == head || underHead[static_cast<std::size_t>(p)]);
         ofBody[b] = static_cast<int>(b) == root || (hasParent && ofBody[static_cast<std::size_t>(p)]);
-        footClass[b] = ofBody[b] && static_cast<int>(b) != root && b < m_ikBindPos.size() && m_ikBindPos[b].y < footHeight;
+        footClass[b] = ofBody[b] && static_cast<int>(b) != root && rig.isFootClass(static_cast<int>(b));
         if (head >= 0 && underHead[b]) {
             m_boneClass[b] = static_cast<char>(BoneClass::Face);
             ++faces;
@@ -101,6 +108,84 @@ void Armature::classifyBones() {
             ++digits;
         }
     }
+    // A CARPAL: what is left below a wrist or an ankle — the carpals, a hand's prop anchor, the
+    // mid-foot, the ball, the heel — is the hand's or the foot's own flesh, not a joint to pose: a
+    // click on one selects the limb end (posingBone), and it lights with it.
+    m_boneLimbEnd = limbEnd;
+    for (std::size_t b = 0; b < n; ++b) {
+        if (limbEnd[b] >= 0 && m_boneClass[b] == static_cast<char>(BoneClass::Body)) {
+            m_boneClass[b] = static_cast<char>(BoneClass::Carpal);
+            ++carpals;
+        }
+    }
+    // BY THE RIG STANDARD'S ROLES (rigroles.h, 2026-11-03): a Finger or a Toe is a DIGIT and a
+    // carpal, a metatarsal, the ball of the foot or the heel is the hand's or the foot's own,
+    // whatever the structural rules above made of them. The two agree on the reference rigs; on
+    // a biped export they disagreed once — its one-toe foot's ball (the Ball role: the toes are
+    // one childless block under it) bends 100 degrees, stands out in the foot and carries no digit,
+    // so the structure read it as a TOE, and a click on the ball of the foot began a digit drag.
+    if (rig.roles().built()) {
+        for (std::size_t b = 0; b < n; ++b) {
+            const RigRoleTag& t = rig.roles().tag(static_cast<int>(b));
+            const bool        digit = t.role == RigRole::Finger || t.role == RigRole::Toe;
+            // (A BALL is the foot's own where the toes fan from it; a ball with no toe below it — the
+            // one-bone toe block of a game rig, a rigging add-on's, a biped's — IS the toes, and keeps
+            // what the structure read: a digit, where it bends. The foot model's ball is a role, not a class.)
+            bool fans = false;
+            for (const int c : m_children[b]) {
+                fans = fans || rig.roles().role(c) == RigRole::Toe;
+            }
+            const bool        own = t.role == RigRole::Carpal || t.role == RigRole::Metatarsal || (t.role == RigRole::Ball && fans) || t.role == RigRole::Heel;
+            if (!digit && !own) {
+                continue;
+            }
+            const BoneClass was = static_cast<BoneClass>(m_boneClass[b]);
+            if (was == BoneClass::Face) {
+                continue;
+            }
+            if (digit && was != BoneClass::Digit) {
+                m_boneClass[b] = static_cast<char>(BoneClass::Digit);
+                digits += 1;
+                carpals -= was == BoneClass::Carpal ? 1 : 0;
+            } else if (own && was != BoneClass::Carpal) {
+                const int end = rig.roles().find(t.role == RigRole::Carpal ? RigRole::Hand : RigRole::Foot, t.side);
+                if (end < 0 && m_boneLimbEnd[b] < 0) {
+                    continue;
+                }
+                m_boneClass[b] = static_cast<char>(BoneClass::Carpal);
+                if (end >= 0) {
+                    m_boneLimbEnd[b] = end;
+                }
+                carpals += 1;
+                digits -= was == BoneClass::Digit ? 1 : 0;
+            }
+        }
+    }
+    // A HELPER by the rig standard's roles (rigroles.h) that is no twist bone — a game rig's
+    // corrective "share" bone beside a knee or an elbow, a control, a skinless leaf — is the
+    // flesh of the JOINT IT HANGS FROM, not a joint to pose: a click on one selects that joint
+    // (the first non-helper ancestor), as a click on a carpal selects the hand, and it lights
+    // with it. Left a Body bone, a click on the knee grabbed the share bone, whose token mass
+    // the rig promoted to the limb's END — the foot — and a knee raise moved the hips 0.000.
+    int helpers = 0;
+    if (rig.roles().built()) {
+        for (std::size_t b = 0; b < n; ++b) {
+            if (m_boneClass[b] != static_cast<char>(BoneClass::Body) || rig.roles().role(static_cast<int>(b)) != RigRole::Helper ||
+                isTwistBone(static_cast<int>(b))) {
+                continue;
+            }
+            int joint = m_bones[b].parent;
+            while (joint >= 0 && rig.roles().role(joint) == RigRole::Helper) {
+                joint = m_bones[static_cast<std::size_t>(joint)].parent;
+            }
+            if (joint < 0) {
+                continue;
+            }
+            m_boneClass[b] = static_cast<char>(BoneClass::Carpal);
+            m_boneLimbEnd[b] = joint;
+            ++helpers;
+        }
+    }
     static const bool kTrace = std::getenv("POSESTUDIO_BONE_CLASS_TRACE") != nullptr;
     if (kTrace) {
         std::fprintf(stderr, "[bone-class] head %s: %d face-rig bones; %d digit joints:",
@@ -111,11 +196,13 @@ void Armature::classifyBones() {
             }
         }
         std::fputc(10, stderr);
-        // (... and what below a wrist or an ankle is NOT a digit: the hand's and the foot's own.)
-        std::fprintf(stderr, "[bone-class] of the hands and feet themselves:");
+        // (... and what below a wrist or an ankle is NOT a digit: the hand's and the foot's own —
+        // the CARPALS, each selecting its limb end.)
+        std::fprintf(stderr, "[bone-class] %d carpals, of the hands and feet themselves, and %d helpers of their joints:", carpals, helpers);
         for (std::size_t b = 0; b < n; ++b) {
-            if (limbEnd[b] >= 0 && m_boneClass[b] == static_cast<char>(BoneClass::Body)) {
-                std::fprintf(stderr, " %s", m_boneNames[b].c_str());
+            if (m_boneClass[b] == static_cast<char>(BoneClass::Carpal)) {
+                std::fprintf(stderr, " %s->%s", m_boneNames[b].c_str(),
+                             limbEnd[b] >= 0 ? m_boneNames[static_cast<std::size_t>(limbEnd[b])].c_str() : "?");
             }
         }
         std::fputc(10, stderr);
@@ -133,19 +220,59 @@ BoneClass Armature::boneClass(int bone) {
 }
 
 int Armature::posingBone(int bone) {
-    return boneClass(bone) == BoneClass::Face ? m_ikRig->headNode() : bone;
+    const BoneClass cls = boneClass(bone);
+    if (cls == BoneClass::Face) {
+        return m_ikRig->headNode();
+    }
+    if (cls == BoneClass::Carpal && static_cast<std::size_t>(bone) < m_boneLimbEnd.size() && m_boneLimbEnd[static_cast<std::size_t>(bone)] >= 0) {
+        return m_boneLimbEnd[static_cast<std::size_t>(bone)]; // (the hand, the foot)
+    }
+    return bone;
 }
 
 int Armature::knownPosingBone(int bone) const {
-    const bool face = m_ikRig && bone >= 0 && static_cast<std::size_t>(bone) < m_boneClass.size() &&
-                      m_boneClass[static_cast<std::size_t>(bone)] == static_cast<char>(BoneClass::Face);
-    return face ? m_ikRig->headNode() : bone;
+    if (!m_ikRig || bone < 0 || static_cast<std::size_t>(bone) >= m_boneClass.size()) {
+        return bone;
+    }
+    const char cls = m_boneClass[static_cast<std::size_t>(bone)];
+    if (cls == static_cast<char>(BoneClass::Face)) {
+        return m_ikRig->headNode();
+    }
+    if (cls == static_cast<char>(BoneClass::Carpal) && static_cast<std::size_t>(bone) < m_boneLimbEnd.size() &&
+        m_boneLimbEnd[static_cast<std::size_t>(bone)] >= 0) {
+        return m_boneLimbEnd[static_cast<std::size_t>(bone)];
+    }
+    return bone;
 }
 
 bool Armature::highlightedWithSelection(int bone) const {
-    return m_ikRig && highlightBone() >= 0 && highlightBone() == m_ikRig->headNode() && bone >= 0 &&
-           static_cast<std::size_t>(bone) < m_boneClass.size() &&
-           m_boneClass[static_cast<std::size_t>(bone)] == static_cast<char>(BoneClass::Face);
+    if (bone < 0) {
+        return false;
+    }
+    // THE GROUP's secondaries light with the selection, each with its highlight twin (a bend bone's
+    // twist child and vice versa: the whole upper arm for a grabbed shoulder) — and a secondary
+    // head lights its face rig as the selected head does.
+    for (const int member : m_groupBones) {
+        if (member == bone || (member >= 0 && static_cast<std::size_t>(member) < m_highlightTwin.size() &&
+                               m_highlightTwin[static_cast<std::size_t>(member)] == bone)) {
+            return true;
+        }
+    }
+    if (!m_ikRig || static_cast<std::size_t>(bone) >= m_boneClass.size()) {
+        return false;
+    }
+    // A CARPAL lights with its hand or foot (the palm is the carpals' flesh).
+    if (m_boneClass[static_cast<std::size_t>(bone)] == static_cast<char>(BoneClass::Carpal)) {
+        const int end = static_cast<std::size_t>(bone) < m_boneLimbEnd.size() ? m_boneLimbEnd[static_cast<std::size_t>(bone)] : -1;
+        return end >= 0 && ((highlightBone() >= 0 && highlightBone() == end) || inGroup(end));
+    }
+    if (m_boneClass[static_cast<std::size_t>(bone)] != static_cast<char>(BoneClass::Face)) {
+        return false;
+    }
+    if (highlightBone() >= 0 && highlightBone() == m_ikRig->headNode()) {
+        return true;
+    }
+    return inGroup(m_ikRig->headNode());
 }
 
 void Armature::localChannelDofs(int b, std::vector<JointSolverDof>& out) const {
@@ -156,7 +283,7 @@ void Armature::localChannelDofs(int b, std::vector<JointSolverDof>& out) const {
             continue;
         }
         const double rangeDeg = bone.rotLimited[a] ? std::max(static_cast<double>(range), kMinRangeDeg) : kFreeRangeDeg;
-        const double rangeRad = rangeDeg * 3.14159265358979323846 / 180.0;
+        const double rangeRad = rangeDeg * kPi / 180.0;
         JointSolverDof dof;
         dof.bone = b;
         dof.axis = a;
@@ -170,8 +297,7 @@ void Armature::localChannelDofs(int b, std::vector<JointSolverDof>& out) const {
             const float otherRange = bone.rotLimited[o] ? bone.rotMax[o] - bone.rotMin[o] : 360.0f;
             hinge = otherRange <= kFoldHingeOtherDeg;
         }
-        if (hinge && bone.rotLimited[a] && range >= kFoldRangeDeg && bone.rotMin[a] < 0.0f && bone.rotMax[a] > 0.0f &&
-            std::min(-bone.rotMin[a], bone.rotMax[a]) <= kFoldNarrowFraction * std::max(-bone.rotMin[a], bone.rotMax[a])) {
+        if (hinge && isFoldChannel(b, a)) {
             dof.foldSign = bone.rotMax[a] > -bone.rotMin[a] ? 1 : -1;
             if (dof.foldSign > 0) {
                 dof.minDeg = std::min(m_boneEuler[static_cast<std::size_t>(b)][a], 0.0f);

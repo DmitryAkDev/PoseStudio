@@ -34,7 +34,7 @@ The viewport sits on the left and the side panel on the right, separated by a dr
 
 **View** — the skeleton overlay and the camera views (all with keyboard shortcuts; see [Navigating the Viewport](navigation.md#the-camera-views)).
 
-**Help** — this manual (`F1`), the release notes (the manual's *What's New* page), the website, the update check, and the About screens. *Tutorials* and *Support* are placeholders.
+**Help** — this manual (`F1`), *What's New…* (this version's release notes in their own window — the one that opens by itself the first time a new version starts, see [Privacy and Updates](privacy-updates.md#whats-new-after-an-update)), the release notes (the manual's *What's New* page, the full history), the website, the update check, and the About screens. *Tutorials* and *Support* are placeholders.
 
 ## The viewport strip
 
@@ -47,6 +47,7 @@ A row of controls floats in the viewport's top-right corner:
 | **Home** | Returns the camera to the default framing (also `5`). |
 | **Ground** | Drops the active figure so its lowest point rests on the floor; landing on her feet, she absorbs the drop with her knees. See [Posing](posing.md#the-ground-button). |
 | **Skeleton** | Toggles the bone overlay. Joints can be grabbed with it on or off. |
+| **VR** (right of the view picker) | Enter or leave VR Mode — see [VR Mode](vr.md); lit in blue while the headset has the scene. The view picker's last entry, VR Mode, does the same, and `Esc` leaves. |
 
 While the mouse is turning a joint (`B`, `S` or `T` with a joint selected: see [Posing](posing.md#turning-a-joint-with-the-mouse-b-s-t)), a small badge under the strip names the motion: Bend, Side-Side or Twist.
 

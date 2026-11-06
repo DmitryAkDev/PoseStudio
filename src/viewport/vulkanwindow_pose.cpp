@@ -13,6 +13,7 @@
  */
 
 #include "vulkanwindow.h"
+#include "importformats.h"
 
 #include "rendering/vulkanrenderer.h"
 #include "scene/armature.h"
@@ -137,6 +138,33 @@ void VulkanWindow::setJointTransformDial(int dial, double value) {
     }
     // (Limits clamp and the body volumes stop it inside; correctives follow live on the GPU.)
     if (scene().setSelectedJointDial(dial, static_cast<float>(value))) {
+        requestUpdate();
+    }
+}
+
+void VulkanWindow::setFigurePosition(int axis, double cm) {
+    if (!beginJointTransformEdit()) {
+        return;
+    }
+    if (scene().setFigurePosition(axis, static_cast<float>(cm))) {
+        requestUpdate();
+    }
+}
+
+void VulkanWindow::setFigureRotation(int axis, double degrees) {
+    if (!beginJointTransformEdit()) {
+        return;
+    }
+    if (scene().setFigureRotationDeg(axis, static_cast<float>(degrees))) {
+        requestUpdate();
+    }
+}
+
+void VulkanWindow::setFigureScale(double pct) {
+    if (!beginJointTransformEdit()) {
+        return;
+    }
+    if (scene().setFigureScalePct(static_cast<float>(pct))) {
         requestUpdate();
     }
 }
@@ -510,10 +538,10 @@ int VulkanWindow::loadProjectFile(const QString& path,
             continue; // skipped in the recovery dialog
         }
         PendingImport import;
-        import.kind = QString::fromStdString(src).endsWith(QStringLiteral(".obj"), Qt::CaseInsensitive)
-                          ? PendingImport::Kind::Obj
-                          : PendingImport::Kind::Figure;
         import.path = QString::fromStdString(src);
+        import.kind = ImportFormats::isSplatFile(import.path) ? PendingImport::Kind::Splat
+                      : ImportFormats::isModelFile(import.path) ? PendingImport::Kind::Obj
+                                                                : PendingImport::Kind::Figure;
         if (!runImport(import, /*showProgress=*/true)) {
             error = "import failed: " + src;
             return -1;
