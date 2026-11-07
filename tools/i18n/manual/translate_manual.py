@@ -613,12 +613,12 @@ UI_LABELS = (
     # ahead of any shorter one it contains ("Specular Only" precedes "Specular").
     "PBR Shaded",
     "Flat Texture Shaded",
+    "Texture Shaded Wireframe",
+    "Clay Shaded Wireframe",
     "Texture Shaded",
     "Cartoon Shaded",
-    "Clay Shaded Wireframe",
-    "Texture Shaded Wireframe",
     "Clay Shaded",
-    "Texture Shaded",
+    "Lighting Only",
     "Hidden Line Wireframe",
     "Wireframe",
     "Silhouette",
@@ -795,6 +795,9 @@ def normalize_ui_names(text: str, catalog: dict) -> str:
             form = _catalog_form(catalog, UI_LABEL_REMAP.get(en, en))
             if form:
                 out.append((en, form))
+        # Longest name first: a shorter label ("Texture Shaded") must never replace
+        # inside a longer one ("Texture Shaded Wireframe") that the tuple also carries.
+        out.sort(key=lambda pair: len(pair[0]), reverse=True)
         return out
     ui_names = resolved(UI_NAMES)
     ui_labels = resolved(UI_LABELS)
