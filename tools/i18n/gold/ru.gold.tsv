@@ -25,3 +25,28 @@ GS-023	File	Файл	menu-file
 GS-024	Edit	Правка	menu-edit
 GS-025	View	Вид	menu-view
 GS-026	Help	Справка	menu-help
+GS-027	Turn	Поворот	figure-group
+GS-028	Tip	Наклон	figure-group
+GS-029	Tilt	Крен	figure-group
+GS-030	The headset refused a frame.	Гарнитура отклонила кадр.	vr-terms
+GS-031	The headset stopped delivering frames.	Гарнитура перестала передавать кадры.	vr-terms
+GS-032	Headset found: %1 (runtime: %2) — waiting for the viewport.	Гарнитура найдена: %1 (рантайм: %2) — ожидаем вьюпорт.	vr-terms
+GS-033	The headset (%1) is driven by a GPU this viewport cannot render through, or that GPU lacks an extension the runtime needs — see the log.	Гарнитура (%1) подключена к GPU, через который этот вьюпорт не может выполнять рендеринг, или на этом GPU нет нужного рантайму расширения — см. журнал.	vr-terms
+GS-034	This GPU driver lacks a Vulkan instance extension the headset runtime needs (%1).	Этот GPU-драйвер не поддерживает расширение Vulkan-инстанса, нужное рантайму гарнитуры (%1).	vr-terms
+GS-035	Ready: %1 (runtime: %2). View → VR Mode puts the scene in the headset.	Готово: %1 (рантайм: %2). Вид → Режим VR помещает сцену в гарнитуру.	vr-terms
+GS-036	PoseStudio connects to the headset runtime when it starts, so VR support takes a restart to turn on. Connect your headset first (Quest Link or Air Link, Virtual Desktop, or SteamVR), then restart — your scene comes back with it.\n\nTurn VR support on now?	PoseStudio подключается к рантайму гарнитуры при запуске, поэтому для включения поддержки VR нужен перезапуск. Сначала подключите гарнитуру (Quest Link или Air Link, Virtual Desktop или SteamVR), затем перезапустите — сцена вернётся вместе с ней.\n\nВключить поддержку VR сейчас?	vr-terms
+GS-037	View → VR Mode puts the scene in a VR headset, life-size: the figure stands on your floor and you walk around her. PoseStudio talks to the headset through OpenXR, so any PC VR setup works — a Meta Quest over Quest Link or Air Link, Virtual Desktop, or SteamVR. Connect the headset before starting PoseStudio; the headset runtime is consulted as PoseStudio starts, which is why this setting takes a restart.	Вид → Режим VR помещает сцену в VR-гарнитуру в натуральную величину: фигура стоит на вашем полу, и вы ходите вокруг неё. PoseStudio общается с гарнитурой через OpenXR, поэтому подойдёт любой PC VR — Meta Quest через Quest Link или Air Link, Virtual Desktop или SteamVR. Подключите гарнитуру до запуска PoseStudio; рантайм гарнитуры опрашивается при старте PoseStudio, поэтому эта настройка требует перезапуска.	vr-terms
+GS-038	VR support is off. Turn it on and restart PoseStudio to use VR Mode.	Поддержка VR выключена. Включите её и перезапустите PoseStudio, чтобы использовать режим VR.	vr-terms
+GS-039	The OpenXR runtime (%1) supports only Vulkan %2.%3; this viewport needs 1.1.	Рантайм OpenXR (%1) поддерживает только Vulkan %2.%3; этому вьюпорту нужна версия 1.1.	vr-terms
+GS-040	The 3D viewport is not available, so there is nothing to show in the headset.	Вьюпорт 3D недоступен, поэтому в гарнитуре нечего показывать.	vr-terms
+GS-041	Skips the skin's subsurface blur and the bloom for each eye — a lighter GPU gets its frame rate back at the cost of some skin realism. The desktop view keeps the full look. Applies when VR Mode next starts.	Пропускает подповерхностное размытие кожи и bloom для каждого глаза — более слабый GPU возвращает себе частоту кадров ценой части реалистичности кожи. Десктопный вид сохраняет полную картинку. Применяется при следующем запуске режима VR.	vr-terms
+GS-042	Also new in %1	Также новое в %1	vr-terms
+GS-043	Left-Right	Влево-вправо	figure-axes
+GS-044	Back-Forward	Назад-вперёд	figure-axes
+GS-045	A figure's buttocks bounce a little with the hips' movement — a quick drag, a landing from the Ground button — at about half the breasts' amount, and never hang: a pose by itself leaves them as sculpted. Nothing of it is written into the pose or a pose file.	Ягодицы фигуры слегка колышутся при движении бёдер — быстрое перетаскивание, приземление с кнопки «Земля» — примерно вдвое меньше, чем у груди, и никогда не провисают: сама по себе поза оставляет их как вылеплено. Ничего из этого не записывается в позу или файл позы.	vr-terms
+GS-046	Moves the whole figure up (positive) or down, in centimetres. The Ground button puts her back on the floor.	Сдвигает всю фигуру вверх (положительное значение) или вниз, в сантиметрах. Кнопка «Земля» возвращает её на пол.	vr-terms
+GS-047	, conformed to the rig standard	, приведён к стандарту рига	conformed-rig
+GS-048	, conformed to the rig standard with %1 role(s) missing	, приведён к стандарту рига, отсутствуют роли: %1	conformed-rig
+GS-049	Import glTF Character	Импорт glTF-персонажа	import-name
+GS-050	Import USD Character	Импорт USD-персонажа	import-name
+GS-051	Show What's New after an update	Показывать «Что нового» после обновления	whatsnew
