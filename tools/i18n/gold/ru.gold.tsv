@@ -46,3 +46,4 @@ GS-044	, conformed to the rig standard with %1 role(s) missing	, приведё�
 GS-045	Import glTF Character	Импорт glTF-персонажа	import-name
 GS-046	Import USD Character	Импорт USD-персонажа	import-name
 GS-047	Show What's New after an update	Показывать «Что нового» после обновления	whatsnew
+GS-048	Texture Shaded Wireframe	Каркас текстурного затенения	mode-name
