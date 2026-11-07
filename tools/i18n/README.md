@@ -11,7 +11,7 @@ and every catalog that ships has been read through by a human first.
 |---|---|
 | `translate.py` | Self-contained translator: stdlib only, reads config and prompt from this directory |
 | `dump.py` | Manual-review dump of a catalog (source -> translation pairs, control chars visible); the dump ends with a consistency audit; `--audit` runs that check alone and exits 1 on divergence |
-| `clear.py` | Empties every `<translation>` in one catalog (keeps the XML structure) — for re-rolling it from scratch |
+| `clear.py` | Empties every `<translation>` in one catalog (keeps the XML structure) — for re-rolling it from scratch; `--sources worklist.json` clears only the listed sources (a targeted re-roll of the failed strings) |
 | `gold_check.py` | Gold-set regression check: compares every row of `gold/<lang>.gold.tsv` against a catalog, exits 1 on a missing source or a drifted translation |
 | `add_language.py` | One-shot language onboarding (CMake list + prompt template + .env + lupdate) |
 | `llm_pool.py` | Shared pipeline infrastructure imported by `translate.py` (config loading, the chat/completions call) — stdlib only, no CLI logic |
@@ -178,6 +178,9 @@ text (keep the XML structure), then run a full pass.
 
 ```sh
 python3 tools/i18n/clear.py translations/<lang>.ts
+# targeted re-roll — clear only the listed sources (JSON array of exact source
+# texts, unescaped as dump.py prints them), the reviewed bulk survives:
+python3 tools/i18n/clear.py translations/<lang>.ts --sources worklist.json
 python3 tools/i18n/translate.py translations/<lang>.ts
 ```
 
