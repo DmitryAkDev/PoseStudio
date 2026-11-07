@@ -37,6 +37,11 @@
       "title": "Освещение и окружение"
     },
     {
+      "id": "vr",
+      "file": "vr.md",
+      "title": "Режим VR"
+    },
+    {
       "id": "posing",
       "file": "posing.md",
       "title": "Позирование",

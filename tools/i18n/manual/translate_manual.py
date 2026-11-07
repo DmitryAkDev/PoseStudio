@@ -385,10 +385,23 @@ def pass_body(cfg, manual_prompt: str, lang: str, page: dict, en_text: str,
               page_headings: dict, ru_titles: dict | None = None,
               en_pages: list | None = None) -> str | None:
     """Translate the whole page; guards + retry (GUARD_RETRIES), then None."""
+    # Wrap EN UI element names in opaque tokens before the LLM: the model translates
+    # them (its Russian forms drift from the catalog's, e.g. "Глиняное затенение Каркас"),
+    # while pass 3 resolves the EN names to the app's current forms deterministically.
+    # Sorted longest-first, so "Clay Shaded Wireframe" is tokenized before "Clay Shaded".
+    tokens = {}
+    wrapped = en_text
+    for name in sorted(set(UI_NAMES) | set(UI_LABELS), key=len, reverse=True):
+        token = f"⟦U{len(tokens)}⟧"
+        pattern = r"\b" + re.escape(name) + r"\b"
+        if re.search(pattern, wrapped):
+            tokens[token] = name
+            wrapped = re.sub(pattern, token, wrapped)
+
     table = heading_table_for(page_headings, en_text, lang)
     query = (f"Table of this page's headings (use the {lang} column exactly where the "
              f"English heading stands):\n\n{table}\n\n"
-             f"Translate this page:\n\n{en_text}")
+             f"Translate this page:\n\n{wrapped}")
     last_problem = None
     for attempt in range(GUARD_RETRIES + 1):
         try:
@@ -412,12 +425,14 @@ def pass_body(cfg, manual_prompt: str, lang: str, page: dict, en_text: str,
             answer = normalize_link_texts(answer, en_pages, ru_titles)
         problems = guard_body(en_text, answer, page_headings, ru_titles)
         if not problems:
+            for token, name in tokens.items():
+                answer = answer.replace(token, name)
             return answer
         last_problem = "; ".join(problems)
         print(f"  guard failed (attempt {attempt + 1}/{GUARD_RETRIES + 1}): {last_problem}",
               file=sys.stderr)
         query = (f"The previous translation broke the markdown structure:\n{last_problem}\n\n"
-                 f"Fix it. The table and the page again:\n\n{table}\n\nTranslate this page:\n\n{en_text}")
+                 f"Fix it. The table and the page again:\n\n{table}\n\nTranslate this page:\n\n{wrapped}")
     print(f"  guards exhausted for {page['file']}: {last_problem}", file=sys.stderr)
     return None
 
@@ -600,8 +615,10 @@ UI_LABELS = (
     "Flat Texture Shaded",
     "Texture Shaded",
     "Cartoon Shaded",
+    "Clay Shaded Wireframe",
+    "Texture Shaded Wireframe",
     "Clay Shaded",
-    "Lighting Only",
+    "Texture Shaded",
     "Hidden Line Wireframe",
     "Wireframe",
     "Silhouette",
@@ -657,7 +674,17 @@ UI_LABELS = (
     "Exposure",
 )
 
+# The app renamed the shaded modes (every one is now a wireframe composite: "Clay
+# Shaded Wireframe", "Texture Shaded Wireframe"), the EN prose keeps the old short
+# names, and the catalog keeps both sources — the short ones now obsolete. Resolve
+# the prose label to the mode's CURRENT on-screen form (pinned by gold GS-M-010/011).
+UI_LABEL_REMAP = {
+    "Clay Shaded": "Clay Shaded Wireframe",
+    "Texture Shaded": "Texture Shaded Wireframe",
+}
+
 MENU_ITEMS = (
+
     # Top-level menu titles. Replaced only in a menu-reference context (the start of an
     # arrow chain "X → …" or right after the word for "menu") so that ordinary English
     # words are left alone: "file formats", "your files", "(DUF File)" keep their form.
@@ -765,7 +792,7 @@ def normalize_ui_names(text: str, catalog: dict) -> str:
     def resolved(names):
         out = []
         for en in names:
-            form = _catalog_form(catalog, en)
+            form = _catalog_form(catalog, UI_LABEL_REMAP.get(en, en))
             if form:
                 out.append((en, form))
         return out
@@ -998,6 +1025,8 @@ def main() -> int:
     parser.add_argument("lang", help="language code (prompts from locales/<lang>/)")
     parser.add_argument("--dry-run", action="store_true",
                         help="list missing/stale pages, zero LLM calls")
+    parser.add_argument("--pages", default=None,
+                        help="comma-separated page ids/files: translate these even when not stale")
     parser.add_argument("--limit", type=int, default=0,
                         help="translate at most N pages this run (0 = all)")
     parser.add_argument("--model", default=None,
@@ -1035,6 +1064,16 @@ def main() -> int:
     prune_tree(tree, en_pages)
 
     pending = pending_pages(root, en_pages, tree)
+    if args.pages:
+        wanted = {p.strip() for p in args.pages.split(",") if p.strip()}
+        unknown = wanted - {pg["id"] for pg in en_pages} - {pg["file"] for pg in en_pages}
+        if unknown:
+            sys.exit(f"--pages: unknown page(s): {sorted(unknown)}")
+        merged = {pg["id"]: (pg, reason) for pg, reason in pending}
+        for pg in en_pages:
+            if pg["id"] in wanted or pg["file"] in wanted:
+                merged[pg["id"]] = (pg, "forced")
+        pending = list(merged.values())
     if args.limit > 0:
         pending = pending[:args.limit]
 
