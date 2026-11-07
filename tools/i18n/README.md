@@ -91,8 +91,14 @@ python3 tools/i18n/manual/translate_manual.py <lang> --dry-run
 
 # 2. Translate (three passes per page: headings -> body with markdown guards ->
 #    deterministic anchor rewrite; the audit runs as a post-gate and its exit code
-#    is the run's)
+#    is the run's). UI element names are tokenized before the LLM and resolved
+#    from the catalog in pass 3 — the model must not translate them.
 python3 tools/i18n/manual/translate_manual.py <lang>
+
+# 2b. Force specific pages into the run even when not stale — after a refresh
+#     that renamed headings, the pages linking to them re-roll until the audit
+#     is green:
+python3 tools/i18n/manual/translate_manual.py <lang> --pages getting-started.md,navigation.md
 
 # 3. Audit alone, any time (exit code = number of errors, 0 = consistent)
 python3 tools/i18n/manual/audit_manual.py --lang <lang>
