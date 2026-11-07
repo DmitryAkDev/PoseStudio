@@ -1392,7 +1392,7 @@ Details: %2</source>
     <message>
         <location filename="../src/viewport/viewportstrip.cpp" line="125"/>
         <source>Texture Shaded Wireframe</source>
-        <translation>Текстурированный каркас</translation>
+        <translation>Каркас текстурного затенения</translation>
     </message>
     <message>
         <location filename="../src/viewport/viewportstrip.cpp" line="126"/>
